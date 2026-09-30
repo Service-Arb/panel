@@ -448,3 +448,35 @@ async fn a_source_is_named_by_its_key() {
 	let source_id: String = sqlx::query_scalar("SELECT source_id FROM events").fetch_one(&db.pool().await).await.unwrap();
 	assert_eq!(source_id, "aquafix-site");
 }
+
+#[tokio::test]
+async fn ingest_waits_for_a_rebuild_in_progress() {
+	let Some(db) = TestDb::create().await else { return };
+	let (panel, site, _) = setup(&db).await;
+	let pool = db.pool().await;
+	// Stands in for a rebuild: the lock a rebuild holds, held open.
+	let mut rebuild = pool.begin().await.unwrap();
+	panel::store::projections::take_rebuild_lock(&mut rebuild).await.unwrap();
+
+	let events = [event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}))];
+	let signed = sign("aquafix-site", &site, &events, now());
+	let ingest = {
+		let panel = panel.clone();
+		tokio::spawn(async move { panel.ingest(signed.batch(), now()).await.map(|v| outcomes(&v)) })
+	};
+	tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+	assert!(!ingest.is_finished(), "ingest went ahead of the rebuild");
+	assert_eq!(count(&pool, "SELECT count(*) FROM events").await, 0);
+	rebuild.commit().await.unwrap();
+	assert_eq!(ingest.await.unwrap().unwrap(), [ACCEPTED]);
+}
+
+#[test]
+fn a_new_sources_secret_does_not_print() {
+	let s = panel::NewSource {
+		key_id: "aquafix-site".into(),
+		secret: zeroize::Zeroizing::new("0123456789abcdef-xyzzy".into()),
+	};
+	let shown = format!("{s:?}");
+	assert!(!shown.contains("xyzzy") && shown.contains("<redacted>"), "{shown}");
+}

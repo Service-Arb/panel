@@ -158,6 +158,32 @@ async fn upsert_lead(conn: &mut PgConnection, s: &LeadState) -> eyre::Result<()>
 	Ok(())
 }
 
+/// The advisory lock that orders ingest against a rebuild: every ingest transaction holds it
+/// shared, a rebuild holds it exclusively from before it empties the projections until it
+/// commits. So a rebuild waits for the events being journaled to land, and ingest waits for
+/// the rebuild — neither judges the journal while the other is halfway through it. The table
+/// locks of `TRUNCATE` alone would not do: an ingest could read a lead's events before the
+/// rebuild re-judged them and write its row after.
+const REBUILD_LOCK: &str = "sa-panel/projections/rebuild";
+
+pub async fn share_rebuild_lock(conn: &mut PgConnection) -> eyre::Result<()> {
+	sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+		.bind(REBUILD_LOCK)
+		.execute(&mut *conn)
+		.await
+		.wrap_err("sharing the rebuild lock")?;
+	Ok(())
+}
+
+pub async fn take_rebuild_lock(conn: &mut PgConnection) -> eyre::Result<()> {
+	sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+		.bind(REBUILD_LOCK)
+		.execute(&mut *conn)
+		.await
+		.wrap_err("taking the rebuild lock")?;
+	Ok(())
+}
+
 /// Empties the projections, for a rebuild. Takes their locks until the transaction ends,
 /// so ingest waits rather than writing into a half-built state.
 pub async fn clear(conn: &mut PgConnection) -> eyre::Result<()> {

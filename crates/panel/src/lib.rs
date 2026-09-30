@@ -88,10 +88,15 @@ pub struct SignedBatch<'a> {
 }
 
 /// A new source's credentials; the secret is shown once and never again.
-#[derive(Debug)]
 pub struct NewSource {
 	pub key_id: String,
 	pub secret: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for NewSource {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("NewSource").field("key_id", &self.key_id).field("secret", &"<redacted>").finish()
+	}
 }
 
 /// What a rebuild did.
@@ -224,6 +229,7 @@ impl Panel {
 			None => None,
 		};
 		let mut tx = self.store.pool().begin().await.wrap_err("beginning a transaction")?;
+		projections::share_rebuild_lock(&mut tx).await?;
 		let inserted = events::insert(
 			&mut tx,
 			&NewEvent {
@@ -281,6 +287,7 @@ impl Panel {
 	pub async fn rebuild_projections(&self) -> eyre::Result<Rebuilt> {
 		const PAGE: i64 = 1000;
 		let mut tx = self.store.pool().begin().await.wrap_err("beginning the rebuild")?;
+		projections::take_rebuild_lock(&mut tx).await?;
 		projections::clear(&mut tx).await?;
 		let mut done = Rebuilt::default();
 		let mut leads: BTreeSet<(BrandId, LeadId)> = BTreeSet::new();

@@ -36,6 +36,7 @@ zeroize.workspace = true
 panel = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 uuid = { workspace = true, features = ["v7"] }
+zeroize.workspace = true
 
 [lints]
 workspace = true

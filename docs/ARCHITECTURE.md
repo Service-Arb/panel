@@ -93,7 +93,9 @@ registry: type@version known?
   recomputes its row from all its registered events (`panel_core::lead::fold`, ordered by
   `(occurred_at, id)`, so arrival order does not matter), under a per-lead advisory lock. The
   rebuild runs the same code in one transaction, so it lands on the same state; the tests
-  check that it does. Calls and payments are one row per event.
+  check that it does. Ingest and the rebuild do not interleave: every ingest transaction
+  holds an advisory lock shared, the rebuild holds it exclusively from before it empties the
+  projections until it commits. Calls and payments are one row per event.
 - **Stages move forward** through created → contacted → quoted → won → completed → paid; a
   `lead.lost` moves a lead to `lost` from anywhere, and later progress reopens it. Stage times
   are when each stage was first reached.
