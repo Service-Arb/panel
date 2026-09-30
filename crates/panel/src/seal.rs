@@ -17,6 +17,7 @@ use chacha20poly1305::{
 	Key, XChaCha20Poly1305, XNonce,
 	aead::{Aead, KeyInit, Payload},
 };
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -60,6 +61,22 @@ impl DataKey {
 		h.update(b"sa-panel/data-key-fp/v1");
 		h.update(self.key.as_slice());
 		h.finalize().into()
+	}
+
+	/// A MAC of an event's canonical form, under a key derived from this one. The journal
+	/// keeps it to tell a resent event from another under the same id; a plain hash would
+	/// let anyone with a dump confirm a guess at the PII in it (a phone number has few
+	/// enough possibilities to try them all).
+	pub fn content_mac(&self, canonical: &[u8]) -> [u8; 32] {
+		let mut derived = Zeroizing::new([0u8; 32]);
+		let mut h = Sha256::new();
+		h.update(b"sa-panel/content-mac/v1");
+		h.update(self.key.as_slice());
+		derived.copy_from_slice(&h.finalize());
+		// HMAC takes a key of any length, so this cannot fail.
+		let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(derived.as_slice()).expect("HMAC accepts any key length");
+		mac.update(canonical);
+		mac.finalize().into_bytes().into()
 	}
 
 	/// `nonce(24) || ciphertext+tag`.
@@ -120,6 +137,16 @@ mod tests {
 		assert_ne!(key.fingerprint(), other.fingerprint());
 		assert_ne!(key.seal(b"row-1", b"x").unwrap(), key.seal(b"row-1", b"x").unwrap(), "a fresh nonce each time");
 		assert!(!format!("{key:?}").contains(&hex::encode(key.key.as_slice())));
+	}
+
+	#[test]
+	fn content_macs_are_keyed() {
+		let key = DataKey::from_hex(&DataKey::generate_hex().unwrap()).unwrap();
+		let other = DataKey::from_hex(&DataKey::generate_hex().unwrap()).unwrap();
+		let plain: [u8; 32] = Sha256::digest(b"event").into();
+		assert_eq!(key.content_mac(b"event"), key.content_mac(b"event"));
+		assert_ne!(key.content_mac(b"event"), other.content_mac(b"event"));
+		assert_ne!(key.content_mac(b"event"), plain, "not a bare hash anyone can recompute");
 	}
 
 	#[test]

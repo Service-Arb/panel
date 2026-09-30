@@ -35,8 +35,10 @@ CREATE TABLE events (
 	properties jsonb NOT NULL,
 	pii_sealed bytea,
 	data_key_fp bytea CHECK (octet_length(data_key_fp) = 32),
-	-- SHA-256 of the event as received; a resend with the same id and other content is refused.
-	content_sha256 bytea NOT NULL CHECK (octet_length(content_sha256) = 32),
+	-- HMAC-SHA256 of the event in canonical form, under a key derived from PANEL_DATA_KEY: a
+	-- resend with the same id and other content is refused. Keyed, not a bare hash, so a
+	-- dump cannot confirm a guess at the PII it covers.
+	content_mac bytea NOT NULL CHECK (octet_length(content_mac) = 32),
 	-- registered: projected. unregistered: a type@version the panel does not know (yet).
 	-- invalid: a type registered after the event arrived, whose checks it fails.
 	status text NOT NULL CHECK (status IN ('registered', 'unregistered', 'invalid')),

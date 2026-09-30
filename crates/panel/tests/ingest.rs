@@ -370,7 +370,7 @@ async fn a_site_key_writes_no_operator_events() {
 		.await
 		.unwrap();
 	sqlx::query(
-		"INSERT INTO events (id, schema, type, type_version, occurred_at, received_at, source_kind, source_id, brand_id, lead_id, properties, content_sha256, status) \
+		"INSERT INTO events (id, schema, type, type_version, occurred_at, received_at, source_kind, source_id, brand_id, lead_id, properties, content_mac, status) \
 		 VALUES ($1, 'sa.funnel.v1', 'payment.received', 1, now(), now(), 'site', 'x', 'aquafix', 'L-1', '{\"billed\": 100, \"commission\": 10, \"currency\": \"EUR\"}', $2, 'registered')",
 	)
 	.bind(uuid::Uuid::now_v7())

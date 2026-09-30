@@ -14,7 +14,6 @@ use panel_core::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 /// Events in one request, at most.
 pub const MAX_BATCH: usize = 500;
@@ -27,9 +26,10 @@ pub struct Incoming {
 	pub properties: Value,
 	/// A non-empty JSON object, or none.
 	pub pii: Option<Value>,
-	/// SHA-256 of the event in canonical form: the same event sent twice, in either field
-	/// spelling or key order, hashes the same.
-	pub content_sha256: [u8; 32],
+	/// The event in canonical form: the same event sent twice, in either field spelling or
+	/// key order, reads the same. What the journal keeps of it is a MAC ([`crate::seal`]), not
+	/// this.
+	pub canonical: Vec<u8>,
 }
 
 /// The events of a request body: `{"events": [...]}`, 1 to [`MAX_BATCH`] of them. What is
@@ -72,7 +72,7 @@ pub fn decode(raw: Value, now: Timestamp) -> Result<Incoming, Invalid> {
 	if event.schema != SCHEMA {
 		return Err(Invalid::new(format!("schema is {:?}, not {SCHEMA:?}", event.schema)));
 	}
-	let content_sha256 = content_hash(&event)?;
+	let canonical = canonical(&event)?;
 	let id = parse_event_id(&event.id)?;
 	let type_key = TypeKey::parse(&event.r#type, event.type_version)?;
 	let occurred_at = event.occurred_at.as_ref().ok_or_else(|| Invalid::new("occurred_at is required"))?;
@@ -112,46 +112,46 @@ pub fn decode(raw: Value, now: Timestamp) -> Result<Incoming, Invalid> {
 		envelope,
 		properties,
 		pii,
-		content_sha256,
+		canonical,
 	})
 }
 
-fn content_hash(event: &v1::Event) -> Result<[u8; 32], Invalid> {
+fn canonical(event: &v1::Event) -> Result<Vec<u8>, Invalid> {
 	let value = serde_json::to_value(event).map_err(|e| Invalid::new(format!("event does not serialize: {e}")))?;
-	let mut h = Sha256::new();
-	write_canonical(&value, &mut h);
-	Ok(h.finalize().into())
+	let mut out = Vec::new();
+	write_canonical(&value, &mut out);
+	Ok(out)
 }
 
 /// JSON with object keys sorted at every level, whatever map the JSON library was built
 /// with (a protobuf `Struct` is a hash map, so its order is not stable across runs).
-fn write_canonical(value: &Value, h: &mut Sha256) {
+fn write_canonical(value: &Value, h: &mut Vec<u8>) {
 	match value {
 		Value::Object(map) => {
 			let mut keys: Vec<&String> = map.keys().collect();
 			keys.sort();
-			h.update(b"{");
+			h.extend_from_slice(b"{");
 			for (i, k) in keys.into_iter().enumerate() {
 				if i > 0 {
-					h.update(b",");
+					h.extend_from_slice(b",");
 				}
-				h.update(Value::String(k.clone()).to_string().as_bytes());
-				h.update(b":");
+				h.extend_from_slice(Value::String(k.clone()).to_string().as_bytes());
+				h.extend_from_slice(b":");
 				write_canonical(&map[k], h);
 			}
-			h.update(b"}");
+			h.extend_from_slice(b"}");
 		}
 		Value::Array(items) => {
-			h.update(b"[");
+			h.extend_from_slice(b"[");
 			for (i, item) in items.iter().enumerate() {
 				if i > 0 {
-					h.update(b",");
+					h.extend_from_slice(b",");
 				}
 				write_canonical(item, h);
 			}
-			h.update(b"]");
+			h.extend_from_slice(b"]");
 		}
-		scalar => h.update(scalar.to_string().as_bytes()),
+		scalar => h.extend_from_slice(scalar.to_string().as_bytes()),
 	}
 }
 
@@ -286,10 +286,10 @@ mod tests {
 			};
 			snake[k] = v.clone();
 		}
-		assert_eq!(decode(camel.clone(), now()).unwrap().content_sha256, decode(snake, now()).unwrap().content_sha256);
+		assert_eq!(decode(camel.clone(), now()).unwrap().canonical, decode(snake, now()).unwrap().canonical);
 		let mut other = camel.clone();
 		other["pii"]["phone"] = json!("+33 6 11 11 11 11");
-		assert_ne!(decode(camel, now()).unwrap().content_sha256, decode(other, now()).unwrap().content_sha256);
+		assert_ne!(decode(camel, now()).unwrap().canonical, decode(other, now()).unwrap().canonical);
 	}
 
 	#[test]

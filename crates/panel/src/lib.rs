@@ -227,6 +227,7 @@ impl Panel {
 				key_id,
 				received_at: now,
 				status,
+				content_mac: self.key.content_mac(&incoming.canonical),
 				pii,
 			},
 		)

@@ -58,6 +58,8 @@ pub struct NewEvent<'a> {
 	pub key_id: Option<&'a str>,
 	pub received_at: Timestamp,
 	pub status: Status,
+	/// The event's content MAC ([`crate::seal::DataKey::content_mac`]).
+	pub content_mac: [u8; 32],
 	/// Sealed PII and the fingerprint of the key that sealed it.
 	pub pii: Option<(Vec<u8>, [u8; 32])>,
 }
@@ -78,7 +80,7 @@ pub async fn insert(conn: &mut PgConnection, e: &NewEvent<'_>) -> eyre::Result<I
 	let (pii_sealed, data_key_fp) = e.pii.as_ref().map(|(blob, fp)| (blob.as_slice(), fp.as_slice())).unzip();
 	let inserted = sqlx::query(
 		"INSERT INTO events (id, schema, type, type_version, occurred_at, received_at, source_kind, source_id, key_id, brand_id, location_id, lead_id, job_id, \
-		 properties, pii_sealed, data_key_fp, content_sha256, status) \
+		 properties, pii_sealed, data_key_fp, content_mac, status) \
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
 		 ON CONFLICT (id) DO NOTHING",
 	)
@@ -98,7 +100,7 @@ pub async fn insert(conn: &mut PgConnection, e: &NewEvent<'_>) -> eyre::Result<I
 	.bind(Json(&e.incoming.properties))
 	.bind(pii_sealed)
 	.bind(data_key_fp)
-	.bind(e.incoming.content_sha256.as_slice())
+	.bind(e.content_mac.as_slice())
 	.bind(e.status.as_str())
 	.execute(&mut *conn)
 	.await
@@ -107,12 +109,12 @@ pub async fn insert(conn: &mut PgConnection, e: &NewEvent<'_>) -> eyre::Result<I
 	if inserted == 1 {
 		return Ok(Inserted::New);
 	}
-	let stored: Vec<u8> = sqlx::query_scalar("SELECT content_sha256 FROM events WHERE id = $1")
+	let stored: Vec<u8> = sqlx::query_scalar("SELECT content_mac FROM events WHERE id = $1")
 		.bind(env.id.raw())
 		.fetch_one(&mut *conn)
 		.await
 		.wrap_err("reading the event an id is taken by")?;
-	Ok(if stored == e.incoming.content_sha256 { Inserted::Duplicate } else { Inserted::Conflict })
+	Ok(if stored == e.content_mac { Inserted::Duplicate } else { Inserted::Conflict })
 }
 
 /// An event as the journal holds it, less its PII.

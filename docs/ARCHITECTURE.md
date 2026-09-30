@@ -64,8 +64,9 @@ registry: type@version known?
   `TRUNCATE`, and any `UPDATE` but of `status`/`status_reason`, which the rebuild rewrites when
   the registry has changed its mind about an event. Everything else is derived from it.
 - **An event is its id.** The source issues a UUIDv7; the journal is keyed by it. A resend is
-  `duplicate`; the same id with other content (compared as a SHA-256 of the event in canonical
-  form, so field spelling and key order do not matter) is `rejected`. Delivery is at-least-once
+  `duplicate`; the same id with other content (compared as a MAC of the event in canonical
+  form, so field spelling and key order do not matter, under a key derived from
+  `PANEL_DATA_KEY`, so a dump cannot confirm a guess at the PII it covers) is `rejected`. Delivery is at-least-once
   on the sources' side, exactly-once in the journal.
 - **Unknown types are kept, not dropped** (§3.2): stored as `unregistered`, not projected, and
   judged again by `panel rebuild-projections` — which is how a type registered later picks up
