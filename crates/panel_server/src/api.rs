@@ -279,6 +279,8 @@ async fn leads(State(panel): State<Panel>, Extension(caller): Extension<Caller>,
 		brand: q.brand.as_deref().map(BrandId::parse).transpose()?,
 		location: q.location.as_deref().map(LocationId::parse).transpose()?,
 		overdue: q.overdue.unwrap_or(false),
+		created_from: None,
+		created_before: None,
 		after: q.cursor.as_deref().map(cursor_decode).transpose()?,
 		limit: q.limit.unwrap_or(50),
 	};

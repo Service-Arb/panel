@@ -5,7 +5,7 @@
 use jiff::{SignedDuration, Timestamp};
 use panel::{
 	Outcome, Panel,
-	operator::{Actor, LeadQuery, NewLead, Pii},
+	operator::{Actor, FunnelBy, LeadQuery, NewLead, Payment, Pii},
 	seal::DataKey,
 	session::{RefreshError, Refresher, SessionKey, Tokens},
 	store::Store,
@@ -177,6 +177,16 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		assert!(panel.lead_card(&brand, &lead, Pii::Reveal, now).await.unwrap().is_some());
 		let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
 		assert_eq!(panel.funnel(today, today, None).await.unwrap().manual, 2);
+		let payment = Payment {
+			billed: 100,
+			commission: 10,
+			currency: "EUR".into(),
+		};
+		panel.record_payment(by, &brand, &lead, payment, now).await.unwrap();
+		let slices = panel.funnel_slices(today, today, None, FunnelBy::Location).await.unwrap();
+		assert_eq!(slices[0].payments[0].billed, 100);
+		assert_eq!(panel.places().await.unwrap().len(), 1);
+		assert_eq!(panel.lead_counts(Some(&brand), None, now).await.unwrap().overdue, 0);
 		assert!(panel.close_session(&SessionKey::of_cookie(&opened.cookie).unwrap()).await.unwrap());
 
 		// A rotation (its lease, its guarded write), a redeemed state, a sign-out everywhere.

@@ -3,7 +3,7 @@
 
 use jiff::{SignedDuration, Timestamp, civil::date};
 use panel::{
-	operator::{ActionError, Actor, CallOutcome, LeadQuery, NewLead, Payment, Pii, StageMove},
+	operator::{ActionError, Actor, CallOutcome, FunnelBy, LeadQuery, NewLead, Payment, Pii, StageMove},
 	testing::{TestDb, event, panel, sign},
 };
 use panel_core::{
@@ -204,4 +204,106 @@ async fn lists_filters_pages_and_the_sla() {
 	assert_eq!((totals.leads, totals.contacted, totals.manual), (3, 1, 0));
 	let none = panel.funnel(date(2026, 9, 1), date(2026, 9, 29), Some(&brand())).await.unwrap();
 	assert_eq!(none.leads, 0);
+}
+
+#[tokio::test]
+async fn slices_places_payments_and_counts() {
+	let Some(db) = TestDb::create().await else { return };
+	let panel = panel(&db).await;
+	let site = panel.add_source("aquafix-site", SourceKind::Site, [brand()].into()).await.unwrap().unwrap();
+	let at = |mins: i64| now() + SignedDuration::from_mins(mins);
+	let yesterday = now() - SignedDuration::from_hours(24);
+	let subject = |id: &str, location: Option<&str>| {
+		let mut s = json!({"brandId": "aquafix", "leadId": id});
+		if let Some(l) = location {
+			s["locationId"] = json!(l);
+		}
+		s
+	};
+	let form = json!({"channel": "form"});
+	let events = [
+		event("lead.created", yesterday, "site", subject("L-0", Some("paris-11")), form.clone()),
+		event("lead.created", at(0), "site", subject("L-1", Some("paris-11")), form.clone()),
+		event("lead.created", at(1), "site", subject("L-2", Some("lyon-2")), form.clone()),
+		event("lead.created", at(2), "site", subject("L-3", None), form.clone()),
+	];
+	panel.ingest(sign("aquafix-site", &site.secret, &events, at(3)).batch(), at(3)).await.unwrap();
+	let by = Actor(Uuid::now_v7());
+	let vifnet = BrandId::parse("vifnet").unwrap();
+	let new = NewLead {
+		brand: vifnet.clone(),
+		location: LocationId::parse("apex").unwrap(),
+		need: "a boiler".into(),
+		phone: None,
+	};
+	panel.create_lead(by, new, at(4)).await.unwrap();
+	let lead = |id: &str| LeadId::parse(id).unwrap();
+	let pay = |billed, commission, currency: &str| Payment {
+		billed,
+		commission,
+		currency: currency.into(),
+	};
+	panel.record_payment(by, &brand(), &lead("L-1"), pay(12_000, 1_800, "EUR"), at(5)).await.unwrap();
+	panel.record_payment(by, &brand(), &lead("L-1"), pay(3_000, 450, "EUR"), at(6)).await.unwrap();
+	panel.record_payment(by, &brand(), &lead("L-2"), pay(5_000, 500, "USD"), at(7)).await.unwrap();
+	panel.record_payment(by, &brand(), &lead("L-0"), pay(9_999, 1, "EUR"), at(8)).await.unwrap();
+	panel.move_lead(by, &brand(), &lead("L-3"), StageMove::Contacted { channel: None }, at(9)).await.unwrap();
+
+	let today = date(2026, 9, 30);
+	let all = panel.funnel_slices(today, today, None, FunnelBy::All).await.unwrap();
+	assert_eq!(all.len(), 1);
+	assert_eq!((all[0].brand.as_deref(), all[0].location.as_deref()), (None, None));
+	assert_eq!((all[0].totals.leads, all[0].totals.paid, all[0].totals.contacted), (4, 2, 1));
+	let sums: Vec<(&str, i64, i64, u64)> = all[0].payments.iter().map(|p| (p.currency.as_str(), p.billed, p.commission, p.payments)).collect();
+	assert_eq!(sums, [("EUR", 15_000, 2_250, 2), ("USD", 5_000, 500, 1)], "yesterday's lead is outside, whenever it was paid");
+
+	let slices = panel.funnel_slices(today, today, None, FunnelBy::Location).await.unwrap();
+	let keys: Vec<(Option<&str>, Option<&str>, u64, usize)> = slices.iter().map(|s| (s.brand.as_deref(), s.location.as_deref(), s.totals.leads, s.payments.len())).collect();
+	assert_eq!(
+		keys,
+		[
+			(Some("aquafix"), Some("lyon-2"), 1, 1),
+			(Some("aquafix"), Some("paris-11"), 1, 1),
+			(Some("aquafix"), None, 1, 0),
+			(Some("vifnet"), Some("apex"), 1, 0)
+		]
+	);
+	assert_eq!(slices[1].payments[0].billed, 15_000);
+	let two_days = panel.funnel_slices(date(2026, 9, 29), today, Some(&brand()), FunnelBy::Location).await.unwrap();
+	let paris = two_days.iter().find(|s| s.location.as_deref() == Some("paris-11")).unwrap();
+	assert_eq!((paris.totals.leads, paris.payments[0].billed, paris.payments[0].payments), (2, 24_999, 3));
+
+	let empty = date(2026, 9, 1);
+	let none = panel.funnel_slices(empty, empty, None, FunnelBy::All).await.unwrap();
+	assert_eq!((none.len(), none[0].totals.leads, none[0].payments.len()), (1, 0, 0), "zeros, not nothing");
+	assert!(panel.funnel_slices(empty, empty, None, FunnelBy::Location).await.unwrap().is_empty());
+	let only_vifnet = panel.funnel_slices(today, today, Some(&vifnet), FunnelBy::All).await.unwrap();
+	assert_eq!((only_vifnet[0].totals.leads, only_vifnet[0].payments.len()), (1, 0));
+
+	let places = panel.places().await.unwrap();
+	let got: Vec<(&str, &str, Option<Timestamp>)> = places.iter().map(|p| (p.brand_id.as_str(), p.location_id.as_str(), p.last_lead_at)).collect();
+	assert_eq!(
+		got,
+		[("aquafix", "lyon-2", Some(at(1))), ("aquafix", "paris-11", Some(at(0))), ("vifnet", "apex", Some(at(4)))],
+		"no place for a lead that names none"
+	);
+
+	let counts = panel.lead_counts(None, None, at(45)).await.unwrap();
+	let n = |stage| counts.stages.iter().find(|(s, _)| *s == stage).unwrap().1;
+	assert_eq!(counts.stages.len(), Stage::ALL.len(), "every stage, zero included");
+	assert_eq!((n(Stage::Created), n(Stage::Contacted), n(Stage::Paid), n(Stage::Lost)), (1, 1, 3, 0));
+	assert_eq!(counts.overdue, 1, "vifnet's, 41 minutes without contact");
+	let aquafix = panel.lead_counts(Some(&brand()), None, at(45)).await.unwrap();
+	assert_eq!((aquafix.stages.iter().map(|(_, n)| n).sum::<u64>(), aquafix.overdue), (4, 0));
+	let paris = panel.lead_counts(Some(&brand()), Some(&LocationId::parse("paris-11").unwrap()), at(45)).await.unwrap();
+	assert_eq!(paris.stages.iter().map(|(_, n)| n).sum::<u64>(), 2);
+
+	let window = LeadQuery {
+		created_from: Some(at(1)),
+		created_before: Some(at(4)),
+		limit: 50,
+		..LeadQuery::default()
+	};
+	let ids: Vec<String> = panel.leads(&window, Pii::Withhold, at(45)).await.unwrap().leads.into_iter().map(|l| l.row.lead_id).collect();
+	assert_eq!(ids, ["L-3", "L-2"], "from included, before excluded");
 }

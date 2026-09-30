@@ -16,6 +16,7 @@ use panel_core::{
 	fact::bounded,
 	funnel::{self, Totals},
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
+	lead::Stage,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -26,7 +27,7 @@ use crate::{
 	seal::pii_aad,
 	store::{
 		events::Status,
-		reads::{self, EventRow, LeadFilter, LeadRow, Sealed},
+		reads::{self, EventRow, LeadFilter, LeadRow, PaymentSum, PlaceRow, Sealed},
 	},
 	wire::{self, Checked},
 };
@@ -163,13 +164,47 @@ pub struct LeadPage {
 /// Which leads to list, as the operator asks.
 #[derive(Clone, Debug, Default)]
 pub struct LeadQuery {
-	pub stage: Option<panel_core::lead::Stage>,
+	pub stage: Option<Stage>,
 	pub brand: Option<BrandId>,
 	pub location: Option<LocationId>,
 	/// Only those waiting for their first contact past [`funnel::CONTACT_SLA`].
 	pub overdue: bool,
+	/// Only those created at or after this.
+	pub created_from: Option<Timestamp>,
+	/// Only those created before this.
+	pub created_before: Option<Timestamp>,
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: u32,
+}
+
+/// How the funnel is cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FunnelBy {
+	/// One slice for everything.
+	All,
+	/// A slice per brand's location; leads without one make a slice of their own.
+	Location,
+}
+
+/// One slice of the funnel: its totals and what its leads were paid, by currency.
+#[derive(Clone, Debug)]
+pub struct FunnelSlice {
+	/// `None` for [`FunnelBy::All`].
+	pub brand: Option<String>,
+	/// `None` for [`FunnelBy::All`], and for the leads that name no location.
+	pub location: Option<String>,
+	pub totals: Totals,
+	/// Per currency, ordered by it; never converted into one another.
+	pub payments: Vec<PaymentSum>,
+}
+
+/// How many leads are at each stage, for the list's segments.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeadCounts {
+	/// Every stage, in funnel order, zero included.
+	pub stages: Vec<(Stage, u64)>,
+	/// Of those at `created`, the ones waiting for their first contact past [`funnel::CONTACT_SLA`].
+	pub overdue: u64,
 }
 
 /// A page is at most this many leads.
@@ -404,6 +439,8 @@ impl Panel {
 			brand: q.brand.clone(),
 			location: q.location.clone(),
 			waiting_since_before: q.overdue.then(|| now - funnel::CONTACT_SLA),
+			created_from: q.created_from,
+			created_before: q.created_before,
 			after: q.after.clone(),
 			limit: i64::from(limit) + 1,
 		};
@@ -439,9 +476,62 @@ impl Panel {
 	/// The personal funnel over the leads that came in from `from` to `to` (UTC days, both
 	/// included).
 	pub async fn funnel(&self, from: Date, to: Date, brand: Option<&BrandId>) -> eyre::Result<Totals> {
-		let day = |d: Date| NaiveDate::from_ymd_opt(i32::from(d.year()), u32::from(d.month().unsigned_abs()), u32::from(d.day().unsigned_abs())).ok_or_else(|| eyre::eyre!("date {d}"));
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
-		reads::funnel(&mut conn, day(from)?, day(to)?, brand).await
+		reads::funnel(&mut conn, pg_day(from)?, pg_day(to)?, brand).await
+	}
+
+	/// [`Self::funnel`] cut `by`, each slice with the payments of its leads (whenever they were
+	/// paid). With [`FunnelBy::All`], a single slice, zeros included.
+	pub async fn funnel_slices(&self, from: Date, to: Date, brand: Option<&BrandId>, by: FunnelBy) -> eyre::Result<Vec<FunnelSlice>> {
+		let by_location = by == FunnelBy::Location;
+		let (from, to) = (pg_day(from)?, pg_day(to)?);
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+		let rows = reads::funnel_rows(&mut conn, from, to, brand, by_location).await?;
+		let payments = reads::funnel_payments(&mut conn, from, to, brand, by_location).await?;
+		drop(conn);
+		let mut slices: Vec<FunnelSlice> = rows
+			.into_iter()
+			.map(|r| FunnelSlice {
+				brand: r.brand_id,
+				location: r.location_id,
+				totals: r.totals,
+				payments: Vec::new(),
+			})
+			.collect();
+		if slices.is_empty() && !by_location {
+			slices.push(FunnelSlice {
+				brand: None,
+				location: None,
+				totals: Totals::default(),
+				payments: Vec::new(),
+			});
+		}
+		for p in payments {
+			// Both are over the same leads: a payment's slice is always there.
+			let slice = slices
+				.iter_mut()
+				.find(|s| s.brand == p.brand_id && s.location == p.location_id)
+				.ok_or_else(|| eyre::eyre!("payments for {:?}/{:?} outside the funnel", p.brand_id, p.location_id))?;
+			slice.payments.push(p);
+		}
+		Ok(slices)
+	}
+
+	/// Every location a lead has named, by brand, with its newest lead.
+	pub async fn places(&self) -> eyre::Result<Vec<PlaceRow>> {
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+		reads::places(&mut conn).await
+	}
+
+	/// How many leads are at each stage, for one brand, location, both or neither.
+	pub async fn lead_counts(&self, brand: Option<&BrandId>, location: Option<&LocationId>, now: Timestamp) -> eyre::Result<LeadCounts> {
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+		let (counted, overdue) = reads::stage_counts(&mut conn, brand, location, now - funnel::CONTACT_SLA).await?;
+		let stages = Stage::ALL
+			.into_iter()
+			.map(|stage| (stage, counted.iter().find(|(s, _)| *s == stage).map_or(0, |(_, n)| *n)))
+			.collect();
+		Ok(LeadCounts { stages, overdue })
 	}
 
 	fn lead_view(&self, row: LeadRow, pii: Pii, now: Timestamp) -> eyre::Result<LeadView> {
@@ -463,6 +553,11 @@ impl Panel {
 		let plain = self.key.open(&pii_aad(id), blob).wrap_err_with(|| format!("opening the PII of event {id}"))?;
 		Ok(Some(serde_json::from_slice(&plain).wrap_err("stored PII is not JSON")?))
 	}
+}
+
+/// A civil date as the database's.
+fn pg_day(d: Date) -> eyre::Result<NaiveDate> {
+	NaiveDate::from_ymd_opt(i32::from(d.year()), u32::from(d.month().unsigned_abs()), u32::from(d.day().unsigned_abs())).ok_or_else(|| eyre::eyre!("date {d}"))
 }
 
 /// The subject of an action on a lead: its brand and id, and its location and job as the
