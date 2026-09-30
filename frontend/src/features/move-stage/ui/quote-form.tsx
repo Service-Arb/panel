@@ -1,11 +1,12 @@
 "use client";
 
-import { Button, Field, FieldLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@evinvest/uikit";
+import { Button, Field, FieldLabel, Input } from "@evinvest/uikit";
 import { useId, useState } from "react";
 
 import type { StageMove } from "@/entities/lead";
-import { CURRENCIES, DEFAULT_CURRENCY } from "@/shared/config/money";
+import { DEFAULT_CURRENCY } from "@/shared/config/money";
 import { useT } from "@/shared/i18n";
+import { CurrencyField } from "@/shared/ui/currency-field";
 import { parseMoney } from "@/shared/lib/format";
 import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
 
@@ -33,21 +34,7 @@ export function QuoteForm({ busy, onSubmit, onCancel }: { busy: boolean; onSubmi
           <FieldLabel htmlFor={`${id}-amount`}>{t("move.amount")}</FieldLabel>
           <Input id={`${id}-amount`} size={size} inputMode="decimal" value={amount} aria-invalid={invalid} onChange={(e) => setAmount(e.target.value)} />
         </Field>
-        <Field className="flex w-28 flex-col gap-1">
-          <FieldLabel htmlFor={`${id}-currency`}>{t("move.currency")}</FieldLabel>
-          <Select value={currency} onValueChange={setCurrency}>
-            <SelectTrigger id={`${id}-currency`} size={size} className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {CURRENCIES.map((c) => (
-                <SelectItem key={c} value={c}>
-                  {c}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
+        <CurrencyField className="w-28" label={t("move.currency")} value={currency} onChange={setCurrency} />
       </div>
       <FormButtons busy={busy || invalid} onCancel={onCancel} />
     </form>

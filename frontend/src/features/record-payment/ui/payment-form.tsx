@@ -1,11 +1,12 @@
 "use client";
 
-import { Button, Field, FieldError, FieldLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, toast } from "@evinvest/uikit";
+import { Button, Field, FieldError, FieldLabel, Input, toast } from "@evinvest/uikit";
 import { useId, useState } from "react";
 
 import { type Lead, recordPayment, refOf } from "@/entities/lead";
-import { CURRENCIES, DEFAULT_CURRENCY } from "@/shared/config/money";
+import { DEFAULT_CURRENCY } from "@/shared/config/money";
 import { useT } from "@/shared/i18n";
+import { CurrencyField } from "@/shared/ui/currency-field";
 import { notifyFailure } from "@/shared/ui/notify";
 import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
 
@@ -57,21 +58,7 @@ export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void
           <FieldLabel htmlFor={`${id}-commission`}>{t("payment.commission")}</FieldLabel>
           <Input id={`${id}-commission`} size={size} inputMode="decimal" aria-invalid={touched && !payment} value={commission} onChange={(e) => setCommission(e.target.value)} />
         </Field>
-        <Field className="col-span-2 flex flex-col gap-1 md:col-span-1">
-          <FieldLabel htmlFor={`${id}-currency`}>{t("payment.currency")}</FieldLabel>
-          <Select value={currency} onValueChange={setCurrency}>
-            <SelectTrigger id={`${id}-currency`} size={size} className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {CURRENCIES.map((c) => (
-                <SelectItem key={c} value={c}>
-                  {c}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
+        <CurrencyField className="col-span-2 md:col-span-1" label={t("payment.currency")} value={currency} onChange={setCurrency} />
       </div>
       {touched && !payment && <FieldError>{t("payment.invalid")}</FieldError>}
       <Button type="submit" className={`self-start ${TOUCH_TARGET}`} disabled={busy || !payment}>
