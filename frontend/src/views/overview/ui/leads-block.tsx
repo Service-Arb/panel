@@ -26,7 +26,7 @@ export function LeadsBlock({ funnel }: { funnel: Funnel }) {
           {funnel.stages.map((step) => {
             const hot = step.stage === worst;
             return (
-              <li key={step.stage} className={cn("grid grid-cols-[1fr_auto_minmax(7rem,auto)] items-center gap-3 py-2 text-sm", hot && "text-ink")}>
+              <li key={step.stage} className={cn("grid grid-cols-(--grid-funnel-row) items-center gap-3 py-2 text-sm", hot && "text-ink")}>
                 <span className={cn(hot ? "font-medium text-ink" : "text-ink-mid")}>{t(`funnel.stage.${step.stage}`)}</span>
                 <span className="text-right font-medium tabular-nums text-ink">{step.reached}</span>
                 <span className="flex items-center justify-end gap-2 text-right tabular-nums text-ink-soft">

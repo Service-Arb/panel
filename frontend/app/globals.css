@@ -7,6 +7,11 @@
 :root {
   /* The phone's bottom bar, less the home indicator it sits above (added where used). */
   --panel-tabbar-h: 3.5rem;
+  /* Grid tracks with no step on the spacing scale, used as grid-cols-(--name). */
+  --grid-source-form: 1fr 12rem 1fr auto;
+  --grid-payment: 1fr 1fr 7rem;
+  --grid-funnel-row: 1fr auto auto;
+  --grid-place-step: 6rem 1fr auto;
 }
 
 html,

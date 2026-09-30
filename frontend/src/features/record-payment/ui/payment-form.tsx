@@ -45,7 +45,7 @@ export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void
         void submit();
       }}
     >
-      <div className="grid grid-cols-[1fr_1fr_7rem] gap-2">
+      <div className="grid grid-cols-(--grid-payment) gap-2">
         <Field className="flex flex-col gap-1">
           <FieldLabel htmlFor={`${id}-billed`}>{t("payment.billed")}</FieldLabel>
           <Input id={`${id}-billed`} inputMode="decimal" value={billed} onChange={(e) => setBilled(e.target.value)} />

@@ -28,7 +28,7 @@ export function PlaceCard({ row }: { row: PlaceRow }) {
         {STEPS.map(({ key, of }) => {
           const n = row[of];
           return (
-            <div key={key} className="grid grid-cols-[6rem_1fr_auto] items-center gap-2 text-sm">
+            <div key={key} className="grid grid-cols-(--grid-place-step) items-center gap-2 text-sm">
               <span className="text-ink-mid">{t(key)}</span>
               <span className="h-1.5 rounded-full bg-muted" aria-hidden>
                 <span className="block h-full rounded-full bg-primary-ink" style={{ width: `${row.leads ? (n / row.leads) * 100 : 0}%` }} />
