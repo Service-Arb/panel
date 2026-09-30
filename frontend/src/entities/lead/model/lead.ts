@@ -1,0 +1,117 @@
+import { type Infer, arrayOf, bool, nullable, num, object, oneOf, record, str } from "@/shared/lib/parse";
+
+/** `panel_core::lead::Stage`, in its order; `lost` can be reached from any of them. */
+export const STAGES = ["created", "contacted", "quoted", "won", "completed", "paid", "lost"] as const;
+export type Stage = (typeof STAGES)[number];
+
+const slaParser = object({ waiting_since: str, waiting_seconds: num, overdue: bool });
+
+export const leadParser = object({
+  brand: str,
+  lead_id: str,
+  location: nullable(str),
+  job_id: nullable(str),
+  stage: oneOf(STAGES),
+  channel: nullable(str),
+  manual: bool,
+  created_at: nullable(str),
+  contacted_at: nullable(str),
+  quoted_at: nullable(str),
+  won_at: nullable(str),
+  completed_at: nullable(str),
+  paid_at: nullable(str),
+  lost_at: nullable(str),
+  lost_reason: nullable(str),
+  last_event_at: str,
+  /** Set while the lead waits for its first contact; overdue after 30 minutes. */
+  sla: nullable(slaParser),
+  /** What the customer left, for the roles that see it. */
+  pii: nullable(record),
+});
+export type Lead = Infer<typeof leadParser>;
+
+export const leadEventParser = object({
+  id: str,
+  type: str,
+  type_version: num,
+  occurred_at: str,
+  received_at: str,
+  source_kind: str,
+  source_id: str,
+  manual: bool,
+  job_id: nullable(str),
+  status: str,
+  status_reason: nullable(str),
+  properties: record,
+  pii: nullable(record),
+});
+export type LeadEvent = Infer<typeof leadEventParser>;
+
+export const leadPageParser = object({ leads: arrayOf(leadParser), next_cursor: nullable(str) });
+export type LeadPage = Infer<typeof leadPageParser>;
+
+export const leadCardParser = object({ lead: leadParser, events: arrayOf(leadEventParser) });
+export type LeadCard = Infer<typeof leadCardParser>;
+
+/** A lead's address in the API and in the page URL: `brand/lead`. */
+export interface LeadRef {
+  brand: string;
+  lead: string;
+}
+
+export function refOf(lead: Pick<Lead, "brand" | "lead_id">): LeadRef {
+  return { brand: lead.brand, lead: lead.lead_id };
+}
+
+export function encodeRef(ref: LeadRef): string {
+  return `${ref.brand}/${ref.lead}`;
+}
+
+export function decodeRef(raw: string | null): LeadRef | null {
+  if (!raw) return null;
+  const at = raw.indexOf("/");
+  if (at <= 0 || at === raw.length - 1) return null;
+  return { brand: raw.slice(0, at), lead: raw.slice(at + 1) };
+}
+
+export function leadPath(ref: LeadRef): string {
+  return `/api/v1/leads/${encodeURIComponent(ref.brand)}/${encodeURIComponent(ref.lead)}`;
+}
+
+/** What the customer left, the known fields picked out as text. */
+export interface Contact {
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  need: string | null;
+}
+
+export function contactOf(pii: Record<string, unknown> | null): Contact {
+  const text = (k: string) => {
+    const v = pii?.[k];
+    return typeof v === "string" && v.trim() !== "" ? v : null;
+  };
+  return { name: text("name"), phone: text("phone"), email: text("email"), need: text("need") };
+}
+
+/**
+ * Whether a lead reached a stage, by the stage times the projection keeps (a
+ * lead lost after a quote did reach "quoted"). The same rule the backend's
+ * funnel counts by.
+ */
+export function reached(lead: Lead, stage: Exclude<Stage, "lost">): boolean {
+  switch (stage) {
+    case "created":
+      return true;
+    case "contacted":
+      return lead.contacted_at !== null || reached(lead, "quoted");
+    case "quoted":
+      return lead.quoted_at !== null || reached(lead, "won");
+    case "won":
+      return lead.won_at !== null || reached(lead, "completed");
+    case "completed":
+      return lead.completed_at !== null || reached(lead, "paid");
+    case "paid":
+      return lead.paid_at !== null;
+  }
+}
