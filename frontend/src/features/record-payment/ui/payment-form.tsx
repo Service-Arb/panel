@@ -47,7 +47,8 @@ export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void
         void submit();
       }}
     >
-      <div className="grid grid-cols-(--grid-payment) gap-2">
+      {/* Two amounts side by side and the currency under them on a phone: three columns of 360px squeeze the labels onto two lines and the inputs out of line. */}
+      <div className="grid grid-cols-2 items-end gap-2 md:grid-cols-(--grid-payment)">
         <Field className="flex flex-col gap-1">
           <FieldLabel htmlFor={`${id}-billed`}>{t("payment.billed")}</FieldLabel>
           <Input id={`${id}-billed`} size={size} inputMode="decimal" aria-invalid={touched && !payment} value={billed} onChange={(e) => setBilled(e.target.value)} />
@@ -56,7 +57,7 @@ export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void
           <FieldLabel htmlFor={`${id}-commission`}>{t("payment.commission")}</FieldLabel>
           <Input id={`${id}-commission`} size={size} inputMode="decimal" aria-invalid={touched && !payment} value={commission} onChange={(e) => setCommission(e.target.value)} />
         </Field>
-        <Field className="flex flex-col gap-1">
+        <Field className="col-span-2 flex flex-col gap-1 md:col-span-1">
           <FieldLabel htmlFor={`${id}-currency`}>{t("payment.currency")}</FieldLabel>
           <Select value={currency} onValueChange={setCurrency}>
             <SelectTrigger id={`${id}-currency`} size={size} className="w-full">
