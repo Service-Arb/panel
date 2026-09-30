@@ -74,21 +74,39 @@ cookies; the browser never holds a concierge token.
 ```text
 GET /auth/login      state + PKCE verifier, sealed into sa_prelogin (10 min)
                      → 302 <concierge>/api/auth/authorize?client_id=sa&redirect_uri=…&state&code_challenge
-GET /auth/callback   state = the cookie's (constant time), else 400 and the code is never
-                     presented; ExchangeCode(code, redirect_uri, verifier, client secret)
-                     → a session row (tokens sealed under PANEL_DATA_KEY, keyed by the hash of
-                     a random id) → sa_session (HttpOnly) + sa_csrf → 303 /
+GET /auth/callback   state = the cookie's (constant time), and not redeemed before
+                     (consumed_states), else 400 and the code is never presented;
+                     ExchangeCode(code, redirect_uri, verifier, client secret); the browser's
+                     previous session, if any, closed → a session row (tokens sealed under
+                     PANEL_DATA_KEY, keyed by the hash of a random id) → sa_session (HttpOnly)
+                     + sa_csrf → 303 /
 /api/v1/*            not GET: x-sa-csrf must equal sa_csrf; the session (access token rotated
-                     under a row lock when within 30 s of expiry); GetMe (cached ≤ 60 s per
-                     session) → the role, else 401 (cookies cleared) / 403 / 503
-POST /auth/logout    CSRF; the session row is deleted
+                     when within 30 s of expiry, see below); GetMe (cached ≤ 60 s per session,
+                     asked afresh for POST/DELETE /sources, one retry when concierge does not
+                     answer) → the role, else 401 (cookies cleared) / 403 / 503
+POST /auth/logout    CSRF; every session of the user is closed
 ```
 
 - **The role** is `panel_core::role::Role::admitted`: a grant on `allocation:service_arb`
   gives its role, a global admin/owner is an admin; the higher wins. Nothing else gets in —
   concierge refuses them a code already, and the panel asks again on every request.
 - **Revocation.** concierge refusing a refresh or `GetMe` closes the session here; concierge
-  unreachable is a 503 and keeps it. A revoked grant is seen within the 60 s of the cache.
+  unreachable is a 503 and keeps it. A scope revoked at concierge is seen within the 60 s of
+  the cache (at once by the source-key mutations). Signing out of evinvest.ltd revokes the
+  concierge token family: the panel's session ends at its next rotation, so within the
+  access token's lifetime.
+- **Rotation, a refresh token presented once.** No pool connection is held while concierge
+  is asked. In one process, a single flight per session: the others wait and find the fresh
+  row. Across replicas, a lease on the row (`sessions.rotating_until`, taken by one
+  conditional UPDATE, 15 s — longer than a call to concierge): only its holder asks, the
+  others poll the row for up to 6 s, then answer 503; a lease whose holder died lapses and is
+  taken over. The rotated pair is written only if the row still has the pair the rotation
+  started from. If the holder's answer is lost after concierge rotated, the next rotation
+  presents a spent token and concierge closes the family: it fails closed.
+- **Bounded.** `/auth/*`: at most 8 at once (else 503), 10 s each. `/api/v1`: 32, 15 s. The
+  pool gives a connection within 3 s or the request fails. Every answer carries
+  `X-Content-Type-Options: nosniff`; the sign-in's HTML pages a CSP of `default-src 'self';
+  frame-ancestors 'none'; base-uri 'none'; form-action 'self'`.
 - **Cookies** are `__Host-` and `Secure` when `PANEL_PUBLIC_ORIGIN` is https, bare over plain
   http (development only), all `SameSite=Lax`: the callback arrives by a top-level navigation.
 - `serve` without any of the four sign-in variables answers ingest alone; some but not all
@@ -96,9 +114,17 @@ POST /auth/logout    CSRF; the session row is deleted
 
 ## The operator API, `/api/v1`
 
-JSON; timestamps RFC 3339, money in minor units, errors `{"error": "…"}` with 400 / 403 /
-404 / 409. Writes need the CSRF header and journal an event of kind `panel` (manual), so
-they go through the same registry and projections as ingest.
+JSON; timestamps RFC 3339, money in minor units (|amount| ≤ 10^10, currency one of EUR,
+USD, GBP, AUD — checked here, not in the registry, so a rebuild never re-judges old events),
+errors `{"error": "…"}` with 400 / 403 / 404 / 409 / 503. Writes need the CSRF header and
+journal an event of kind `panel` (manual), so they go through the same registry and
+projections as ingest.
+
+`POST /leads`, `…/stage` and `…/payments` take an optional `Idempotency-Key` header (1–128
+visible ASCII). The event id is then derived from (user, action, lead, key) — shaped as a
+UUIDv7, its time field hash — and so is a new lead's id: a retry finds the first attempt in
+the journal and is answered `200` with the same body, journaling nothing. Without the key,
+every request is a new event (`201`).
 
 ```text
 GET    /me                                        {user_id, role, email, preferred_name}
@@ -121,9 +147,10 @@ GET    /funnel?from&to&brand                      days, UTC, default the last 30
                                                    lost, manual, min_sample}
 GET    /sources                     admin         {sources: [{key_id, kind, brands, created_at,
                                                   revoked_at}]}
-POST   /sources                     admin         {key_id, kind, brands} → 201 {key_id, secret}
-                                                  (shown once), 409 if taken
-DELETE /sources/{key_id}            admin         204, 404
+POST   /sources                     admin, fresh  {key_id, kind, brands} → 201 {key_id, secret}
+                                                  (shown once), 409 if taken; kind panel → 400
+                                                  (the panel writes without a key)
+DELETE /sources/{key_id}            admin, fresh  204, 404
 ```
 
 `Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`, …)
@@ -202,6 +229,9 @@ is under `min_sample` (§10.1), so the front end can only draw "n of of".
   for every sign-in, token rotation and `GetMe`; the egress policy must allow it. concierge
   must register client `sa` with redirect URI `<PANEL_PUBLIC_ORIGIN>/auth/callback` exactly,
   and hold the hash of `RP_CLIENT_SECRET_SA`.
+- **Rate-limit `/auth` per client IP at Traefik** (a `RateLimit` middleware on the
+  IngressRoute's `/auth` prefix, e.g. 10/min with a burst of 20). The panel bounds how many
+  sign-ins run at once, not who starts them; per-IP limits are the edge's.
 - **Migrate, grant, then roll out.** A release that carries a migration runs `panel migrate`
   (as a Job or an init container with `MIGRATE_DATABASE_URL`) before the new pods start, then
   `deploy/panel_app.sql` as the owner, so a new table is granted too. Both roles, `panel_app`
