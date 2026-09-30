@@ -7,13 +7,15 @@
 //! - [`lead`]: a lead's stage and stage times, folded from its facts;
 //! - [`funnel`]: shares no more precise than the data, and the contact SLA;
 //! - [`signature`]: how a source signs a batch, and how the panel checks it;
-//! - [`role`]: who may do what inside the panel.
+//! - [`role`]: who may do what inside the panel;
+//! - [`notify`]: the Telegram rules, their messages and buttons, and how a delivery is retried.
 
 pub mod event;
 pub mod fact;
 pub mod funnel;
 pub mod ids;
 pub mod lead;
+pub mod notify;
 pub mod role;
 pub mod signature;
 
