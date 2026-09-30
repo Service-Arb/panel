@@ -129,6 +129,28 @@ pub struct Account {
 	pub first_name: Option<String>,
 }
 
+/// Gives up what the outbox still owed a user, and why.
+async fn drop_pending_of_user(conn: &mut PgConnection, user: Uuid, why: &str) -> eyre::Result<()> {
+	sqlx::query(concat!(drop_pending!(), "user_id = $2"))
+		.bind(why)
+		.bind(user)
+		.execute(&mut *conn)
+		.await
+		.wrap_err_with(|| format!("dropping what a user was owed ({why})"))?;
+	Ok(())
+}
+
+/// Gives up what the outbox still owed a chat, and why.
+async fn drop_pending_of_chat(conn: &mut PgConnection, chat: i64, why: &str) -> eyre::Result<()> {
+	sqlx::query(concat!(drop_pending!(), "chat_id = $2"))
+		.bind(why)
+		.bind(chat)
+		.execute(&mut *conn)
+		.await
+		.wrap_err_with(|| format!("dropping what a chat was owed ({why})"))?;
+	Ok(())
+}
+
 /// Links `chat` to the token's user, their role confirmed as of the token's issue. The user's
 /// previous chat is let go, with what the outbox still owed it. The caller has made sure the
 /// chat is no one else's.
@@ -162,12 +184,7 @@ pub async fn link(conn: &mut PgConnection, t: &Redeemed, chat: i64, account: &Ac
 
 /// Unlinks a user's chat; `false` when there was none.
 pub async fn unlink_user(conn: &mut PgConnection, user: Uuid) -> eyre::Result<bool> {
-	sqlx::query(concat!(drop_pending!(), "user_id = $2"))
-		.bind("unlinked")
-		.bind(user)
-		.execute(&mut *conn)
-		.await
-		.wrap_err("dropping what an unlinked user was owed")?;
+	drop_pending_of_user(conn, user, "unlinked").await?;
 	let gone = sqlx::query("DELETE FROM telegram_links WHERE user_id = $1")
 		.bind(user)
 		.execute(&mut *conn)
@@ -179,12 +196,7 @@ pub async fn unlink_user(conn: &mut PgConnection, user: Uuid) -> eyre::Result<bo
 
 /// Unlinks a chat (`/stop`); `false` when it was not linked.
 pub async fn unlink_chat(conn: &mut PgConnection, chat: i64) -> eyre::Result<bool> {
-	sqlx::query(concat!(drop_pending!(), "chat_id = $2"))
-		.bind("unlinked")
-		.bind(chat)
-		.execute(&mut *conn)
-		.await
-		.wrap_err("dropping what an unlinked chat was owed")?;
+	drop_pending_of_chat(conn, chat, "unlinked").await?;
 	let gone = sqlx::query("DELETE FROM telegram_links WHERE chat_id = $1")
 		.bind(chat)
 		.execute(&mut *conn)
@@ -196,12 +208,7 @@ pub async fn unlink_chat(conn: &mut PgConnection, chat: i64) -> eyre::Result<boo
 
 /// The bot was blocked in `chat`: nothing more goes there until the user links again.
 pub async fn chat_dead(conn: &mut PgConnection, chat: i64, now: Timestamp) -> eyre::Result<()> {
-	sqlx::query(concat!(drop_pending!(), "chat_id = $2"))
-		.bind("the bot is blocked")
-		.bind(chat)
-		.execute(&mut *conn)
-		.await
-		.wrap_err("dropping what a dead chat was owed")?;
+	drop_pending_of_chat(conn, chat, "the bot is blocked").await?;
 	sqlx::query("UPDATE telegram_links SET dead_at = $2 WHERE chat_id = $1 AND dead_at IS NULL")
 		.bind(chat)
 		.bind(to_pg(now)?)
@@ -255,12 +262,7 @@ pub async fn access_tried(conn: &mut PgConnection, user: Uuid, now: Timestamp) -
 
 /// A user's access is known to be gone: nothing more is sent to them, queued or not.
 pub async fn access_lost(conn: &mut PgConnection, user: Uuid, now: Timestamp) -> eyre::Result<()> {
-	sqlx::query(concat!(drop_pending!(), "user_id = $2"))
-		.bind("access lost")
-		.bind(user)
-		.execute(&mut *conn)
-		.await
-		.wrap_err("dropping what a user without access was owed")?;
+	drop_pending_of_user(conn, user, "access lost").await?;
 	sqlx::query("UPDATE telegram_links SET role = NULL, role_checked_at = $2, access_tried_at = $2 WHERE user_id = $1")
 		.bind(user)
 		.bind(to_pg(now)?)
