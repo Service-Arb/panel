@@ -34,3 +34,6 @@ GRANT SELECT, INSERT, DELETE ON telegram_link_tokens TO panel_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON telegram_links, telegram_rules, telegram_outbox TO panel_app;
 GRANT SELECT, INSERT, DELETE ON telegram_fanout TO panel_app;
 GRANT SELECT, UPDATE ON telegram_poller TO panel_app;
+
+-- The bot's unsolicited replies, throttled per chat.
+GRANT SELECT, INSERT, UPDATE, DELETE ON telegram_replies TO panel_app;
