@@ -26,6 +26,8 @@ pub enum Stage {
 }
 
 impl Stage {
+	pub const ALL: [Self; 7] = [Self::Created, Self::Contacted, Self::Quoted, Self::Won, Self::Completed, Self::Paid, Self::Lost];
+
 	pub fn as_str(self) -> &'static str {
 		match self {
 			Self::Created => "created",
@@ -51,6 +53,17 @@ impl Stage {
 			Fact::LeadLost { .. } => Some(Self::Lost),
 			Fact::CallAttempted | Fact::CallLogged { .. } => None,
 		}
+	}
+}
+
+impl std::str::FromStr for Stage {
+	type Err = crate::Invalid;
+
+	fn from_str(s: &str) -> Result<Self, crate::Invalid> {
+		Self::ALL
+			.into_iter()
+			.find(|stage| stage.as_str() == s)
+			.ok_or_else(|| crate::Invalid::new("stage is not one of created, contacted, quoted, won, completed, paid, lost"))
 	}
 }
 
