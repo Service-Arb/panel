@@ -3,13 +3,19 @@
 //! ```text
 //! GET /auth/login      state + PKCE verifier sealed into the pre-login cookie
 //!                      → 302 concierge /api/auth/authorize?client_id=sa&…&code_challenge
-//! GET /auth/callback   state from the cookie = state in the URL (constant time), else 400
-//!                      and the code is never presented; ExchangeCode(code, verifier)
+//! GET /auth/callback   state from the cookie = state in the URL (constant time), and the
+//!                      state not redeemed before, else 400 and the code is never presented;
+//!                      ExchangeCode(code, verifier); the browser's previous session closed
 //!                      → server-side session, cookies → 303 /
 //! /api/v1/*            CSRF on anything but GET; session (access token rotated when it is
-//!                      about to expire); GetMe (≤ 60 s cache) → role, else 401/403/503
-//! POST /auth/logout    CSRF; the session is deleted
+//!                      about to expire); GetMe (≤ 60 s cache; fresh for minting or revoking
+//!                      source keys) → role, else 401/403/503
+//! POST /auth/logout    CSRF; every session of the user is closed
 //! ```
+//!
+//! Signing out of evinvest.ltd revokes the concierge token family: the panel's session ends
+//! at its next rotation, within the access token's lifetime. A scope revoked at concierge is
+//! seen within [`ME_TTL`].
 //!
 //! The browser never holds a concierge token: only a random session id, whose hash names a
 //! row holding the tokens sealed.
@@ -101,6 +107,11 @@ impl SignIn {
 		cache.insert(key, (Instant::now(), me));
 	}
 
+	/// Forgets every cached `GetMe` of the user: their sessions are all closed.
+	fn forget_user(&self, user_id: uuid::Uuid) {
+		self.me.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|_, (_, me)| me.user_id != user_id);
+	}
+
 	fn forget_me(&self, key: &SessionKey) {
 		self.me.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(key);
 	}
@@ -119,13 +130,18 @@ fn json_error(status: StatusCode, msg: &str) -> Response {
 	(status, Json(json!({ "error": msg }))).into_response()
 }
 
+/// What a sign-in page may load and do: nothing but this origin, and never inside a frame.
+pub const PAGE_CSP: &str = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
 /// A page on this origin with fixed text: nothing from the request is echoed.
 fn page(status: StatusCode, title: &str, message: &str) -> Response {
 	let body = format!(
 		"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
 		 <title>{title}</title></head><body><main><h1>{title}</h1><p>{message}</p><p><a href=\"/auth/login\">Sign in again</a></p></main></body></html>"
 	);
-	(status, Html(body)).into_response()
+	let mut res = (status, Html(body)).into_response();
+	res.headers_mut().insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(PAGE_CSP));
+	res
 }
 
 /// The sign-in's answers carry a code or a token in their URLs: kept out of caches and out
@@ -214,6 +230,19 @@ pub async fn callback(State(s): State<SignIn>, headers: HeaderMap, Query(q): Que
 			"This sign-in link is not valid here, or has expired. Start again.",
 		));
 	};
+	// A replayed callback (a leaked URL with the pre-login cookie still in the jar) stops
+	// here: a state is redeemed once, across replicas.
+	match s.panel.consume_state(&pre.state, now).await {
+		Ok(true) => {}
+		Ok(false) => {
+			tracing::info!("sign-in callback with a state redeemed before; the code is not presented");
+			return with_clear(page(StatusCode::BAD_REQUEST, "Sign-in failed", "This sign-in was already used. Start again."));
+		}
+		Err(e) => {
+			crate::report(&e, "redeeming a sign-in state");
+			return with_clear(page(StatusCode::INTERNAL_SERVER_ERROR, "Sign-in failed", "Something went wrong on our side. Try again."));
+		}
+	}
 	let issued = match s.concierge.exchange_code(code, &s.redirect_uri(), &pre.verifier).await {
 		Ok(i) => i,
 		Err(ConciergeError::Refused(tonic::Code::PermissionDenied)) =>
@@ -236,6 +265,14 @@ pub async fn callback(State(s): State<SignIn>, headers: HeaderMap, Query(q): Que
 			return with_clear(page(StatusCode::BAD_GATEWAY, "Sign-in failed", "Something went wrong. Try again."));
 		}
 	};
+	// Signing in again from a browser with a session: the old one is closed, not orphaned.
+	if let Some(old) = s.cookies.get(&headers, cookies::SESSION).and_then(SessionKey::of_cookie) {
+		s.forget_me(&old);
+		if let Err(e) = s.panel.close_session(&old).await {
+			crate::report(&e, "closing the session a new sign-in replaces");
+			return with_clear(page(StatusCode::INTERNAL_SERVER_ERROR, "Sign-in failed", "Something went wrong on our side. Try again."));
+		}
+	}
 	let opened = match s.panel.open_session(issued.user_id, &issued.tokens, now).await {
 		Ok(o) => o,
 		Err(e) => {
@@ -259,16 +296,24 @@ pub async fn callback(State(s): State<SignIn>, headers: HeaderMap, Query(q): Que
 	res
 }
 
-/// `POST /auth/logout`: CSRF-checked; the session is deleted and the cookies cleared.
+/// `POST /auth/logout`: CSRF-checked; every session of the user is closed (a sign-out is
+/// meant to end access, not one browser's copy of it) and the cookies cleared.
 pub async fn logout(State(s): State<SignIn>, headers: HeaderMap) -> Response {
 	if !s.cookies.csrf_ok(&headers) {
 		return json_error(StatusCode::FORBIDDEN, "csrf");
 	}
 	if let Some(key) = s.cookies.get(&headers, cookies::SESSION).and_then(SessionKey::of_cookie) {
 		s.forget_me(&key);
-		if let Err(e) = s.panel.close_session(&key).await {
-			crate::report(&e, "closing a session");
-			return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+		match s.panel.close_all_sessions(&key).await {
+			Ok(Some(user_id)) => {
+				s.forget_user(user_id);
+				tracing::info!(%user_id, "signed out everywhere");
+			}
+			Ok(None) => {}
+			Err(e) => {
+				crate::report(&e, "closing a user's sessions");
+				return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+			}
 		}
 	}
 	signed_out(&s, StatusCode::NO_CONTENT.into_response())
@@ -283,12 +328,28 @@ fn signed_out(s: &SignIn, mut res: Response) -> Response {
 
 /// The gate of `/api/v1`: CSRF for anything that is not a read, then the session and the
 /// caller's role, into the request's extensions as a [`Caller`].
-pub async fn gate(State(s): State<SignIn>, mut req: Request, next: Next) -> Response {
+pub async fn gate(State(s): State<SignIn>, req: Request, next: Next) -> Response {
+	gated(s, req, next, Freshness::Cached).await
+}
+
+/// [`gate`], asking concierge afresh rather than trusting the cached `GetMe`: for what must
+/// not outlive a revoked grant by even [`ME_TTL`].
+pub async fn gate_fresh(State(s): State<SignIn>, req: Request, next: Next) -> Response {
+	gated(s, req, next, Freshness::Fresh).await
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Freshness {
+	Cached,
+	Fresh,
+}
+
+async fn gated(s: SignIn, mut req: Request, next: Next, me: Freshness) -> Response {
 	let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
 	if !safe && !s.cookies.csrf_ok(req.headers()) {
 		return json_error(StatusCode::FORBIDDEN, "csrf");
 	}
-	let caller = match authenticate(&s, req.headers()).await {
+	let caller = match authenticate(&s, req.headers(), me).await {
 		Ok(c) => c,
 		Err(res) => return *res,
 	};
@@ -299,8 +360,20 @@ pub async fn gate(State(s): State<SignIn>, mut req: Request, next: Next) -> Resp
 	res
 }
 
+/// `GetMe`, asked once more when concierge did not answer (a timeout included): one slow
+/// answer should not be a 503 for the user.
+async fn get_me(s: &SignIn, access: &str) -> Result<Me, ConciergeError> {
+	match s.concierge.me(access).await {
+		Err(ConciergeError::Unavailable(why)) => {
+			tracing::debug!(why, "GetMe unavailable; asking once more");
+			s.concierge.me(access).await
+		}
+		answer => answer,
+	}
+}
+
 /// The refusal is boxed: a `Response` is large, and the happy path should not carry it.
-async fn authenticate(s: &SignIn, headers: &HeaderMap) -> Result<Caller, Box<Response>> {
+async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> Result<Caller, Box<Response>> {
 	let unauthenticated = || Box::new(signed_out(s, json_error(StatusCode::UNAUTHORIZED, "sign in")));
 	let unavailable = || Box::new(json_error(StatusCode::SERVICE_UNAVAILABLE, "sign-in is unavailable, try again"));
 	let cookie = s.cookies.get(headers, cookies::SESSION).ok_or_else(unauthenticated)?;
@@ -313,15 +386,16 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap) -> Result<Caller, Box<Res
 			return Err(Box::new(json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")));
 		}
 	};
-	let me = match s.cached_me(&session.key) {
+	let cached = if freshness == Freshness::Cached { s.cached_me(&session.key) } else { None };
+	let me = match cached {
 		Some(me) => me,
-		None => match s.concierge.me(&session.access).await {
+		None => match get_me(s, &session.access).await {
 			Ok(me) => {
 				s.remember_me(session.key, me.clone());
 				me
 			}
-			// Revoked at concierge (signed out of evinvest.ltd, access taken away): the session
-			// is over here too.
+			// The token revoked at concierge (signed out of evinvest.ltd, the user held or
+			// disabled): the session is over here too.
 			Err(ConciergeError::Refused(code)) => {
 				tracing::info!(user_id = %session.user_id, ?code, "GetMe refused; session closed");
 				s.forget_me(&session.key);

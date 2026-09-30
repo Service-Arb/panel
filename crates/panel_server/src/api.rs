@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use axum::{
 	Extension, Json, Router,
 	extract::{Path, Query, State, rejection::JsonRejection},
-	http::{HeaderValue, StatusCode, header},
+	http::{HeaderMap, HeaderValue, StatusCode, header},
 	response::{IntoResponse, Response},
 	routing::{delete, get, post},
 };
@@ -35,6 +35,45 @@ use crate::signin::Caller;
 /// The longest span the funnel sums over.
 const MAX_FUNNEL_DAYS: i32 = 366;
 
+/// The largest amount, in minor units, a quote or a payment may name: €100M, far past any
+/// real job, well short of anything that overflows a sum.
+const MAX_MINOR: i64 = 10_000_000_000;
+
+/// The currencies a quote or a payment may be in. Checked here, not in the registry: a rebuild
+/// must not re-judge what was journaled under an older list.
+const CURRENCIES: [&str; 4] = ["EUR", "USD", "GBP", "AUD"];
+
+/// The header a client sets to make a write safe to retry.
+const IDEMPOTENCY_KEY: &str = "idempotency-key";
+
+fn amount(what: &str, v: i64) -> ApiResult<i64> {
+	if v.unsigned_abs() > MAX_MINOR.unsigned_abs() {
+		return Err(ApiError::BadRequest(format!("{what} is more than {MAX_MINOR} minor units")));
+	}
+	Ok(v)
+}
+
+fn currency(v: &str) -> ApiResult<String> {
+	if !CURRENCIES.contains(&v) {
+		return Err(ApiError::BadRequest(format!("currency is one of {}", CURRENCIES.join(", "))));
+	}
+	Ok(v.to_owned())
+}
+
+/// The client's idempotency key: 1–128 visible ASCII characters, or none.
+fn idempotency_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
+	let Some(v) = headers.get(IDEMPOTENCY_KEY) else { return Ok(None) };
+	let v = v.to_str().ok().filter(|v| (1..=128).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_graphic()));
+	v.map(|v| Some(v.to_owned()))
+		.ok_or_else(|| ApiError::BadRequest("Idempotency-Key is 1–128 visible ASCII characters".into()))
+}
+
+/// `201` for what was recorded now, `200` for a retry answered with what the first recorded.
+fn recorded(replayed: bool, v: Value) -> Response {
+	let status = if replayed { StatusCode::OK } else { StatusCode::CREATED };
+	(status, Json(v)).into_response()
+}
+
 pub fn routes() -> Router<Panel> {
 	Router::new()
 		.route("/me", get(me))
@@ -45,8 +84,12 @@ pub fn routes() -> Router<Panel> {
 		.route("/leads/{brand}/{lead}/calls/{attempt}/outcome", post(call_outcome))
 		.route("/leads/{brand}/{lead}/payments", post(payment))
 		.route("/funnel", get(funnel))
-		.route("/sources", get(sources).post(add_source))
-		.route("/sources/{key_id}", delete(revoke_source))
+		.route("/sources", get(sources))
+}
+
+/// Minting and revoking source keys: served behind [`crate::signin::gate_fresh`].
+pub fn key_changes() -> Router<Panel> {
+	Router::new().route("/sources", post(add_source)).route("/sources/{key_id}", delete(revoke_source))
 }
 
 /// Why a request failed, as the front end is told.
@@ -300,8 +343,9 @@ struct CreateLead {
 	phone: Option<String>,
 }
 
-async fn create_lead(State(panel): State<Panel>, Extension(caller): Extension<Caller>, b: Result<Json<CreateLead>, JsonRejection>) -> ApiResult<Response> {
+async fn create_lead(State(panel): State<Panel>, Extension(caller): Extension<Caller>, headers: HeaderMap, b: Result<Json<CreateLead>, JsonRejection>) -> ApiResult<Response> {
 	allow(caller.role.edits_leads())?;
+	let key = idempotency_key(&headers)?;
 	let b = body(b)?;
 	let new = NewLead {
 		brand: BrandId::parse(&b.brand)?,
@@ -310,8 +354,12 @@ async fn create_lead(State(panel): State<Panel>, Extension(caller): Extension<Ca
 		phone: b.phone,
 	};
 	let brand = new.brand.clone();
-	let (lead, event) = panel.create_lead(Actor(caller.user_id), new, Timestamp::now()).await?;
-	Ok(created(json!({ "brand": brand.as_str(), "lead_id": lead.as_str(), "event_id": event.raw().to_string() })))
+	let done = panel.create_lead_once(Actor(caller.user_id), new, Timestamp::now(), key.as_deref()).await?;
+	let (lead, event) = done.value;
+	Ok(recorded(
+		done.replayed,
+		json!({ "brand": brand.as_str(), "lead_id": lead.as_str(), "event_id": event.raw().to_string() }),
+	))
 }
 
 fn created(v: Value) -> Response {
@@ -332,21 +380,26 @@ async fn stage(
 	State(panel): State<Panel>,
 	Extension(caller): Extension<Caller>,
 	Path((brand, lead)): Path<(String, String)>,
+	headers: HeaderMap,
 	b: Result<Json<StageBody>, JsonRejection>,
 ) -> ApiResult<Response> {
 	allow(caller.role.edits_leads())?;
+	let key = idempotency_key(&headers)?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let to = match body(b)? {
 		StageBody::Contacted { channel } => StageMove::Contacted { channel },
-		StageBody::Quoted { amount, currency } => StageMove::Quoted { amount, currency },
+		StageBody::Quoted { amount: a, currency: c } => StageMove::Quoted {
+			amount: a.map(|a| amount("amount", a)).transpose()?,
+			currency: c.as_deref().map(currency).transpose()?,
+		},
 		StageBody::Won { job_id } => StageMove::Won {
 			job_id: job_id.as_deref().map(JobId::parse).transpose()?,
 		},
 		StageBody::Lost { reason, note } => StageMove::Lost { reason, note },
 		StageBody::Completed => StageMove::Completed,
 	};
-	let event = panel.move_lead(Actor(caller.user_id), &brand, &lead, to, Timestamp::now()).await?;
-	Ok(created(json!({ "event_id": event.raw().to_string() })))
+	let done = panel.move_lead_once(Actor(caller.user_id), &brand, &lead, to, Timestamp::now(), key.as_deref()).await?;
+	Ok(recorded(done.replayed, json!({ "event_id": done.value.raw().to_string() })))
 }
 
 async fn attempt_call(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path((brand, lead)): Path<(String, String)>) -> ApiResult<Response> {
@@ -388,18 +441,20 @@ async fn payment(
 	State(panel): State<Panel>,
 	Extension(caller): Extension<Caller>,
 	Path((brand, lead)): Path<(String, String)>,
+	headers: HeaderMap,
 	b: Result<Json<PaymentBody>, JsonRejection>,
 ) -> ApiResult<Response> {
 	allow(caller.role.edits_leads())?;
+	let key = idempotency_key(&headers)?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let b = body(b)?;
 	let p = Payment {
-		billed: b.billed,
-		commission: b.commission,
-		currency: b.currency,
+		billed: amount("billed", b.billed)?,
+		commission: amount("commission", b.commission)?,
+		currency: currency(&b.currency)?,
 	};
-	let event = panel.record_payment(Actor(caller.user_id), &brand, &lead, p, Timestamp::now()).await?;
-	Ok(created(json!({ "event_id": event.raw().to_string() })))
+	let done = panel.record_payment_once(Actor(caller.user_id), &brand, &lead, p, Timestamp::now(), key.as_deref()).await?;
+	Ok(recorded(done.replayed, json!({ "event_id": done.value.raw().to_string() })))
 }
 
 // ── funnel ──────────────────────────────────────────────────────────────────────────────
@@ -520,6 +575,11 @@ async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Cal
 	allow(caller.role.manages_sources())?;
 	let b = body(b)?;
 	let kind: SourceKind = b.kind.parse()?;
+	// The panel's own events carry no key (`key_id` NULL): a key of kind panel would only let
+	// something outside pass its writes off as typed in by hand.
+	if kind == SourceKind::Panel {
+		return Err(ApiError::BadRequest("a key of kind panel is not issued: the panel writes without one".into()));
+	}
 	let brands = b.brands.iter().map(|b| BrandId::parse(b)).collect::<Result<BTreeSet<_>, _>>()?;
 	if !panel_core::ids::is_slug(&b.key_id) {
 		return Err(ApiError::BadRequest("key_id is a lowercase slug of 1–64 of [a-z0-9_-]".into()));

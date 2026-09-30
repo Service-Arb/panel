@@ -93,6 +93,10 @@ impl Settings {
 		}
 		eyre::ensure!(missing.is_empty(), "signing in needs {} too", missing.join(", "));
 		let get = |v: &Option<String>| set(v).unwrap_or_default();
+		if self.app_env == "production" {
+			bare_https_origin("PANEL_PUBLIC_ORIGIN", &get(&self.panel_public_origin))?;
+			bare_https_origin("CONCIERGE_PUBLIC_ORIGIN", &get(&self.concierge_public_origin))?;
+		}
 		Ok(Some(SignInSettings {
 			panel_origin: get(&self.panel_public_origin),
 			concierge_origin: get(&self.concierge_public_origin),
@@ -100,6 +104,20 @@ impl Settings {
 			client_secret: get(&self.rp_client_secret_sa),
 		}))
 	}
+}
+
+/// In production an origin the browser is sent to or told about is `https://host[:port]`,
+/// nothing after it: plain http would drop the `__Host-`/`Secure` cookies, and a path would
+/// end up inside the redirect URI concierge compares byte for byte.
+fn bare_https_origin(var: &str, raw: &str) -> eyre::Result<()> {
+	let url = url::Url::parse(raw).map_err(|e| eyre::eyre!("{var} is not a URL: {e}"))?;
+	eyre::ensure!(url.scheme() == "https", "{var} must be https in production");
+	eyre::ensure!(url.host_str().is_some_and(|h| !h.is_empty()), "{var} has no host");
+	eyre::ensure!(
+		url.path() == "/" && url.query().is_none() && url.fragment().is_none() && url.username().is_empty() && url.password().is_none(),
+		"{var} must be an origin alone, e.g. https://sa.evinvest.ltd"
+	);
+	Ok(())
 }
 
 /// `--print-required-vars[=PROFILE]` (default `production`): the variables a deploy into
@@ -188,5 +206,50 @@ mod tests {
 		.unwrap();
 		assert_eq!(full.sign_in().unwrap().unwrap().concierge_grpc, "http://concierge:55670");
 		assert!(!format!("{full:?}").contains(&secret), "the client secret never prints");
+	}
+
+	#[test]
+	fn production_origins_are_bare_https() {
+		let key = "0".repeat(64);
+		let secret = "s".repeat(40);
+		let with = |panel: &str, concierge: &str| {
+			from(&[
+				("APP_ENV", "production"),
+				("DATABASE_URL", "postgres://localhost/x"),
+				("PANEL_DATA_KEY", &key),
+				("PANEL_PUBLIC_ORIGIN", panel),
+				("CONCIERGE_PUBLIC_ORIGIN", concierge),
+				("CONCIERGE_GRPC_ADDR", "http://concierge:55670"),
+				("RP_CLIENT_SECRET_SA", &secret),
+			])
+			.unwrap()
+			.sign_in()
+		};
+		assert!(with("https://sa.evinvest.ltd", "https://evinvest.ltd/").is_ok());
+		for (panel, why) in [
+			("http://sa.evinvest.ltd", "must be https"),
+			("https://sa.evinvest.ltd/panel", "an origin alone"),
+			("https://sa.evinvest.ltd/?a=1", "an origin alone"),
+			("https://sa.evinvest.ltd/#x", "an origin alone"),
+			("https://u:p@sa.evinvest.ltd", "an origin alone"),
+			("sa.evinvest.ltd", "not a URL"),
+		] {
+			let e = format!("{}", with(panel, "https://evinvest.ltd").unwrap_err());
+			assert!(e.contains("PANEL_PUBLIC_ORIGIN") && e.contains(why), "{panel}: {e}");
+		}
+		let e = format!("{}", with("https://sa.evinvest.ltd", "http://evinvest.ltd").unwrap_err());
+		assert!(e.contains("CONCIERGE_PUBLIC_ORIGIN"), "{e}");
+		assert!(
+			from(&[
+				("PANEL_PUBLIC_ORIGIN", "http://localhost:59120"),
+				("CONCIERGE_PUBLIC_ORIGIN", "http://localhost:3000"),
+				("CONCIERGE_GRPC_ADDR", "http://localhost:55670"),
+				("RP_CLIENT_SECRET_SA", &secret),
+			])
+			.unwrap()
+			.sign_in()
+			.is_ok(),
+			"plain http is for development"
+		);
 	}
 }
