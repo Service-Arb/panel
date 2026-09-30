@@ -151,7 +151,8 @@ struct PreLoginPlain {
 
 const PRELOGIN_AAD: &[u8] = b"sa-panel/prelogin/v1";
 
-fn random_hex() -> eyre::Result<String> {
+/// 256 random bits as 64 hex characters: states, verifiers, session ids, CSRF tokens.
+pub fn random_token() -> eyre::Result<String> {
 	let mut raw = Zeroizing::new([0u8; 32]);
 	getrandom::fill(raw.as_mut_slice()).map_err(|e| eyre::eyre!("the OS random source failed: {e}"))?;
 	Ok(hex::encode(raw.as_slice()))
@@ -182,9 +183,9 @@ fn token_aad(which: Which, key: &SessionKey) -> Vec<u8> {
 impl Panel {
 	/// A fresh state and PKCE verifier, and the cookie that carries them to the callback.
 	pub fn begin_sign_in(&self, now: Timestamp) -> eyre::Result<Begun> {
-		let state = random_hex()?;
+		let state = random_token()?;
 		// 64 hex characters: inside PKCE's 43–128 unreserved characters.
-		let verifier = Zeroizing::new(random_hex()?);
+		let verifier = Zeroizing::new(random_token()?);
 		let plain = Zeroizing::new(
 			serde_json::to_vec(&PreLoginPlain {
 				state: state.clone(),
@@ -221,7 +222,7 @@ impl Panel {
 	/// Opens a session for a user concierge has just issued tokens for. Sessions past their
 	/// deadline are dropped on the way.
 	pub async fn open_session(&self, user_id: Uuid, tokens: &Tokens, now: Timestamp) -> eyre::Result<Opened> {
-		let cookie = Zeroizing::new(random_hex()?);
+		let cookie = Zeroizing::new(random_token()?);
 		let key = SessionKey::of_cookie(&cookie).ok_or_else(|| eyre::eyre!("a fresh session id is not one"))?;
 		let (access, refresh) = self.seal_tokens(&key, tokens)?;
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;

@@ -1,4 +1,5 @@
-//! The HTTP API. Only ingest for now, and `/health`.
+//! The HTTP API: ingest, `/health`, and — when signing in is configured — the sign-in
+//! (`/auth/*`, [`crate::signin`]) and the operator API (`/api/v1/*`, [`crate::api`]).
 //!
 //! `POST /api/ingest/v1/events` is authenticated by the source's signature alone (see
 //! `panel_core::signature`): no cookie, no CSRF, nothing but the key id and the MAC over the
@@ -24,6 +25,7 @@ use axum::{
 	error_handling::HandleErrorLayer,
 	extract::State,
 	http::{HeaderMap, StatusCode},
+	middleware,
 	response::{IntoResponse, Response},
 	routing::{get, post},
 };
@@ -33,6 +35,11 @@ use panel_core::signature::{self, SignatureError};
 use serde_json::json;
 use tower::{BoxError, ServiceBuilder};
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
+
+use crate::{
+	api,
+	signin::{self, SignIn},
+};
 
 /// 500 events of about 8 KiB each: a batch is refused well before it strains anything.
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
@@ -60,6 +67,23 @@ impl Default for Limits {
 
 pub fn router(panel: Panel) -> Router {
 	router_with(panel, Limits::default())
+}
+
+/// Ingest, and the sign-in with the operator API behind it.
+pub fn app(sign_in: SignIn) -> Router {
+	app_with(sign_in, Limits::default())
+}
+
+pub fn app_with(sign_in: SignIn, limits: Limits) -> Router {
+	let auth = Router::new()
+		.route("/auth/login", get(signin::login))
+		.route("/auth/callback", get(signin::callback))
+		.route("/auth/logout", post(signin::logout))
+		.with_state(sign_in.clone());
+	let api = api::routes()
+		.with_state(sign_in.panel.clone())
+		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate));
+	router_with(sign_in.panel, limits).merge(auth).nest("/api/v1", api)
 }
 
 pub fn router_with(panel: Panel, limits: Limits) -> Router {

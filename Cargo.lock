@@ -2380,6 +2380,7 @@ name = "panel_server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "clap",
  "color-eyre",
  "ev_lib",
@@ -2390,12 +2391,18 @@ dependencies = [
  "panel",
  "panel_contracts",
  "panel_core",
+ "serde",
  "serde_json",
+ "subtle",
+ "thiserror",
  "tokio",
+ "tonic",
  "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
