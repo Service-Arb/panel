@@ -1,0 +1,25 @@
+[package]
+name = "panel_core"
+description = "The Service-Arb panel without I/O: the funnel's domain, event validation, lead stages, source signatures, roles"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+ev_lib = { workspace = true, features = ["architecture"] }
+hex.workspace = true
+hmac.workspace = true
+jiff.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+uuid = { workspace = true, features = ["v7"] }
+
+[lints]
+workspace = true

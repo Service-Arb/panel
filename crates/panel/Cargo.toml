@@ -1,0 +1,42 @@
+[package]
+name = "panel"
+description = "The Service-Arb panel's engine: ingest of sa.funnel.v1 events, the Postgres journal, and the funnel projections"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[features]
+# Throwaway databases and signed batches, for this crate's and the server's tests.
+testing = ["dep:tokio", "uuid/v7"]
+
+[dependencies]
+chacha20poly1305.workspace = true
+chrono.workspace = true
+eyre.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+hmac.workspace = true
+jiff.workspace = true
+panel_contracts.workspace = true
+panel_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+tracing.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+panel = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+zeroize.workspace = true
+
+[lints]
+workspace = true

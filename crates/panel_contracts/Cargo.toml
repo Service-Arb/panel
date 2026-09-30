@@ -1,0 +1,31 @@
+[package]
+name = "panel_contracts"
+description = "sa.funnel.v1: the panel's wire contract, generated from contracts/proto (prost + pbjson for protojson)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+# The generated code pulled in with `include!` uses these; machete cannot see into OUT_DIR.
+[package.metadata.cargo-machete]
+ignored = ["pbjson", "prost", "serde"]
+
+[dependencies]
+pbjson.workspace = true
+pbjson-types.workspace = true
+prost.workspace = true
+serde.workspace = true
+
+[build-dependencies]
+pbjson-build.workspace = true
+prost.workspace = true
+prost-build.workspace = true
+protox.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
