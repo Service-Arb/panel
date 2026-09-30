@@ -205,8 +205,12 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		notifier(false).handle(start(7), now).await.unwrap();
 		panel.telegram_set_rules(user, Role::Operator, &[(Rule::NewLead, true)]).await.unwrap();
 		panel.telegram_access_seen(user, Some(Role::Operator), "Olga", now).await.unwrap();
-		panel.create_lead(by, NewLead { need: "a tap".into(), ..new_lead() }, now).await.unwrap();
-		assert_eq!(panel.telegram_fan_out(now, Locale::Ru).await.unwrap(), 2, "the two leads taken by phone");
+		// By a colleague: the user's own lead above is not told to them.
+		let colleague = Actor(uuid::Uuid::now_v7());
+		for need in ["a tap", "a sink"] {
+			panel.create_lead(colleague, NewLead { need: need.into(), ..new_lead() }, now).await.unwrap();
+		}
+		assert_eq!(panel.telegram_fan_out(now, Locale::Ru).await.unwrap(), 2, "the colleague's two leads");
 		assert_eq!(notifier(false).deliver(now).await.unwrap().sent, 1);
 		assert_eq!(notifier(true).deliver(now + SignedDuration::from_secs(2)).await.unwrap().dead, 1);
 		assert_eq!(
@@ -244,7 +248,7 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 			assert!(err.contains("permission denied") || err.contains("must be owner"), "{sql}: {err}");
 		}
 		let n: i64 = sqlx::query_scalar("SELECT count(*) FROM reporting.leads").fetch_one(pool).await.unwrap();
-		assert_eq!(n, 3, "the ingested lead and the two taken by phone");
+		assert_eq!(n, 4, "the ingested lead and the three taken by phone");
 		pool.close().await;
 	}
 }

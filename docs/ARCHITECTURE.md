@@ -189,7 +189,8 @@ POST /api/v1/telegram/link  256 random bits, base64url; SHA-256 stored with the 
 /start <token>              private chats only (groups are ignored whatever they say); the
                             token redeemed once → telegram_links(user ⇄ chat)
 /stop, DELETE …/link        unlinked; what the outbox still owed them is dropped
-fan-out (2 s)               new leads (their counted creation ≤ 1 h old, still `created`),
+fan-out (2 s)               new leads (their counted creation ≤ 1 h old, still `created`;
+                            not to whoever typed one in),
                             leads created 30 min – 6.5 h ago never contacted (once each),
                             payments (≤ 24 h), sources silent ≥ 24 h (once per full day of
                             it) → telegram_fanout claims (rule, event) once, and in the same

@@ -287,7 +287,10 @@ impl Panel {
 		for c in &new {
 			let lead = Some((c.brand_id.as_str(), c.lead_id.as_str()));
 			let note = |role| Ok(Note::NewLead(self.lead_note(c, role)?));
-			queued += self.fan_out_one(&mut conn, Rule::NewLead, c.event_id, lead, note, confirmed_since, now, locale).await?;
+			// Whoever typed the lead in knows of it already.
+			queued += self
+				.fan_out_one(&mut conn, Rule::NewLead, c.event_id, lead, c.entered_by, note, confirmed_since, now, locale)
+				.await?;
 		}
 		for c in &overdue {
 			let lead = Some((c.brand_id.as_str(), c.lead_id.as_str()));
@@ -298,7 +301,9 @@ impl Panel {
 					waiting,
 				})
 			};
-			queued += self.fan_out_one(&mut conn, Rule::ContactOverdue, c.event_id, lead, note, confirmed_since, now, locale).await?;
+			queued += self
+				.fan_out_one(&mut conn, Rule::ContactOverdue, c.event_id, lead, None, note, confirmed_since, now, locale)
+				.await?;
 		}
 		for p in payments {
 			let note = Note::PaymentReceived {
@@ -309,7 +314,7 @@ impl Panel {
 				currency: p.currency,
 			};
 			queued += self
-				.fan_out_one(&mut conn, Rule::PaymentReceived, p.event_id, None, |_| Ok(note.clone()), confirmed_since, now, locale)
+				.fan_out_one(&mut conn, Rule::PaymentReceived, p.event_id, None, None, |_| Ok(note.clone()), confirmed_since, now, locale)
 				.await?;
 		}
 		for s in silent {
@@ -322,14 +327,14 @@ impl Panel {
 				last: s.last,
 			};
 			queued += self
-				.fan_out_one(&mut conn, Rule::SourceSilent, event, None, |_| Ok(note.clone()), confirmed_since, now, locale)
+				.fan_out_one(&mut conn, Rule::SourceSilent, event, None, None, |_| Ok(note.clone()), confirmed_since, now, locale)
 				.await?;
 		}
 		Ok(queued)
 	}
 
-	/// One candidate: claimed, then queued for everyone who may hear of it — in one
-	/// transaction, so a claim never stands without its messages.
+	/// One candidate: claimed, then queued for everyone who may hear of it but `skip` — in
+	/// one transaction, so a claim never stands without its messages.
 	#[expect(clippy::too_many_arguments, reason = "the candidate and the pass's context, each named at the call site")]
 	async fn fan_out_one(
 		&self,
@@ -337,6 +342,7 @@ impl Panel {
 		rule: Rule,
 		event: Uuid,
 		lead: Option<(&str, &str)>,
+		skip: Option<Uuid>,
 		note: impl Fn(Role) -> eyre::Result<Note>,
 		confirmed_since: Timestamp,
 		now: Timestamp,
@@ -348,7 +354,7 @@ impl Panel {
 		}
 		let mut queued = 0;
 		for r in db::recipients(&mut tx, rule, confirmed_since).await? {
-			if !rule.open_to(r.role) {
+			if !rule.open_to(r.role) || skip == Some(r.user_id) {
 				continue;
 			}
 			let note = note(r.role)?;

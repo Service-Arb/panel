@@ -308,11 +308,13 @@ pub struct LeadCandidate {
 	pub location_id: Option<String>,
 	pub created_at: Option<Timestamp>,
 	pub pii: Option<(Vec<u8>, Vec<u8>)>,
+	/// The panel user who typed the lead in (its creation of kind `panel`), if one did.
+	pub entered_by: Option<Uuid>,
 }
 
-type LeadCandidateDb = (Uuid, String, String, Option<String>, Option<DateTime<Utc>>, Option<Vec<u8>>, Option<Vec<u8>>);
+type LeadCandidateDb = (Uuid, String, String, Option<String>, Option<DateTime<Utc>>, Option<Vec<u8>>, Option<Vec<u8>>, Option<String>);
 
-fn lead_candidate((event_id, brand_id, lead_id, location_id, created_at, pii, fp): LeadCandidateDb) -> eyre::Result<LeadCandidate> {
+fn lead_candidate((event_id, brand_id, lead_id, location_id, created_at, pii, fp, entered_by): LeadCandidateDb) -> eyre::Result<LeadCandidate> {
 	Ok(LeadCandidate {
 		event_id,
 		brand_id,
@@ -320,6 +322,8 @@ fn lead_candidate((event_id, brand_id, lead_id, location_id, created_at, pii, fp
 		location_id,
 		created_at: created_at.map(from_pg).transpose()?,
 		pii: pii.zip(fp),
+		// A panel event's source id is the user's concierge id; anything else names no one.
+		entered_by: entered_by.and_then(|id| Uuid::parse_str(&id).ok()),
 	})
 }
 
@@ -327,7 +331,8 @@ fn lead_candidate((event_id, brand_id, lead_id, location_id, created_at, pii, fp
 /// `since`, still waiting for their first contact, and not yet told of.
 pub async fn new_leads(conn: &mut PgConnection, since: Timestamp, limit: i64) -> eyre::Result<Vec<LeadCandidate>> {
 	let rows: Vec<LeadCandidateDb> = sqlx::query_as(
-		"SELECT e.id, l.brand_id, l.lead_id, l.location_id, l.created_at, e.pii_sealed, e.data_key_fp \
+		"SELECT e.id, l.brand_id, l.lead_id, l.location_id, l.created_at, e.pii_sealed, e.data_key_fp, \
+		 CASE WHEN e.source_kind = 'panel' THEN e.source_id END \
 		 FROM events e JOIN leads l ON l.brand_id = e.brand_id AND l.lead_id = e.lead_id \
 		 WHERE e.type = 'lead.created' AND e.status = 'registered' AND e.received_at >= $1 AND l.stage = 'created' \
 		 AND NOT EXISTS (SELECT 1 FROM events f WHERE f.brand_id = e.brand_id AND f.lead_id = e.lead_id AND f.type = 'lead.created' \
@@ -347,9 +352,10 @@ pub async fn new_leads(conn: &mut PgConnection, since: Timestamp, limit: i64) ->
 /// is now minus it — not yet reminded of. Keyed by their creation event.
 pub async fn overdue_leads(conn: &mut PgConnection, since: Timestamp, before: Timestamp, limit: i64) -> eyre::Result<Vec<LeadCandidate>> {
 	let rows: Vec<LeadCandidateDb> = sqlx::query_as(
-		"SELECT c.id, l.brand_id, l.lead_id, l.location_id, l.created_at, c.pii_sealed, c.data_key_fp FROM leads l \
+		"SELECT c.id, l.brand_id, l.lead_id, l.location_id, l.created_at, c.pii_sealed, c.data_key_fp, \
+		 CASE WHEN c.source_kind = 'panel' THEN c.source_id END FROM leads l \
 		 JOIN LATERAL ( \
-		   SELECT e.id, e.pii_sealed, e.data_key_fp FROM events e \
+		   SELECT e.id, e.pii_sealed, e.data_key_fp, e.source_kind, e.source_id FROM events e \
 		   WHERE e.brand_id = l.brand_id AND e.lead_id = l.lead_id AND e.type = 'lead.created' AND e.status = 'registered' \
 		   ORDER BY e.received_at, e.id LIMIT 1 \
 		 ) c ON true \

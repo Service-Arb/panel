@@ -378,6 +378,24 @@ async fn a_new_lead_goes_to_linked_users_with_access_only() {
 }
 
 #[tokio::test]
+async fn a_lead_typed_in_is_not_told_to_whoever_typed_it() {
+	let Some(s) = setup().await else { return };
+	let (typist, colleague) = (Uuid::now_v7(), Uuid::now_v7());
+	s.link(typist, Role::Operator, 1, t0()).await;
+	s.link(colleague, Role::Operator, 2, t0()).await;
+	s.mock.clear();
+	let new = NewLead {
+		brand: brand(),
+		location: LocationId::parse("paris-11").unwrap(),
+		need: "a boiler".into(),
+		phone: None,
+	};
+	s.panel.create_lead(Actor(typist), new, t0()).await.unwrap();
+	assert_eq!(s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap(), 1);
+	assert_eq!(s.outbox().await, [(2, "new_lead".to_owned(), "pending".to_owned(), 0)], "the colleague only");
+}
+
+#[tokio::test]
 async fn a_silent_source_is_told_to_admins_once_a_day() {
 	let Some(s) = setup().await else { return };
 	let admin = Uuid::now_v7();
