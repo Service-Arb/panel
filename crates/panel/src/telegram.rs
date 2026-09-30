@@ -471,7 +471,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 	}
 
 	/// Sends what is due at `now`, within the pace (see `store::telegram::claim_due`). First,
-	/// lead messages queued past [`NEW_LEAD_WINDOW`] are given up, and a chat with more than
+	/// lead messages queued over an hour ago are given up, and a chat with more than
 	/// [`BACKLOG`] of them waiting gets one summary, without PII, in their place.
 	pub async fn deliver(&self, now: Timestamp) -> eyre::Result<Delivered> {
 		let due = {

@@ -362,7 +362,7 @@ fn hidden(c: char) -> bool {
 	c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
-/// A customer's text on one line: the [`hidden`] characters made spaces, runs of spaces one,
+/// A customer's text on one line: the characters `hidden` names made spaces, runs of spaces one,
 /// at most `max` characters (the last one "…" when cut).
 pub fn one_line(s: &str, max: usize) -> String {
 	let spaced: String = s.chars().map(|c| if hidden(c) { ' ' } else { c }).collect();
