@@ -1,6 +1,4 @@
-import type { MessageKey } from "./en";
-
-export const ru: Record<MessageKey, string> = {
+{
   "app.name": "Service-Arb",
   "nav.overview": "Обзор",
   "nav.leads": "Заявки",
@@ -12,13 +10,11 @@ export const ru: Record<MessageKey, string> = {
   "nav.signOut": "Выйти",
   "nav.role.admin": "админ",
   "nav.role.operator": "оператор",
-
   "state.loading": "Загрузка…",
   "state.retry": "Повторить",
   "state.error": "Не удалось загрузить. {detail}",
   "state.noAccess.title": "Нет доступа к панели Service-Arb",
-  "state.noAccess.body":
-    "Вы вошли аккаунтом EV, но у него нет роли на аллокации service_arb. Попросите админа этой аллокации выдать вам роль operator или admin в кабинете EV (вкладка «Доступ») и обновите страницу.",
+  "state.noAccess.body": "Вы вошли аккаунтом EV, но у него нет роли на аллокации service_arb. Попросите админа этой аллокации выдать вам роль operator или admin в кабинете EV (вкладка «Доступ») и обновите страницу.",
   "state.unavailable.title": "Сервис входа недоступен",
   "state.unavailable.body": "Попробуйте позже. Вы по-прежнему в системе.",
   "state.csrf": "Страница устарела. Обновите её и повторите действие.",
@@ -26,7 +22,6 @@ export const ru: Record<MessageKey, string> = {
   "state.signedOut.title": "Вы вышли",
   "state.signedOut.body": "Сессия на этом устройстве закрыта.",
   "state.signedOut.again": "Войти снова",
-
   "filter.period": "Период",
   "filter.period.7": "7 дней",
   "filter.period.30": "30 дней",
@@ -42,7 +37,6 @@ export const ru: Record<MessageKey, string> = {
   "filter.segment.new": "Новые",
   "filter.segment.inProgress": "В работе",
   "filter.segment.quotes": "Сметы",
-
   "stage.created": "Новая",
   "stage.contacted": "Контакт",
   "stage.quoted": "Смета",
@@ -50,7 +44,6 @@ export const ru: Record<MessageKey, string> = {
   "stage.completed": "Выполнено",
   "stage.paid": "Оплачено",
   "stage.lost": "Отказ",
-
   "funnel.stage.created": "Заявка",
   "funnel.stage.contacted": "Контакт",
   "funnel.stage.quoted": "Смета",
@@ -75,10 +68,8 @@ export const ru: Record<MessageKey, string> = {
   "funnel.empty": "За этот период заявок нет",
   "funnel.empty.body": "Выберите период длиннее или другой бренд.",
   "funnel.range": "{from} – {to}, UTC",
-
   "share.nOf": "{n} из {of}",
   "share.percent": "{percent}%",
-
   "leads.title": "Заявки",
   "leads.newCall": "+ Звонок",
   "leads.col.need": "Запрос",
@@ -95,7 +86,6 @@ export const ru: Record<MessageKey, string> = {
   "leads.manual": "вручную",
   "leads.overdue": "просрочена · {time}",
   "leads.waiting": "ждёт · {time}",
-
   "card.title": "Заявка",
   "card.customer": "Клиент",
   "card.name": "Имя",
@@ -108,7 +98,6 @@ export const ru: Record<MessageKey, string> = {
   "card.actions": "Следующий шаг",
   "card.lostReason": "Причина: {reason}",
   "card.close": "Закрыть",
-
   "call.call": "Позвонить",
   "call.logOutcome": "Записать исход звонка",
   "call.question": "Чем закончился звонок?",
@@ -118,7 +107,6 @@ export const ru: Record<MessageKey, string> = {
   "call.outcome.later": "Перезвонить позже",
   "call.saved": "Звонок записан",
   "call.attemptFailed": "Попытка звонка не записалась.",
-
   "move.contacted": "Связался",
   "move.quoted": "Смета",
   "move.won": "Заказ",
@@ -138,7 +126,6 @@ export const ru: Record<MessageKey, string> = {
   "lost.not_needed": "Уже не нужно",
   "lost.spam": "Спам или ошибка",
   "lost.other": "Другое",
-
   "payment.title": "Оплата",
   "payment.billed": "Счёт клиенту",
   "payment.commission": "Наша комиссия",
@@ -146,7 +133,6 @@ export const ru: Record<MessageKey, string> = {
   "payment.submit": "Внести оплату",
   "payment.saved": "Оплата внесена",
   "payment.invalid": "Суммы вида 95 или 95.50; комиссия не больше счёта.",
-
   "create.title": "Входящий звонок",
   "create.description": "Звонок мимо формы становится заявкой.",
   "create.brand": "Бренд",
@@ -157,7 +143,6 @@ export const ru: Record<MessageKey, string> = {
   "create.phone": "Телефон, необязательно",
   "create.submit": "Создать заявку",
   "create.saved": "Заявка создана",
-
   "places.title": "Точки",
   "places.window": "Заявки за последние {days} дней, подсчёт в браузере.",
   "places.leads": "Заявки",
@@ -167,10 +152,8 @@ export const ru: Record<MessageKey, string> = {
   "places.empty": "За 30 дней заявок нет",
   "places.empty.body": "Точка появится здесь с первой заявкой.",
   "places.tooMany.title": "Слишком много заявок для подсчёта здесь",
-  "places.tooMany.body":
-    "Подсчёт по точкам в браузере ограничен {limit} заявками. Нужна воронка по точкам с бэкенда (GET /api/v1/funnel?by=location).",
+  "places.tooMany.body": "Подсчёт по точкам в браузере ограничен {limit} заявками. Нужна воронка по точкам с бэкенда (GET /api/v1/funnel?by=location).",
   "places.unknown": "без точки",
-
   "sources.title": "Источники",
   "sources.add": "Добавить источник",
   "sources.keyId": "Идентификатор ключа",
@@ -192,9 +175,8 @@ export const ru: Record<MessageKey, string> = {
   "sources.secret.done": "Я сохранил",
   "sources.empty": "Источников пока нет",
   "sources.empty.body": "Заведите ключ для каждого сайта или импорта, который шлёт события в панель.",
-
   "more.title": "Ещё",
   "time.min": "{n} мин",
   "time.hour": "{n} ч",
-  "time.day": "{n} дн",
-};
+  "time.day": "{n} дн"
+}

@@ -1,5 +1,4 @@
-/** The source catalogue. `ru.ts` must name every key here; the type checker holds it to that. */
-export const en = {
+{
   "app.name": "Service-Arb",
   "nav.overview": "Overview",
   "nav.leads": "Leads",
@@ -11,13 +10,11 @@ export const en = {
   "nav.signOut": "Sign out",
   "nav.role.admin": "admin",
   "nav.role.operator": "operator",
-
   "state.loading": "Loading…",
   "state.retry": "Try again",
   "state.error": "Could not load this. {detail}",
   "state.noAccess.title": "No access to the Service-Arb panel",
-  "state.noAccess.body":
-    "Your EV account signed in, but it has no role on the service_arb allocation. Ask an admin of that allocation to grant you operator or admin in the EV cabinet (Access tab), then reload.",
+  "state.noAccess.body": "Your EV account signed in, but it has no role on the service_arb allocation. Ask an admin of that allocation to grant you operator or admin in the EV cabinet (Access tab), then reload.",
   "state.unavailable.title": "Sign-in service unavailable",
   "state.unavailable.body": "Try again in a minute. You are still signed in.",
   "state.csrf": "The page is out of date. Reload it and repeat the action.",
@@ -25,7 +22,6 @@ export const en = {
   "state.signedOut.title": "Signed out",
   "state.signedOut.body": "The session on this device is closed.",
   "state.signedOut.again": "Sign in again",
-
   "filter.period": "Period",
   "filter.period.7": "7 days",
   "filter.period.30": "30 days",
@@ -41,7 +37,6 @@ export const en = {
   "filter.segment.new": "New",
   "filter.segment.inProgress": "In progress",
   "filter.segment.quotes": "Quotes",
-
   "stage.created": "New",
   "stage.contacted": "Contacted",
   "stage.quoted": "Quoted",
@@ -49,7 +44,6 @@ export const en = {
   "stage.completed": "Completed",
   "stage.paid": "Paid",
   "stage.lost": "Lost",
-
   "funnel.stage.created": "Lead",
   "funnel.stage.contacted": "Contact",
   "funnel.stage.quoted": "Quote",
@@ -74,10 +68,8 @@ export const en = {
   "funnel.empty": "No leads in this period",
   "funnel.empty.body": "Pick a longer period or another brand.",
   "funnel.range": "{from} – {to}, UTC",
-
   "share.nOf": "{n} of {of}",
   "share.percent": "{percent}%",
-
   "leads.title": "Leads",
   "leads.newCall": "+ Call",
   "leads.col.need": "Request",
@@ -94,7 +86,6 @@ export const en = {
   "leads.manual": "by hand",
   "leads.overdue": "overdue · {time}",
   "leads.waiting": "waiting · {time}",
-
   "card.title": "Lead",
   "card.customer": "Customer",
   "card.name": "Name",
@@ -107,7 +98,6 @@ export const en = {
   "card.actions": "Next step",
   "card.lostReason": "Reason: {reason}",
   "card.close": "Close",
-
   "call.call": "Call",
   "call.logOutcome": "Log the call",
   "call.question": "How did the call end?",
@@ -117,7 +107,6 @@ export const en = {
   "call.outcome.later": "Call back later",
   "call.saved": "Call logged",
   "call.attemptFailed": "The call attempt was not recorded.",
-
   "move.contacted": "Contacted",
   "move.quoted": "Quote",
   "move.won": "Won",
@@ -137,7 +126,6 @@ export const en = {
   "lost.not_needed": "No longer needed",
   "lost.spam": "Spam or mistake",
   "lost.other": "Other",
-
   "payment.title": "Payment",
   "payment.billed": "Billed",
   "payment.commission": "Our commission",
@@ -145,7 +133,6 @@ export const en = {
   "payment.submit": "Record payment",
   "payment.saved": "Payment recorded",
   "payment.invalid": "Enter amounts like 95 or 95.50; the commission cannot exceed the bill.",
-
   "create.title": "Incoming call",
   "create.description": "A call that bypassed the form becomes a lead.",
   "create.brand": "Brand",
@@ -156,7 +143,6 @@ export const en = {
   "create.phone": "Phone, optional",
   "create.submit": "Create lead",
   "create.saved": "Lead created",
-
   "places.title": "Locations",
   "places.window": "Leads of the last {days} days, counted in the browser.",
   "places.leads": "Leads",
@@ -166,10 +152,8 @@ export const en = {
   "places.empty": "No leads in the last 30 days",
   "places.empty.body": "A location appears here with its first lead.",
   "places.tooMany.title": "Too many leads to count here",
-  "places.tooMany.body":
-    "Counting per location in the browser stops at {limit} leads. A per-location funnel from the backend (GET /api/v1/funnel?by=location) is needed.",
+  "places.tooMany.body": "Counting per location in the browser stops at {limit} leads. A per-location funnel from the backend (GET /api/v1/funnel?by=location) is needed.",
   "places.unknown": "no location",
-
   "sources.title": "Sources",
   "sources.add": "Add source",
   "sources.keyId": "Key id",
@@ -191,11 +175,8 @@ export const en = {
   "sources.secret.done": "I saved it",
   "sources.empty": "No sources yet",
   "sources.empty.body": "Add a key for each site or import that sends events to the panel.",
-
   "more.title": "More",
   "time.min": "{n} min",
   "time.hour": "{n} h",
-  "time.day": "{n} d",
-} as const;
-
-export type MessageKey = keyof typeof en;
+  "time.day": "{n} d"
+}

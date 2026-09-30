@@ -10,7 +10,8 @@ src/views/           one slice per screen, plus shell/ (sidebar, tab bar, access
 src/features/        call-lead · move-stage · record-payment · create-lead ·
                      lead-filters · funnel-filters · manage-sources · sign-out
 src/entities/        session · lead · funnel · source — types, response checks, requests
-src/shared/          api/ (fetch, CSRF, the gate's answers), i18n/ (en, ru), lib/, ui/
+src/shared/          api/ (fetch, CSRF, the gate's answers), i18n/, lib/, ui/
+messages/            en.json (the source of keys) and ru.json
 scripts/dev-stub.ts  a stand-in backend for local work
 tests/               vitest, in Node: the rules the screens obey live in plain modules
 ```
