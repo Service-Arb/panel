@@ -766,14 +766,18 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 	assert_eq!(got.status, StatusCode::OK, "{}", got.body);
 	assert_eq!(
 		got.body,
-		json!({"enabled": true, "linked": true, "blocked": false, "rules": {"new_lead": true, "contact_overdue": true}}),
+		json!({"enabled": true, "linked": true, "blocked": false, "account": null, "rules": {"new_lead": true, "contact_overdue": true}}),
 		"an operator's rules, at their defaults"
 	);
 	let (role, name): (Option<String>, String) = sqlx::query_as("SELECT role, display_name FROM telegram_links").fetch_one(&pool).await.unwrap();
 	assert_eq!((role.as_deref(), name.as_str()), (Some("operator"), "Ann"), "the gate's GetMe confirmed the link");
 
 	assert_eq!(b.send(&app, Method::POST, "/api/v1/telegram/link", None, false).await.status, StatusCode::FORBIDDEN, "CSRF");
+	let seen: Option<String> = sqlx::query_scalar("SELECT last_seen_at::text FROM sessions").fetch_one(&pool).await.unwrap();
+	assert!(seen.is_some(), "the gate marks the session used");
+	let asked = fake.with(|f| f.me_calls);
 	let link = b.send(&app, Method::POST, "/api/v1/telegram/link", None, true).await;
+	assert_eq!(fake.with(|f| f.me_calls), asked + 1, "a link token asks concierge afresh");
 	assert_eq!(link.status, StatusCode::CREATED, "{}", link.body);
 	let url = link.body["url"].as_str().unwrap();
 	let token = url.strip_prefix("https://t.me/evinvest_sa_bot?start=").unwrap();

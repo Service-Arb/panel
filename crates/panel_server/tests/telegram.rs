@@ -21,13 +21,13 @@ use panel::{
 	Panel,
 	operator::{Actor, NewLead, Payment, Pii},
 	session::{RefreshError, Refresher, Tokens},
-	telegram::{Chat, Directory, DirectoryError, Identity, Notifier, Update},
+	telegram::{Account, Chat, Directory, DirectoryError, Identity, Notifier, Update},
 	testing::{TestDb, panel},
 };
 use panel_core::{
 	ids::{BrandId, LeadId, LocationId},
 	lead::Stage,
-	notify::Locale,
+	notify::{Entity, Locale, Rendered},
 	role::Role,
 };
 use panel_server::telegram::BotApi;
@@ -108,9 +108,10 @@ async fn mock_bot() -> (MockBot, String) {
 
 // ── the fake concierge ───────────────────────────────────────────────────────────────────
 
-/// access token → who `GetMe` says holds it, or a refusal.
+/// access token → who `GetMe` says holds it, or a refusal; and how many `GetMe` to refuse
+/// first, whatever the token.
 #[derive(Clone, Default)]
-struct FakeConcierge(Arc<Mutex<HashMap<String, Result<Identity, ()>>>>);
+struct FakeConcierge(Arc<Mutex<HashMap<String, Result<Identity, ()>>>>, Arc<Mutex<u32>>);
 
 impl Refresher for FakeConcierge {
 	async fn refresh(&self, _: &str) -> Result<Tokens, RefreshError> {
@@ -121,6 +122,13 @@ impl Refresher for FakeConcierge {
 
 impl Directory for FakeConcierge {
 	async fn me(&self, access: &str) -> Result<Identity, DirectoryError> {
+		{
+			let mut refuse = self.1.lock().unwrap();
+			if *refuse > 0 {
+				*refuse -= 1;
+				return Err(DirectoryError::Refused);
+			}
+		}
 		match self.0.lock().unwrap().get(access).cloned() {
 			Some(Ok(id)) => Ok(id),
 			Some(Err(())) | None => Err(DirectoryError::Refused),
@@ -171,6 +179,7 @@ impl Setup {
 				Update::Start {
 					chat: private(chat),
 					payload: Some(token.to_string()),
+					from: Account::default(),
 				},
 				now,
 			)
@@ -180,11 +189,16 @@ impl Setup {
 
 	/// A live panel session for `user`, whose access token concierge answers `GetMe` for.
 	async fn session(&self, user: Uuid, role: Option<Role>, name: &str) {
+		self.session_until(user, role, name, t0() + SignedDuration::from_hours(24 * 30)).await;
+	}
+
+	/// [`Self::session`], its access token expiring at `access_until`.
+	async fn session_until(&self, user: Uuid, role: Option<Role>, name: &str, access_until: Timestamp) {
 		let access = format!("access-{user}");
 		let far = t0() + SignedDuration::from_hours(24 * 30);
 		let tokens = Tokens {
 			access: Zeroizing::new(access.clone()),
-			access_expires_at: far,
+			access_expires_at: access_until,
 			refresh: Zeroizing::new(format!("refresh-{user}")),
 			refresh_expires_at: far,
 		};
@@ -258,6 +272,7 @@ async fn a_link_token_is_single_use_private_and_expires() {
 	let group = Update::Start {
 		chat: Chat { id: -100, private: false },
 		payload: Some(token.to_string()),
+		from: Account::default(),
 	};
 	s.n.handle(group, t0()).await.unwrap();
 	assert!(!s.linked(alice).await);
@@ -266,6 +281,7 @@ async fn a_link_token_is_single_use_private_and_expires() {
 	let start = |chat, token: &str| Update::Start {
 		chat: private(chat),
 		payload: Some(token.to_owned()),
+		from: Account::default(),
 	};
 	s.n.handle(start(7, &token), t0() + SignedDuration::from_mins(9)).await.unwrap();
 	assert!(s.linked(alice).await);
@@ -480,9 +496,9 @@ async fn a_429_waits_what_telegram_says_and_a_5xx_backs_off() {
 	assert_eq!(s.n.deliver(at(6_999)).await.unwrap().sent, 0, "not before retry_after");
 	s.mock.script(502, json!({"ok": false, "error_code": 502, "description": "Bad Gateway"}));
 	assert_eq!(s.n.deliver(at(7_000)).await.unwrap().retrying, 1);
-	assert_eq!(s.n.deliver(at(7_000 + 19_000)).await.unwrap().sent, 0, "backing off: 20 s after the second failure");
-	assert_eq!(s.n.deliver(at(7_000 + 20_000)).await.unwrap().sent, 1);
-	assert_eq!(s.outbox().await, [(1, "new_lead".to_owned(), "sent".to_owned(), 3)]);
+	assert_eq!(s.n.deliver(at(7_000 + 9_999)).await.unwrap().sent, 0, "backing off: 10 s after the first counted failure");
+	assert_eq!(s.n.deliver(at(7_000 + 10_000)).await.unwrap().sent, 1);
+	assert_eq!(s.outbox().await, [(1, "new_lead".to_owned(), "sent".to_owned(), 2)], "the 429 cost no try");
 }
 
 #[tokio::test]
@@ -514,8 +530,8 @@ async fn a_blocked_bot_marks_the_chat_dead() {
 
 // ── the buttons ──────────────────────────────────────────────────────────────────────────
 
-/// Delivers the one due message; its `(message_id, [take data, no-answer data], text)`.
-async fn delivered(s: &Setup, now: Timestamp) -> (i64, Vec<String>, String) {
+/// Delivers the one due message; its `(message_id, [take data, no-answer data], message)`.
+async fn delivered(s: &Setup, now: Timestamp) -> (i64, Vec<String>, Rendered) {
 	let before = s.mock.calls("sendMessage").len();
 	assert_eq!(s.n.deliver(now).await.unwrap().sent, 1);
 	let sent = s.mock.calls("sendMessage")[before].clone();
@@ -529,16 +545,36 @@ async fn delivered(s: &Setup, now: Timestamp) -> (i64, Vec<String>, String) {
 		.iter()
 		.map(|row| row[0]["callback_data"].as_str().unwrap().to_owned())
 		.collect();
-	(mid, data, sent["text"].as_str().unwrap().to_owned())
+	(mid, data, as_sent(&sent))
 }
 
-fn press(id: &str, chat: i64, message_id: i64, data: &str, text: &str) -> Update {
+/// A sent message as the Bot API echoes it back: text and `code` entities.
+fn as_sent(sent: &Value) -> Rendered {
+	let code = sent["entities"]
+		.as_array()
+		.map(|all| {
+			all.iter()
+				.filter(|e| e["type"] == "code")
+				.map(|e| Entity {
+					offset: e["offset"].as_u64().unwrap() as usize,
+					length: e["length"].as_u64().unwrap() as usize,
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+	Rendered {
+		text: sent["text"].as_str().unwrap().to_owned(),
+		code,
+	}
+}
+
+fn press(id: &str, chat: i64, message_id: i64, data: &str, message: &Rendered) -> Update {
 	Update::Callback {
 		id: id.into(),
 		chat_id: chat,
 		message_id,
 		data: data.into(),
-		text: text.into(),
+		message: message.clone(),
 	}
 }
 
@@ -643,4 +679,273 @@ async fn a_forged_button_is_refused() {
 	assert_eq!(answers(&s).len(), forged.len() + 1);
 	assert_eq!(s.events_of(&lead, "lead.contacted").await, 0);
 	assert!(s.mock.calls("editMessageText").is_empty());
+}
+
+// ── after the security review of #4 ──────────────────────────────────────────────────────
+
+async fn outbox_errors(s: &Setup) -> Vec<(String, Option<String>)> {
+	sqlx::query_as("SELECT state, last_error FROM telegram_outbox ORDER BY id").fetch_all(&s.db).await.unwrap()
+}
+
+#[tokio::test]
+async fn access_is_asked_again_when_a_message_is_sent() {
+	let Some(s) = setup().await else { return };
+	let (stale, revoked) = (Uuid::now_v7(), Uuid::now_v7());
+	s.link(stale, Role::Operator, 1, t0() - SignedDuration::from_mins(50)).await;
+	s.link(revoked, Role::Operator, 2, t0()).await;
+	s.mock.clear();
+	s.lead(t0()).await;
+	assert_eq!(s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap(), 2, "both confirmed within the hour, then");
+
+	// concierge said no for one: what was queued for them goes nowhere, at once.
+	s.panel.telegram_access_seen(revoked, None, "Rex", at(1_000)).await.unwrap();
+	// The other's confirmation lapses while the message waits.
+	assert_eq!(s.n.deliver(t0() + SignedDuration::from_mins(11)).await.unwrap().dead, 1);
+	assert!(s.mock.calls("sendMessage").is_empty(), "no PII on a stale or withdrawn role");
+	assert_eq!(
+		outbox_errors(&s).await,
+		[("dead".to_owned(), Some("access not confirmed".to_owned())), ("dead".to_owned(), Some("access lost".to_owned()))]
+	);
+}
+
+#[tokio::test]
+async fn a_session_concierge_will_not_rotate_ends_access_and_one_refusal_does_not() {
+	let Some(s) = setup().await else { return };
+	let user = Uuid::now_v7();
+	s.link(user, Role::Operator, 1, t0()).await;
+	s.session(user, Some(Role::Operator), "Olga").await;
+	let lead = s.lead(t0()).await;
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	let (mid, data, message) = delivered(&s, t0()).await;
+
+	// One refused GetMe is asked again, and the press goes through.
+	*s.concierge.1.lock().unwrap() = 1;
+	s.n.handle(press("cb-1", 1, mid, &data[1], &message), at(1_000)).await.unwrap();
+	assert_eq!(answers(&s), ["Записано."]);
+	assert_eq!(s.events_of(&lead, "call.logged").await, 1);
+
+	// A session whose access token is due and whose refresh concierge refuses: the user's
+	// notifications end, and what waited for them is dropped.
+	let other = Uuid::now_v7();
+	s.link(other, Role::Operator, 2, t0()).await;
+	s.session_until(other, Some(Role::Operator), "Oleg", t0() + SignedDuration::from_secs(10)).await;
+	s.lead(at(2_000)).await;
+	s.panel.telegram_fan_out(at(2_000), Locale::Ru).await.unwrap();
+	let access = s.n.confirm_access(other, at(3_000)).await.unwrap();
+	assert!(matches!(access, panel::telegram::Access::NoSession), "{access:?}");
+	let role: Option<String> = sqlx::query_scalar("SELECT role FROM telegram_links WHERE user_id = $1")
+		.bind(other)
+		.fetch_one(&s.db)
+		.await
+		.unwrap();
+	assert_eq!(role, None);
+	let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM telegram_outbox WHERE user_id = $1 AND state = 'pending'")
+		.bind(other)
+		.fetch_one(&s.db)
+		.await
+		.unwrap();
+	assert_eq!(pending, 0);
+}
+
+#[tokio::test]
+async fn linking_names_both_accounts_and_never_takes_a_chat_over() {
+	let Some(s) = setup().await else { return };
+	let (alice, bob) = (Uuid::now_v7(), Uuid::now_v7());
+	let start = |chat, token: &str, username: &str| Update::Start {
+		chat: private(chat),
+		payload: Some(token.to_owned()),
+		from: Account {
+			username: Some(username.to_owned()),
+			first_name: Some("A".to_owned()),
+		},
+	};
+
+	// A second token replaces the first.
+	let first = s.panel.telegram_link_token(alice, Role::Operator, "Alice Panel", t0()).await.unwrap();
+	let second = s.panel.telegram_link_token(alice, Role::Operator, "Alice Panel", t0()).await.unwrap();
+	s.n.handle(start(1, &first, "alice_tg"), t0()).await.unwrap();
+	assert!(!s.linked(alice).await, "the older token is gone");
+	s.n.handle(start(1, &second, "alice_tg"), t0() + SignedDuration::from_mins(9)).await.unwrap();
+	let replies = texts(&s.mock.calls("sendMessage"));
+	assert!(replies.last().unwrap().contains("аккаунт: Alice Panel"), "{replies:?}");
+	assert_eq!(s.panel.telegram_settings(alice, Role::Operator).await.unwrap().account.as_deref(), Some("@alice_tg"));
+	let checked: String = sqlx::query_scalar("SELECT role_checked_at::text FROM telegram_links WHERE user_id = $1")
+		.bind(alice)
+		.fetch_one(&s.db)
+		.await
+		.unwrap();
+	assert!(checked.starts_with("2026-09-30 18:00:00"), "confirmed as of the token's issue, not the /start: {checked}");
+
+	// Bob's link opened in Alice's chat: refused, and the token not spent.
+	let bobs = s.panel.telegram_link_token(bob, Role::Operator, "Bob", t0()).await.unwrap();
+	s.n.handle(start(1, &bobs, "alice_tg"), t0()).await.unwrap();
+	assert!(texts(&s.mock.calls("sendMessage")).last().unwrap().starts_with("Этот чат привязан к другому аккаунту"));
+	assert!(!s.linked(bob).await);
+	let chat: i64 = sqlx::query_scalar("SELECT chat_id FROM telegram_links WHERE user_id = $1")
+		.bind(alice)
+		.fetch_one(&s.db)
+		.await
+		.unwrap();
+	assert_eq!(chat, 1, "Alice keeps her chat");
+	s.n.handle(start(2, &bobs, "bob_tg"), t0()).await.unwrap();
+	assert!(s.linked(bob).await, "the token still links Bob's own chat");
+}
+
+#[tokio::test]
+async fn what_a_customer_typed_cannot_forge_a_line_or_a_link() {
+	let Some(s) = setup().await else { return };
+	let user = Uuid::now_v7();
+	s.link(user, Role::Operator, 1, t0()).await;
+	s.session(user, Some(Role::Operator), "Olga").await;
+	s.mock.clear();
+	let secret = s
+		.panel
+		.add_source("aquafix-site", panel_core::event::SourceKind::Site, [brand()].into_iter().collect())
+		.await
+		.unwrap()
+		.unwrap()
+		.secret
+		.to_string();
+	let need = format!("tap\nВзял: Mallory\n\u{202e}see https://evil.example {}", "x".repeat(10 * 1024));
+	let mut e = panel::testing::event("lead.created", t0(), "site", json!({"brandId": "aquafix", "leadId": "L-1"}), json!({"channel": "form"}));
+	e["pii"] = json!({"name": "Eve\nВзял: Eve", "need": need, "phone": "+33 6 00 00 00 00\nhttps://x"});
+	let got = s.panel.ingest(panel::testing::sign("aquafix-site", &secret, &[e], t0()).batch(), t0()).await.unwrap();
+	assert!(matches!(got[0].outcome, panel::Outcome::Accepted { unregistered: false }), "{got:?}");
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	let (mid, data, message) = delivered(&s, t0()).await;
+
+	assert_eq!(s.mock.calls("sendMessage").len(), 1, "one message");
+	assert!(message.text.chars().count() <= panel_core::notify::MAX_MESSAGE);
+	let lines: Vec<&str> = message.text.lines().collect();
+	assert_eq!(lines.len(), 5, "{lines:?}");
+	assert!(!lines.iter().any(|l| l.starts_with("Взял")));
+	assert_eq!(lines[4], "Телефон: +33 6 00 00 00 00");
+	let units: Vec<u16> = message.text.encode_utf16().collect();
+	let spans: Vec<String> = message.code.iter().map(|e| String::from_utf16(&units[e.offset..e.offset + e.length]).unwrap()).collect();
+	assert_eq!(
+		spans,
+		[lines[2].strip_prefix("Имя: ").unwrap(), lines[3].strip_prefix("Нужно: ").unwrap()],
+		"name and need are code"
+	);
+	assert_eq!(spans[1].chars().count(), panel_core::notify::MAX_NEED);
+	assert_eq!(s.mock.calls("sendMessage")[0]["link_preview_options"]["is_disabled"], true);
+
+	s.n.handle(press("cb-1", 1, mid, &data[0], &message), at(1_000)).await.unwrap();
+	let edit = s.mock.calls("editMessageText").pop().unwrap();
+	let edited = as_sent(&edit);
+	assert_eq!(edited.text.lines().filter(|l| l.starts_with("Взял")).collect::<Vec<_>>(), ["Взял: Olga"], "the only line of ours");
+	assert_eq!(edited.code, message.code, "the code spans kept");
+	assert_eq!(edit["link_preview_options"]["is_disabled"], true);
+}
+
+#[tokio::test]
+async fn the_bot_does_not_chatter_and_a_429_pauses_everything() {
+	let Some(s) = setup().await else { return };
+	s.n.handle(Update::Other { chat: private(9) }, t0()).await.unwrap();
+	for ms in [0, 1_000, 599_999] {
+		s.n.handle(
+			Update::Start {
+				chat: private(9),
+				payload: None,
+				from: Account::default(),
+			},
+			at(ms),
+		)
+		.await
+		.unwrap();
+	}
+	assert_eq!(s.mock.calls("sendMessage").len(), 1, "silent on chatter; one help per ten minutes");
+	s.n.handle(
+		Update::Start {
+			chat: private(9),
+			payload: None,
+			from: Account::default(),
+		},
+		at(600_000),
+	)
+	.await
+	.unwrap();
+	assert_eq!(s.mock.calls("sendMessage").len(), 2);
+
+	s.link(Uuid::now_v7(), Role::Operator, 1, t0()).await;
+	s.link(Uuid::now_v7(), Role::Operator, 2, t0()).await;
+	s.mock.clear();
+	s.lead(t0()).await;
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	s.mock
+		.script(429, json!({"ok": false, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 5}}));
+	let first = s.n.deliver(at(0)).await.unwrap();
+	assert_eq!((first.sent, first.retrying), (1, 1));
+	s.lead(at(1_000)).await;
+	s.panel.telegram_fan_out(at(1_000), Locale::Ru).await.unwrap();
+	assert_eq!(s.n.deliver(at(4_999)).await.unwrap(), Default::default(), "the whole outbox waits, not only the chat");
+	assert_eq!(s.n.deliver(at(5_000)).await.unwrap().sent, 2);
+	let attempts: Vec<i32> = sqlx::query_scalar("SELECT attempts FROM telegram_outbox ORDER BY id").fetch_all(&s.db).await.unwrap();
+	assert!(attempts.iter().all(|&a| a <= 1), "the 429 cost no try: {attempts:?}");
+}
+
+#[tokio::test]
+async fn stale_lead_messages_are_dropped_and_a_flood_is_summarized() {
+	let Some(s) = setup().await else { return };
+	let user = Uuid::now_v7();
+	s.link(user, Role::Operator, 1, t0()).await;
+	s.mock.clear();
+	s.lead(t0()).await;
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	let late = t0() + SignedDuration::from_mins(61);
+	s.panel.telegram_access_seen(user, Some(Role::Operator), "Olga", late).await.unwrap();
+	assert_eq!(s.n.deliver(late).await.unwrap(), Default::default());
+	assert_eq!(outbox_errors(&s).await, [("dead".to_owned(), Some("stale".to_owned()))]);
+
+	for i in 0..25 {
+		s.lead(late + SignedDuration::from_secs(i)).await;
+	}
+	assert_eq!(
+		s.panel.telegram_fan_out(late + SignedDuration::from_secs(30), Locale::Ru).await.unwrap(),
+		26,
+		"25 new, and the first one's SLA reminder"
+	);
+	assert_eq!(s.n.deliver(late + SignedDuration::from_secs(30)).await.unwrap().sent, 1);
+	let sent = texts(&s.mock.calls("sendMessage"));
+	assert_eq!(sent, ["26 новых заявок ждут звонка. Откройте панель."], "one summary, without PII");
+	let summarized: i64 = sqlx::query_scalar("SELECT count(*) FROM telegram_outbox WHERE last_error = 'summarized'")
+		.fetch_one(&s.db)
+		.await
+		.unwrap();
+	assert_eq!(summarized, 26);
+}
+
+#[tokio::test]
+async fn the_bot_asks_only_with_a_session_in_use() {
+	let Some(s) = setup().await else { return };
+	let user = Uuid::now_v7();
+	s.link(user, Role::Operator, 1, t0()).await;
+	s.session(user, Some(Role::Operator), "Olga").await;
+	sqlx::query("UPDATE sessions SET last_seen_at = $1::timestamptz")
+		.bind((t0() - SignedDuration::from_hours(24 * 8)).to_string())
+		.execute(&s.db)
+		.await
+		.unwrap();
+	s.lead(t0()).await;
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	let (mid, data, message) = delivered(&s, t0()).await;
+	s.n.handle(press("cb-1", 1, mid, &data[0], &message), at(1_000)).await.unwrap();
+	assert_eq!(
+		answers(&s),
+		["Откройте панель, чтобы подтвердить доступ, и нажмите снова."],
+		"a week unused: not the bot's to keep alive"
+	);
+}
+
+#[tokio::test]
+async fn a_chat_telegram_cannot_find_is_dead() {
+	let Some(s) = setup().await else { return };
+	let user = Uuid::now_v7();
+	s.link(user, Role::Operator, 1, t0()).await;
+	s.mock.clear();
+	s.lead(t0()).await;
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	s.mock.script(400, json!({"ok": false, "error_code": 400, "description": "Bad Request: chat not found"}));
+	assert_eq!(s.n.deliver(t0()).await.unwrap().dead, 1);
+	assert!(s.panel.telegram_settings(user, Role::Operator).await.unwrap().blocked);
 }
