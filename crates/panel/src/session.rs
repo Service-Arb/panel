@@ -171,7 +171,7 @@ pub struct PreLogin {
 	pub verifier: Zeroizing<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct PreLoginPlain {
 	state: String,
 	verifier: String,
