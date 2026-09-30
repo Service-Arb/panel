@@ -17,7 +17,7 @@ import { LeadDetails } from "./lead-details";
 /** The lead card: who, then every action a next step needs, then what happened so far. */
 export function LeadCardPanel({ leadRef, version, onChanged }: { leadRef: LeadRef; version: number; onChanged: () => void }) {
   const t = useT();
-  const card = useResource(`card:${encodeRef(leadRef)}:${version}`, () => fetchLeadCard(leadRef));
+  const card = useResource(`card:${encodeRef(leadRef)}:${version}`, () => fetchLeadCard(leadRef), `card:${encodeRef(leadRef)}`);
 
   if (card.status === "loading") return <Skeleton className="h-64 w-full" />;
   if (card.status === "error") return <ErrorState failure={card.failure} onRetry={card.reload} />;

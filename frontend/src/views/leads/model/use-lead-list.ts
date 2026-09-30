@@ -32,8 +32,10 @@ export function useLeadList(filter: LeadFilter) {
     };
   }, [key, tick]);
 
-  const list: ListState = state.key === key && state.tick === tick ? state.list : { status: "loading" };
+  // A reload under the same filter keeps the rows on screen until the new page lands.
+  const list: ListState = state.key === key ? state.list : { status: "loading" };
 
+  /** Rejects on failure with the list left as it was; the caller tells the person. */
   const loadMore = async () => {
     if (list.status !== "ok" || !list.cursor || list.more) return;
     setState({ key, tick, list: { ...list, more: true } });
@@ -41,7 +43,8 @@ export function useLeadList(filter: LeadFilter) {
       const page = await fetchLeads(filter, list.cursor);
       setState({ key, tick, list: { status: "ok", leads: [...list.leads, ...page.leads], cursor: page.next_cursor, more: false } });
     } catch (e) {
-      setState({ key, tick, list: { status: "error", failure: failureOf(e) } });
+      setState({ key, tick, list: { ...list, more: false } });
+      throw e;
     }
   };
 

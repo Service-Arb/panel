@@ -53,6 +53,19 @@ export type LeadPage = Infer<typeof leadPageParser>;
 export const leadCardParser = object({ lead: leadParser, events: arrayOf(leadEventParser) });
 export type LeadCard = Infer<typeof leadCardParser>;
 
+/** `panel_core::funnel::CONTACT_SLA`: a new lead is overdue after this long without contact. */
+export const CONTACT_SLA_SECONDS = 30 * 60;
+
+/**
+ * The wait as of `now`, from `waiting_since` — the API's `waiting_seconds` and
+ * `overdue` are as of the answer, and a list left open must keep counting.
+ */
+export function slaAt(sla: NonNullable<Lead["sla"]>, now: number): { seconds: number; overdue: boolean } {
+  const since = Date.parse(sla.waiting_since);
+  const seconds = Number.isNaN(since) ? sla.waiting_seconds : Math.max(sla.waiting_seconds, Math.floor((now - since) / 1000));
+  return { seconds, overdue: sla.overdue || seconds > CONTACT_SLA_SECONDS };
+}
+
 /** A lead's address in the API and in the page URL: `brand/lead`. */
 export interface LeadRef {
   brand: string;

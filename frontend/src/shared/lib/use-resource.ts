@@ -17,10 +17,15 @@ function failureOf(e: unknown) {
 /**
  * One read, redone whenever `key` changes or `reload` is called. The answer to
  * an earlier key never overwrites a later one.
+ *
+ * Stale-while-revalidate: a reload, or a new key in the same `group` (the same
+ * record at a newer version), keeps showing the last answer until the next one
+ * lands, so a refresh after an action does not blank the screen.
  */
-export function useResource<T>(key: string, load: () => Promise<T>): Resource<T> & { reload: () => void } {
-  const [state, setState] = useState<{ key: string; tick: number; value: Resource<T> }>({
+export function useResource<T>(key: string, load: () => Promise<T>, group: string = key): Resource<T> & { reload: () => void } {
+  const [state, setState] = useState<{ key: string; group: string; tick: number; value: Resource<T> }>({
     key,
+    group,
     tick: 0,
     value: { status: "loading" },
   });
@@ -30,8 +35,8 @@ export function useResource<T>(key: string, load: () => Promise<T>): Resource<T>
   useEffect(() => {
     let live = true;
     load().then(
-      (data) => live && setState({ key, tick, value: { status: "ok", data } }),
-      (e: unknown) => live && setState({ key, tick, value: { status: "error", failure: failureOf(e) } }),
+      (data) => live && setState({ key, group, tick, value: { status: "ok", data } }),
+      (e: unknown) => live && setState({ key, group, tick, value: { status: "error", failure: failureOf(e) } }),
     );
     return () => {
       live = false;
@@ -40,6 +45,8 @@ export function useResource<T>(key: string, load: () => Promise<T>): Resource<T>
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, tick]);
 
-  const current: Resource<T> = state.key === key && state.tick === tick ? state.value : { status: "loading" };
+  const fresh = state.key === key && state.tick === tick;
+  const stale = state.group === group && state.value.status === "ok";
+  const current: Resource<T> = fresh || stale ? state.value : { status: "loading" };
   return { ...current, reload };
 }

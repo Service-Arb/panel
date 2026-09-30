@@ -13,6 +13,7 @@ import { useT } from "@/shared/i18n";
 import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
 import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
+import { notifyFailure } from "@/shared/ui/notify";
 import { PageHeader } from "@/shared/ui/page-header";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
 import { TOUCH_TARGET } from "@/shared/ui/touch";
@@ -80,7 +81,7 @@ export function LeadsView() {
         )}
         {leads.length > 0 && (isDesktop ? <LeadTable leads={leads} onOpen={(l) => openLead(refOf(l))} /> : <LeadList leads={leads} onOpen={(l) => openLead(refOf(l))} />)}
         {list.status === "ok" && list.cursor && (
-          <Button variant="outline" className={`self-center ${TOUCH_TARGET}`} disabled={list.more} onClick={() => void loadMore()}>
+          <Button variant="outline" className={`self-center ${TOUCH_TARGET}`} disabled={list.more} onClick={() => loadMore().catch((e: unknown) => notifyFailure(e, t))}>
             {t("leads.more")}
           </Button>
         )}
