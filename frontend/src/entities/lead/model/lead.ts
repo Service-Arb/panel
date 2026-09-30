@@ -95,6 +95,17 @@ export function contactOf(pii: Record<string, unknown> | null): Contact {
 }
 
 /**
+ * The number as a `tel:` link may carry it: `+` and digits only, whatever the
+ * customer typed around them. Fewer than six digits is not a number to dial —
+ * the page shows the text and offers no call.
+ */
+export function dialable(phone: string | null): string | null {
+  if (!phone) return null;
+  const tel = phone.replace(/[^\d+]/g, "");
+  return tel.replace(/\D/g, "").length >= 6 ? tel : null;
+}
+
+/**
  * Whether a lead reached a stage, by the stage times the projection keeps (a
  * lead lost after a quote did reach "quoted"). The same rule the backend's
  * funnel counts by.

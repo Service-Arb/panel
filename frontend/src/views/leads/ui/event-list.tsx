@@ -27,7 +27,7 @@ export function EventList({ events }: { events: LeadEvent[] }) {
             {e.manual && <Badge variant="outline">{t("leads.manual")}</Badge>}
             <span className="text-xs tabular-nums text-ink-soft">{formatDateTime(e.occurred_at, locale)}</span>
           </span>
-          {summary(e.properties) && <span className="text-xs text-ink-mid">{summary(e.properties)}</span>}
+          {summary(e.properties) && <span className="wrap-anywhere text-xs text-ink-mid">{summary(e.properties)}</span>}
         </li>
       ))}
     </ol>

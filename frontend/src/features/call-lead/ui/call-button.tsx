@@ -3,7 +3,7 @@
 import { Button } from "@evinvest/uikit";
 import { Phone } from "lucide-react";
 
-import { type LeadRef, encodeRef } from "@/entities/lead";
+import { type LeadRef, dialable, encodeRef } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
 
@@ -17,11 +17,13 @@ export function CallButton({ leadRef, phone }: { leadRef: LeadRef; phone: string
   const t = useT();
   const { state, start, ask } = useCallFlow();
   const pending = state.phase === "dialing" && encodeRef(state.ref) === encodeRef(leadRef);
+  const tel = dialable(phone);
+  if (!tel) return null;
 
   return (
     <div className="flex flex-wrap gap-2">
       <Button asChild size="lg">
-        <a href={`tel:${phone.replace(/\s+/g, "")}`} onClick={() => start(leadRef).catch((e: unknown) => notifyFailure(e, t))}>
+        <a href={`tel:${tel}`} onClick={() => start(leadRef).catch((e: unknown) => notifyFailure(e, t))}>
           <Phone aria-hidden />
           {t("call.call")}
         </a>

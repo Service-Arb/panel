@@ -28,7 +28,7 @@ export function LeadTable({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lea
             <TableRow key={`${lead.brand}/${lead.lead_id}`} className="cursor-pointer" onClick={() => onOpen(lead)}>
               <TableCell className="max-w-72">
                 {/* The row takes the click; the button is its keyboard stop. */}
-                <button type="button" className="block w-full truncate text-left text-ink outline-none focus-visible:underline">
+                <button type="button" className="block w-full truncate rounded-sm text-left text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   {c.need ?? c.name ?? t("leads.noNeed")}
                 </button>
               </TableCell>

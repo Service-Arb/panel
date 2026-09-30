@@ -35,7 +35,7 @@ export function LeadDetails({ lead }: { lead: Lead }) {
           {shown.map(([key, value]) => (
             <div key={key} className="contents">
               <dt className="text-ink-soft">{t(key)}</dt>
-              <dd className="break-words text-ink">{value}</dd>
+              <dd className="min-w-0 wrap-anywhere text-ink">{value}</dd>
             </div>
           ))}
         </dl>
