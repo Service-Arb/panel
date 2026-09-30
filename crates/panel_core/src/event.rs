@@ -1,0 +1,210 @@
+//! The envelope every `sa.funnel.v1` event carries, checked, and what a signing key may
+//! write.
+
+use std::{collections::BTreeSet, fmt, str::FromStr};
+
+use jiff::{SignedDuration, Timestamp};
+
+use crate::{
+	Invalid,
+	ids::{BrandId, EventId, JobId, LeadId, LocationId},
+};
+
+/// How far in the future `occurred_at` may be: the sources' clocks are not ours.
+pub const MAX_CLOCK_SKEW: SignedDuration = SignedDuration::from_mins(5);
+
+/// Where an event comes from.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SourceKind {
+	Site,
+	ReviewArchive,
+	Gbp,
+	Posthog,
+	/// Typed in by a person in the panel: events of this kind are manual.
+	Panel,
+	Sheet,
+	Telephony,
+}
+
+impl SourceKind {
+	pub const ALL: [Self; 7] = [Self::Site, Self::ReviewArchive, Self::Gbp, Self::Posthog, Self::Panel, Self::Sheet, Self::Telephony];
+
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Site => "site",
+			Self::ReviewArchive => "review_archive",
+			Self::Gbp => "gbp",
+			Self::Posthog => "posthog",
+			Self::Panel => "panel",
+			Self::Sheet => "sheet",
+			Self::Telephony => "telephony",
+		}
+	}
+
+	/// Whether a person entered it rather than a system observing it (spec §10a): the
+	/// reports show which share of the funnel is hand-made.
+	pub fn is_manual(self) -> bool {
+		matches!(self, Self::Panel)
+	}
+}
+
+impl FromStr for SourceKind {
+	type Err = Invalid;
+
+	fn from_str(s: &str) -> Result<Self, Invalid> {
+		Self::ALL
+			.into_iter()
+			.find(|k| k.as_str() == s)
+			.ok_or_else(|| Invalid::new(format!("source.kind {s:?} is not one of site, review_archive, gbp, posthog, panel, sheet, telephony")))
+	}
+}
+
+impl fmt::Display for SourceKind {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.write_str(self.as_str())
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Source {
+	pub kind: SourceKind,
+	/// Which one of that kind; free-form, 1–128 characters.
+	pub id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Subject {
+	pub brand_id: BrandId,
+	pub location_id: Option<LocationId>,
+	pub lead_id: Option<LeadId>,
+	pub job_id: Option<JobId>,
+}
+
+/// `type@type_version`: the key of the registry.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TypeKey {
+	pub name: String,
+	pub version: u32,
+}
+
+impl TypeKey {
+	/// A type name is dotted lowercase words (`lead.created`), up to 64 characters; the
+	/// version starts at 1.
+	pub fn parse(name: &str, version: u32) -> Result<Self, Invalid> {
+		let well_formed = (1..=64).contains(&name.len())
+			&& name
+				.split('.')
+				.all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
+		if !well_formed {
+			return Err(Invalid::new("type is not dotted lowercase words, e.g. \"lead.created\""));
+		}
+		if version == 0 {
+			return Err(Invalid::new("type_version starts at 1"));
+		}
+		Ok(Self { name: name.to_owned(), version })
+	}
+}
+
+impl fmt::Display for TypeKey {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}@{}", self.name, self.version)
+	}
+}
+
+/// Everything about an event but its properties and PII.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Envelope {
+	pub id: EventId,
+	pub type_key: TypeKey,
+	pub occurred_at: Timestamp,
+	pub source: Source,
+	pub subject: Subject,
+}
+
+impl Envelope {
+	/// Checks what cannot be known from the fields one by one: that the event did not
+	/// happen in the future.
+	pub fn check_time(&self, now: Timestamp) -> Result<(), Invalid> {
+		if self.occurred_at > now + MAX_CLOCK_SKEW {
+			return Err(Invalid::new("occurred_at is in the future"));
+		}
+		Ok(())
+	}
+}
+
+/// A source's signing key, as the panel knows it: which kind of source holds it and which
+/// brands it may write for. The key of aquafix cannot write vifnet's events.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyGrant {
+	pub key_id: String,
+	pub kind: SourceKind,
+	pub brands: BTreeSet<BrandId>,
+}
+
+impl KeyGrant {
+	/// Whether an event signed with this key may say what it says about its source and brand.
+	pub fn permits(&self, envelope: &Envelope) -> Result<(), Invalid> {
+		if envelope.source.kind != self.kind {
+			return Err(Invalid::new(format!("source.kind {} is not the kind this key is for", envelope.source.kind)));
+		}
+		if !self.brands.contains(&envelope.subject.brand_id) {
+			return Err(Invalid::new(format!("this key may not write for brand {}", envelope.subject.brand_id)));
+		}
+		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use uuid::Uuid;
+
+	use super::*;
+
+	fn envelope(kind: SourceKind, brand: &str) -> Envelope {
+		Envelope {
+			id: EventId::from_raw(Uuid::now_v7()),
+			type_key: TypeKey::parse("lead.created", 1).unwrap(),
+			occurred_at: "2026-09-30T10:00:00Z".parse().unwrap(),
+			source: Source { kind, id: "aquafix".into() },
+			subject: Subject {
+				brand_id: BrandId::parse(brand).unwrap(),
+				location_id: None,
+				lead_id: None,
+				job_id: None,
+			},
+		}
+	}
+
+	#[test]
+	fn a_key_writes_its_own_kind_and_brands_only() {
+		let grant = KeyGrant {
+			key_id: "aquafix-site".into(),
+			kind: SourceKind::Site,
+			brands: [BrandId::parse("aquafix").unwrap()].into(),
+		};
+		assert!(grant.permits(&envelope(SourceKind::Site, "aquafix")).is_ok());
+		assert_eq!(grant.permits(&envelope(SourceKind::Site, "vifnet")).unwrap_err().0, "this key may not write for brand vifnet");
+		assert!(
+			grant.permits(&envelope(SourceKind::Panel, "aquafix")).is_err(),
+			"a site key cannot pass its events off as typed in by hand"
+		);
+	}
+
+	#[test]
+	fn future_events_are_refused_past_the_skew() {
+		let e = envelope(SourceKind::Site, "aquafix");
+		assert!(e.check_time(e.occurred_at - MAX_CLOCK_SKEW).is_ok());
+		assert!(e.check_time(e.occurred_at - MAX_CLOCK_SKEW - SignedDuration::from_secs(1)).is_err());
+	}
+
+	#[test]
+	fn type_keys() {
+		assert_eq!(TypeKey::parse("call.logged", 2).unwrap().to_string(), "call.logged@2");
+		for bad in ["", "Lead.created", "lead..created", "lead created", ".lead"] {
+			assert!(TypeKey::parse(bad, 1).is_err(), "{bad:?}");
+		}
+		assert!(TypeKey::parse("lead.created", 0).is_err());
+		assert_eq!("review_archive".parse::<SourceKind>().unwrap(), SourceKind::ReviewArchive);
+		assert!("Site".parse::<SourceKind>().is_err());
+	}
+}

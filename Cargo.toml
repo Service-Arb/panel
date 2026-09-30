@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/panel_contracts",
+    "crates/panel_core",
 ]
 
 [workspace.package]
