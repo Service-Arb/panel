@@ -49,6 +49,12 @@ struct Fake {
 	profiles: HashMap<String, Result<pb::UserProfile, Code>>,
 	/// refresh token → user id.
 	refresh_tokens: HashMap<String, String>,
+	/// How long `ExchangeCode` and `GetMe` take to answer.
+	exchange_delay: std::time::Duration,
+	me_delay: std::time::Duration,
+	me_calls: u32,
+	/// The next `GetMe` fails with this, once.
+	me_fails_once: Option<Code>,
 }
 
 #[derive(Clone, Default)]
@@ -84,6 +90,7 @@ fn tokens(fake: &mut Fake, user_id: &str, access_ttl: SignedDuration) -> pb::Cli
 impl AuthService for FakeConcierge {
 	async fn exchange_code(&self, req: GrpcRequest<pb::ExchangeCodeRequest>) -> Result<GrpcResponse<pb::ClientTokenResponse>, Status> {
 		let r = req.into_inner();
+		tokio::time::sleep(self.with(|f| f.exchange_delay)).await;
 		self.with(|f| {
 			f.exchanges += 1;
 			if r.client_id != CLIENT_ID || r.client_secret != SECRET {
@@ -144,6 +151,13 @@ impl UserDirectory for FakeConcierge {
 			.and_then(|v| v.to_str().ok())
 			.and_then(|v| v.strip_prefix("Bearer "))
 			.map(str::to_owned);
+		tokio::time::sleep(self.with(|f| f.me_delay)).await;
+		if let Some(code) = self.with(|f| {
+			f.me_calls += 1;
+			f.me_fails_once.take()
+		}) {
+			return Err(Status::new(code, "once"));
+		}
 		let answer = self.with(|f| bearer.and_then(|b| f.profiles.get(&b).cloned()));
 		match answer {
 			Some(Ok(p)) => Ok(GrpcResponse::new(p)),
@@ -304,18 +318,25 @@ impl Browser {
 }
 
 async fn setup(db: &TestDb) -> (Router, FakeConcierge, panel::Panel) {
+	setup_with(db, http::Limits::default()).await
+}
+
+async fn setup_with(db: &TestDb, limits: http::Limits) -> (Router, FakeConcierge, panel::Panel) {
 	let fake = FakeConcierge::default();
 	let addr = serve_fake(fake.clone()).await;
 	let panel = panel(db).await;
 	let concierge = Concierge::new(&addr, SECRET).unwrap();
-	let app = http::app(SignIn::new(
-		panel.clone(),
-		concierge,
-		SignInConfig {
-			panel_origin: format!("{PANEL}/"),
-			concierge_origin: "http://concierge.test".to_owned(),
-		},
-	));
+	let app = http::app_with(
+		SignIn::new(
+			panel.clone(),
+			concierge,
+			SignInConfig {
+				panel_origin: format!("{PANEL}/"),
+				concierge_origin: "http://concierge.test".to_owned(),
+			},
+		),
+		limits,
+	);
 	(app, fake, panel)
 }
 
@@ -523,4 +544,189 @@ async fn concierge_down_is_a_503_not_a_sign_out() {
 	let me = b.get(&app, "/api/v1/me").await;
 	assert_eq!(me.status, StatusCode::SERVICE_UNAVAILABLE, "{}", me.body);
 	assert!(b.jar.contains_key("sa_session"), "the session survives concierge being down");
+}
+
+/// Seeds the fake with a user and makes the next code theirs.
+fn user(fake: &FakeConcierge, id: &str, global: &str, grant: Option<&str>) {
+	fake.with(|f| {
+		f.profiles.insert(format!("seed-{id}"), Ok(profile(id, global, grant)));
+		f.next_user = Some((id.into(), SignedDuration::from_mins(15)));
+	});
+}
+
+// ── security review of #2 ────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_callback_is_redeemed_once() {
+	let Some(db) = TestDb::create().await else { return };
+	let (app, fake, _) = setup(&db).await;
+	user(&fake, OPERATOR, "investor", Some("operator"));
+	let mut b = Browser::default();
+	let login = b.get(&app, "/auth/login").await;
+	let location = login.headers[header::LOCATION].to_str().unwrap().to_owned();
+	let param = |name: &str| location.split(['?', '&']).find_map(|p| p.strip_prefix(&format!("{name}="))).unwrap().to_owned();
+	fake.with(|f| f.challenge = Some(param("code_challenge")));
+	let prelogin = b.jar["sa_prelogin"].clone();
+	let callback = format!("/auth/callback?code={CODE}&state={}", param("state"));
+	assert_eq!(b.get(&app, &callback).await.status, StatusCode::SEE_OTHER);
+
+	// The same URL and the same pre-login cookie again, as a replay would have them.
+	let mut replay = Browser::default();
+	replay.jar.insert("sa_prelogin".into(), prelogin);
+	let again = replay.get(&app, &callback).await;
+	assert_eq!(again.status, StatusCode::BAD_REQUEST);
+	assert!(!replay.jar.contains_key("sa_session"));
+	assert_eq!(fake.with(|f| f.exchanges), 1, "the code is presented once");
+	let csp = again.headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+	assert_eq!(csp, "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+	assert_eq!(again.headers["x-content-type-options"], "nosniff");
+}
+
+#[tokio::test]
+async fn auth_and_api_shed_and_time_out() {
+	let Some(db) = TestDb::create().await else { return };
+	let limits = http::Limits {
+		auth_concurrent: 1,
+		api_timeout: std::time::Duration::from_millis(300),
+		..Default::default()
+	};
+	let (app, fake, _) = setup_with(&db, limits).await;
+	user(&fake, OPERATOR, "investor", Some("operator"));
+	fake.with(|f| f.exchange_delay = std::time::Duration::from_millis(500));
+
+	// One slow callback holds /auth's only slot: the next /auth request is shed, not queued.
+	let mut slow = Browser::default();
+	let mut other = Browser::default();
+	let (signed_in, shed) = tokio::join!(slow.sign_in(&app, &fake, None), async {
+		tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+		other.get(&app, "/auth/login").await
+	});
+	assert_eq!(signed_in.status, StatusCode::SEE_OTHER);
+	assert_eq!(shed.status, StatusCode::SERVICE_UNAVAILABLE);
+	assert_eq!(shed.headers["x-content-type-options"], "nosniff");
+
+	// GetMe slower than /api/v1's budget: 503, and the session stays.
+	fake.with(|f| f.me_delay = std::time::Duration::from_millis(400));
+	let me = slow.get(&app, "/api/v1/me").await;
+	assert_eq!(me.status, StatusCode::SERVICE_UNAVAILABLE, "{}", me.body);
+	fake.with(|f| f.me_delay = std::time::Duration::ZERO);
+	assert_eq!(slow.get(&app, "/api/v1/me").await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn key_changes_ask_concierge_afresh() {
+	let Some(db) = TestDb::create().await else { return };
+	let (app, fake, _) = setup(&db).await;
+	user(&fake, ADMIN, "investor", Some("admin"));
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+	assert_eq!(b.get(&app, "/api/v1/me").await.body["role"], "admin");
+
+	let panel_key = b.post(&app, "/api/v1/sources", json!({"key_id": "hand", "kind": "panel", "brands": ["aquafix"]})).await;
+	assert_eq!(panel_key.status, StatusCode::BAD_REQUEST, "{}", panel_key.body);
+	let site = b.post(&app, "/api/v1/sources", json!({"key_id": "aquafix-site", "kind": "site", "brands": ["aquafix"]})).await;
+	assert_eq!(site.status, StatusCode::CREATED, "{}", site.body);
+
+	// The grant is taken away at concierge. Reads ride the cache for up to a minute; minting
+	// and revoking keys do not.
+	fake.with(|f| {
+		for p in f.profiles.values_mut().flatten() {
+			if p.user_id == ADMIN {
+				*p = profile(ADMIN, "investor", None);
+			}
+		}
+	});
+	assert_eq!(b.get(&app, "/api/v1/sources").await.status, StatusCode::OK, "cached");
+	let minted = b.post(&app, "/api/v1/sources", json!({"key_id": "vifnet-site", "kind": "site", "brands": ["vifnet"]})).await;
+	assert_eq!(minted.status, StatusCode::FORBIDDEN, "{}", minted.body);
+	let revoked = b.send(&app, Method::DELETE, "/api/v1/sources/aquafix-site", None, true).await;
+	assert_eq!(revoked.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn signing_in_again_and_out_closes_the_old_sessions() {
+	let Some(db) = TestDb::create().await else { return };
+	let (app, fake, _) = setup(&db).await;
+	user(&fake, OPERATOR, "investor", Some("operator"));
+
+	let mut laptop = Browser::default();
+	laptop.sign_in(&app, &fake, None).await;
+	let first = laptop.jar["sa_session"].clone();
+	fake.with(|f| f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15))));
+	laptop.sign_in(&app, &fake, None).await;
+	assert_ne!(laptop.jar["sa_session"], first);
+	let mut stale = Browser::default();
+	stale.jar.insert("sa_session".into(), first);
+	assert_eq!(stale.get(&app, "/api/v1/me").await.status, StatusCode::UNAUTHORIZED, "the replaced session is closed");
+
+	let mut phone = Browser::default();
+	fake.with(|f| f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15))));
+	phone.sign_in(&app, &fake, None).await;
+	assert_eq!(phone.get(&app, "/api/v1/me").await.status, StatusCode::OK, "cached now");
+	assert_eq!(laptop.send(&app, Method::POST, "/auth/logout", None, true).await.status, StatusCode::NO_CONTENT);
+	assert_eq!(phone.get(&app, "/api/v1/me").await.status, StatusCode::UNAUTHORIZED, "signed out everywhere");
+}
+
+#[tokio::test]
+async fn money_is_bounded_and_writes_are_idempotent() {
+	let Some(db) = TestDb::create().await else { return };
+	let (app, fake, _) = setup(&db).await;
+	user(&fake, OPERATOR, "investor", Some("operator"));
+	fake.with(|f| f.me_fails_once = Some(Code::DeadlineExceeded));
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+	assert_eq!(b.get(&app, "/api/v1/me").await.status, StatusCode::OK, "a GetMe timeout is asked once more");
+	assert_eq!(fake.with(|f| f.me_calls), 2);
+
+	let new_lead = json!({"brand": "aquafix", "location": "paris-11", "need": "a leaking tap"});
+	let with_key = |b: &mut Browser, uri: String, body: Value, key: &'static str| {
+		let app = app.clone();
+		let cookie: Vec<String> = b.jar.iter().map(|(k, v)| format!("{k}={v}")).collect();
+		let csrf = b.jar["sa_csrf"].clone();
+		async move {
+			let req = Request::post(uri)
+				.header(header::COOKIE, cookie.join("; "))
+				.header("x-sa-csrf", csrf)
+				.header("idempotency-key", key)
+				.header(header::CONTENT_TYPE, "application/json")
+				.body(Body::from(body.to_string()))
+				.unwrap();
+			let res = app.oneshot(req).await.unwrap();
+			let status = res.status();
+			let body: Value = serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap_or(Value::Null);
+			(status, body)
+		}
+	};
+	let (s1, first) = with_key(&mut b, "/api/v1/leads".into(), new_lead.clone(), "lead-1").await;
+	let (s2, again) = with_key(&mut b, "/api/v1/leads".into(), new_lead.clone(), "lead-1").await;
+	assert_eq!((s1, s2), (StatusCode::CREATED, StatusCode::OK), "{first} {again}");
+	assert_eq!(first, again, "the retry is answered with the first lead");
+	let lead = first["lead_id"].as_str().unwrap().to_owned();
+	let (_, other) = with_key(&mut b, "/api/v1/leads".into(), new_lead, "lead-2").await;
+	assert_ne!(other["lead_id"], lead.as_str(), "another key, another lead");
+
+	b.post(&app, &format!("/api/v1/leads/aquafix/{lead}/stage"), json!({"stage": "won"})).await;
+	let pay = |billed: i64, currency: &str| json!({"billed": billed, "commission": 0, "currency": currency});
+	let too_much = b.post(&app, &format!("/api/v1/leads/aquafix/{lead}/payments"), pay(10_000_000_001, "EUR")).await;
+	assert_eq!(too_much.status, StatusCode::BAD_REQUEST, "{}", too_much.body);
+	let yen = b.post(&app, &format!("/api/v1/leads/aquafix/{lead}/payments"), pay(100, "JPY")).await;
+	assert_eq!(yen.status, StatusCode::BAD_REQUEST, "{}", yen.body);
+	let quote = b
+		.post(
+			&app,
+			&format!("/api/v1/leads/aquafix/{lead}/stage"),
+			json!({"stage": "quoted", "amount": -10_000_000_001_i64, "currency": "EUR"}),
+		)
+		.await;
+	assert_eq!(quote.status, StatusCode::BAD_REQUEST, "{}", quote.body);
+
+	let uri = format!("/api/v1/leads/aquafix/{lead}/payments");
+	let (p1, paid) = with_key(&mut b, uri.clone(), pay(12_000, "EUR"), "pay-1").await;
+	let (p2, paid_again) = with_key(&mut b, uri, pay(12_000, "EUR"), "pay-1").await;
+	assert_eq!((p1, p2), (StatusCode::CREATED, StatusCode::OK), "{paid} {paid_again}");
+	assert_eq!(paid["event_id"], paid_again["event_id"]);
+	let card = b.get(&app, &format!("/api/v1/leads/aquafix/{lead}")).await;
+	let payments = card.body["events"].as_array().unwrap().iter().filter(|e| e["type"] == "payment.received").count();
+	assert_eq!(payments, 1, "the retry journaled nothing");
+	assert_eq!(card.headers["x-content-type-options"], "nosniff");
 }
