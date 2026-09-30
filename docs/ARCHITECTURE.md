@@ -19,6 +19,8 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
   src/lead.rs                        Stage, and fold: a lead's facts → its stage and stage times
   src/signature.rs                   the HMAC scheme of a batch and its replay window
   src/role.rs                        operator / admin and what each may do (§5.4)
+  src/notify.rs                      Telegram: the rules and who gets each, the texts, the
+                                     buttons' signed data, retry and pacing constants
 crates/panel/                        the engine
   src/lib.rs                         the `Panel` facade: ingest, sources, PII, rebuild
   src/wire.rs                        protojson → the core: one event decoded and checked; the
@@ -28,6 +30,9 @@ crates/panel/                        the engine
   src/store/events.rs                the journal
   src/store/projections.rs           leads, calls, payments
   src/store/sources.rs               the signing keys
+  src/store/telegram.rs              links, rules, fan-out marks, the outbox and its pacing
+  src/telegram.rs                    linking, the rules' fan-out, delivery, the buttons; the
+                                     Bot and Directory ports
   src/testing.rs                     (feature `testing`) throwaway databases, signed batches
   migrations/                        the schema, `reporting` included
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
@@ -37,6 +42,8 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
   src/concierge.rs                   concierge over gRPC: ExchangeCode, RefreshClientToken, GetMe
   src/cookies.rs                     __Host- cookies, the double-submit CSRF check
   src/api.rs                         the operator API: JSON over the engine's `operator` module
+  src/telegram.rs                    the Bot API (reqwest), the bot's background work in
+                                     `serve`, and /api/v1/telegram
   src/settings.rs                    the environment (ev_lib `settings!`)
 contracts/proto/concierge/v1/        concierge's auth and directory protos, vendored at the
                                      commit in REV (`sync.sh` refreshes them)
@@ -153,11 +160,78 @@ POST   /sources                     admin, fresh  {key_id, kind, brands} → 201
 DELETE /sources/{key_id}            admin, fresh  204, 404
 ```
 
+```text
+GET    /telegram                                  {enabled, linked, blocked, rules: {rule: bool}}
+                                                  (the rules the caller's role gets)
+POST   /telegram/link                             → 201 {url: "https://t.me/<bot>?start=<token>"};
+                                                  503 without a bot
+DELETE /telegram/link                             204, 404
+PUT    /telegram/rules      {rules: {new_lead: false, …}}
+                                                  → 200 as GET; 400 for a rule not the role's
+```
+
 `Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`, …)
 plus `sla` while it waits for its first contact — `{waiting_since, waiting_seconds,
 overdue}`, overdue after 30 minutes — and `pii` (the customer's name, phone, need) for the
 roles that see it. A share is `{n, of, percent, small_sample}`; `percent` is null while `of`
 is under `min_sample` (§10.1), so the front end can only draw "n of of".
+
+## Telegram (§8)
+
+A bot (`TELEGRAM_BOT_TOKEN`; without it, or without the sign-in, none of this runs) writes to
+each user in a private chat. Rules: `new_lead` and `contact_overdue` (every role, on by
+default), `payment_received` and `source_silent` (admins, off by default). A 3★ review, a
+funnel drop and Grafana alerts are variants to come, once their sources exist.
+
+```text
+POST /api/v1/telegram/link  256 random bits, base64url; SHA-256 stored with the caller's
+                            role, 10 min → t.me/<bot>?start=<token>
+/start <token>              private chats only (groups are ignored whatever they say); the
+                            token redeemed once → telegram_links(user ⇄ chat)
+/stop, DELETE …/link        unlinked; what the outbox still owed them is dropped
+fan-out (2 s)               new leads (their counted creation ≤ 1 h old, still `created`),
+                            leads created 30 min – 6.5 h ago never contacted (once each),
+                            payments (≤ 24 h), sources silent ≥ 24 h (once per full day of
+                            it) → telegram_fanout claims (rule, event) once, and in the same
+                            transaction one outbox row per recipient, UNIQUE (rule, event, chat)
+delivery (0.5 s)            claim under one advisory lock: ≤ 25 tries started in any second,
+                            one per chat per second, none to a chat with a send in flight;
+                            leased 60 s → sendMessage → sent | retry | dead
+```
+
+- **Updates by long polling.** A webhook would need a public route through the Cloudflare
+  tunnel and a secret-header check on it; `getUpdates` needs egress to `api.telegram.org`
+  only. One replica polls, under a lease in `telegram_poller` (60 s, renewed every poll) that
+  another takes over when it lapses; the offset is stored there after each update, and every
+  update is idempotent, so one handled twice across a takeover does nothing twice.
+- **Retries.** 429 waits `retry_after` (the whole chat does); 5xx and timeouts back off from
+  10 s, doubling, to 15 min; 10 tries, then dead. 403 (the bot blocked) marks the chat dead,
+  gives up what it was owed, and nothing more goes there until the user links again. Any
+  other 4xx is dead at once.
+- **PII.** A new lead's message carries the brand, location, need and phone — for roles that
+  see PII in the panel (every role today, §5.4). Queued texts are sealed under
+  `PANEL_DATA_KEY` like the journal's PII and dropped once sent or dead; messages are plain
+  text, so nothing a customer typed is markup.
+- **Who gets a message: a role concierge confirmed within the hour.** The panel learns a role
+  only from `GetMe`, which takes the user's own access token. Each link keeps the role last
+  confirmed and when: the `/api/v1` gate records every `GetMe` answer, and every 15 min the
+  bot asks again for a link not confirmed since, through the user's newest live panel session
+  (rotating it when due, as a request would). A grant revoked at concierge stops messages
+  within ~15 min; a session concierge refuses stops them at once; concierge unreachable stops
+  them after an hour. The risk left: up to that hour of messages (with PII) to someone whose
+  grant was revoked while concierge could not be asked — or, with the bot keeping a linked
+  user's session rotated, as long as concierge keeps rotating it.
+- **Buttons.** "Взял" writes `lead.contacted`, "Не дозвонился" `call.attempted` +
+  `call.logged{no_answer}`, through the operator API's path (`source.kind = panel`,
+  `source.id` = the user). The callback data is `<button>.<outbox id>.<HMAC-SHA256, 80 bits>`
+  under a key derived from `PANEL_DATA_KEY`, bound to the chat: nothing else in it is
+  trusted. The message must be that chat's, the chat linked to the message's user, and the
+  user's access is asked of concierge at the press — with no live panel session to ask with,
+  the answer is "open the panel to confirm your access", never a cached role. The event ids
+  derive from (user, outbox id, button), so a press repeated, or its update redelivered,
+  records nothing twice. The message is then edited: "Взял: <preferred_name or email>" added
+  and the buttons removed ("Не дозвонился" leaves "Взял").
+- Language: `TELEGRAM_LOCALE` (`ru` default, `en`).
 
 ## Invariants
 
@@ -214,7 +288,7 @@ is under `min_sample` (§10.1), so the front end can only draw "n of of".
   and refuses to start on a database that lacks a migration of its build. No command migrates
   on its own, not even in development: run `panel migrate` there too, with both URLs the same.
 - **Secrets come from the environment only** (`DATABASE_URL`, `MIGRATE_DATABASE_URL`,
-  `PANEL_DATA_KEY`, `SENTRY_DSN`, `RP_CLIENT_SECRET_SA`),
+  `PANEL_DATA_KEY`, `SENTRY_DSN`, `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`),
   through `ev_lib::settings`; with `APP_ENV=production`, `DATABASE_URL`, `PANEL_DATA_KEY` and the
   four sign-in variables are required at boot (`panel --print-required-vars` lists them).
 
@@ -229,6 +303,9 @@ is under `min_sample` (§10.1), so the front end can only draw "n of of".
   for every sign-in, token rotation and `GetMe`; the egress policy must allow it. concierge
   must register client `sa` with redirect URI `<PANEL_PUBLIC_ORIGIN>/auth/callback` exactly,
   and hold the hash of `RP_CLIENT_SECRET_SA`.
+- **Telegram, outbound only.** With `TELEGRAM_BOT_TOKEN` (the panel bot's, in sops; not
+  `telegram_token_main`) the pods need egress to `api.telegram.org:443`; nothing inbound. No
+  webhook is set on the bot (`getUpdates` refuses to run while one is).
 - **Rate-limit `/auth` per client IP at Traefik** (a `RateLimit` middleware on the
   IngressRoute's `/auth` prefix, e.g. 10/min with a burst of 20). The panel bounds how many
   sign-ins run at once, not who starts them; per-IP limits are the edge's.

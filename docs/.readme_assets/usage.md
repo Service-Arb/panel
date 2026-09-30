@@ -17,6 +17,8 @@ panel source revoke aquafix-site
 #   PANEL_PUBLIC_ORIGIN=https://sa.evinvest.ltd   CONCIERGE_PUBLIC_ORIGIN=https://evinvest.ltd
 #   CONCIERGE_GRPC_ADDR=http://concierge:55670    RP_CLIENT_SECRET_SA=<the secret concierge hashed>
 # which adds /auth/login, /auth/callback, /auth/logout and the operator API under /api/v1.
+# With signing in, TELEGRAM_BOT_TOKEN turns the bot on (long polling; TELEGRAM_BOT_USERNAME
+# spares a getMe, TELEGRAM_LOCALE=ru|en picks its language, ru by default).
 panel serve
 
 # leads, calls and payments again from the journal, against the registry as it is now

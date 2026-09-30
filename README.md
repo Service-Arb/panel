@@ -22,7 +22,12 @@ People sign in through concierge (the panel is its relying party, client `sa`): 
 operator API the panel's front end works through — leads and their stages, semi-manual
 calls, payments typed in by hand, the funnel, and (admins) the sources.
 
-Not here yet: the UI, Telegram, the GBP and PostHog imports. See
+A Telegram bot notifies each user in a private chat they link from their profile — a new
+lead, with buttons that record "taken" and "no answer" as the operator API would; a lead past
+its contact SLA; for admins, payments and a source gone silent — through an outbox in
+Postgres, paced to Telegram's limits.
+
+Not here yet: the UI, the GBP and PostHog imports. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for where things live.
 <!-- markdownlint-disable -->
 <details>
@@ -55,6 +60,8 @@ panel source revoke aquafix-site
 #   PANEL_PUBLIC_ORIGIN=https://sa.evinvest.ltd   CONCIERGE_PUBLIC_ORIGIN=https://evinvest.ltd
 #   CONCIERGE_GRPC_ADDR=http://concierge:55670    RP_CLIENT_SECRET_SA=<the secret concierge hashed>
 # which adds /auth/login, /auth/callback, /auth/logout and the operator API under /api/v1.
+# With signing in, TELEGRAM_BOT_TOKEN turns the bot on (long polling; TELEGRAM_BOT_USERNAME
+# spares a getMe, TELEGRAM_LOCALE=ru|en picks its language, ru by default).
 panel serve
 
 # leads, calls and payments again from the journal, against the registry as it is now
