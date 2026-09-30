@@ -184,10 +184,14 @@ default), `payment_received` and `source_silent` (admins, off by default). A 3�
 funnel drop and Grafana alerts are variants to come, once their sources exist.
 
 ```text
-POST /api/v1/telegram/link  256 random bits, base64url; SHA-256 stored with the caller's
-                            role, 10 min → t.me/<bot>?start=<token>
-/start <token>              private chats only (groups are ignored whatever they say); the
-                            token redeemed once → telegram_links(user ⇄ chat)
+POST /api/v1/telegram/link  GetMe asked afresh; 256 random bits, base64url; SHA-256 stored
+                            with the caller's role and the time, 10 min, replacing the user's
+                            earlier token → t.me/<bot>?start=<token>
+/start <token>              private chats only, not forwarded (groups are ignored whatever they
+                            say); the token redeemed once → telegram_links(user ⇄ chat, the
+                            role confirmed as of the token's issue, the Telegram @username);
+                            a chat linked to another account is refused ("/stop first"), the
+                            token kept; the reply names the panel account
 /stop, DELETE …/link        unlinked; what the outbox still owed them is dropped
 fan-out (2 s)               new leads (their counted creation ≤ 1 h old, still `created`;
                             not to whoever typed one in),
@@ -195,9 +199,12 @@ fan-out (2 s)               new leads (their counted creation ≤ 1 h old, still
                             payments (≤ 24 h), sources silent ≥ 24 h (once per full day of
                             it) → telegram_fanout claims (rule, event) once, and in the same
                             transaction one outbox row per recipient, UNIQUE (rule, event, chat)
-delivery (0.5 s)            claim under one advisory lock: ≤ 25 tries started in any second,
-                            one per chat per second, none to a chat with a send in flight;
-                            leased 60 s → sendMessage → sent | retry | dead
+delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 waiting for a
+                            chat folded into one "N new leads, open the panel" without PII;
+                            claim under one advisory lock (nothing while the outbox is paused):
+                            ≤ 25 tries started in any second, one per chat per second, none to
+                            a chat with a send in flight; leased 60 s → the user's access
+                            checked again (below) → sendMessage → sent | retry | dead
 ```
 
 - **Updates by long polling.** A webhook would need a public route through the Cloudflare
@@ -205,23 +212,31 @@ delivery (0.5 s)            claim under one advisory lock: ≤ 25 tries started 
   only. One replica polls, under a lease in `telegram_poller` (60 s, renewed every poll) that
   another takes over when it lapses; the offset is stored there after each update, and every
   update is idempotent, so one handled twice across a takeover does nothing twice.
-- **Retries.** 429 waits `retry_after` (the whole chat does); 5xx and timeouts back off from
-  10 s, doubling, to 15 min; 10 tries, then dead. 403 (the bot blocked) marks the chat dead,
-  gives up what it was owed, and nothing more goes there until the user links again. Any
-  other 4xx is dead at once.
+- **Retries.** 429 pauses the whole outbox for `retry_after` and costs the message no try;
+  5xx and timeouts back off from 10 s, doubling, to 15 min; 10 tries, then dead. 403 (the bot
+  blocked) and 400 "chat not found" / "user is deactivated" mark the chat dead, give up what
+  it was owed, and nothing more goes there until the user links again. Any other 4xx is dead
+  at once; so is a queued message that no longer opens.
+- **Quiet.** The bot answers commands only: other messages get nothing, and its unsolicited
+  replies (help, "not linked", "invalid link") go at most once per chat per 10 min.
 - **PII.** A new lead's message carries the brand, location, need and phone — for roles that
   see PII in the panel (every role today, §5.4). Queued texts are sealed under
-  `PANEL_DATA_KEY` like the journal's PII and dropped once sent or dead; messages are plain
-  text, so nothing a customer typed is markup.
+  `PANEL_DATA_KEY` like the journal's PII and dropped once sent or dead. What a customer typed
+  is put on one line (control characters, line separators and bidi marks become spaces),
+  bounded (name 80, need 500, phone 40 of digits and `+()-`, the message 3 500), and the name
+  and need are `code` entities — no parse mode, so nothing is markup, no link is made of it,
+  and no line of it can read as one of ours ("Взял: …"). Link previews are off.
 - **Who gets a message: a role concierge confirmed within the hour.** The panel learns a role
   only from `GetMe`, which takes the user's own access token. Each link keeps the role last
   confirmed and when: the `/api/v1` gate records every `GetMe` answer, and every 15 min the
-  bot asks again for a link not confirmed since, through the user's newest live panel session
-  (rotating it when due, as a request would). A grant revoked at concierge stops messages
-  within ~15 min; a session concierge refuses stops them at once; concierge unreachable stops
-  them after an hour. The risk left: up to that hour of messages (with PII) to someone whose
-  grant was revoked while concierge could not be asked — or, with the bot keeping a linked
-  user's session rotated, as long as concierge keeps rotating it.
+  bot asks again for a link not confirmed since, through the user's newest panel session
+  used within 7 days (`sessions.last_seen_at`, set by the gate; rotated when due, as a
+  request would). The role is checked again when a message is sent, not only when it is
+  queued. A grant revoked at concierge, or a session concierge refuses to rotate (or whose
+  `GetMe` it refuses twice running), stops messages at the next check and drops what was
+  queued; no session used for a week, or concierge unreachable, stops them after an hour.
+  The risk left: up to an hour of messages (with PII) to someone whose grant was revoked
+  while concierge could not be asked.
 - **Buttons.** "Взял" writes `lead.contacted`, "Не дозвонился" `call.attempted` +
   `call.logged{no_answer}`, through the operator API's path (`source.kind = panel`,
   `source.id` = the user). The callback data is `<button>.<outbox id>.<HMAC-SHA256, 80 bits>`
