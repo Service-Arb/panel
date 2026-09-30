@@ -197,6 +197,10 @@ impl Panel {
 			Err(e) => return Ok(Outcome::Rejected(e)),
 		};
 		if let Err(e) = grant.permits(&incoming.envelope) {
+			// Warned, not just answered: a key asking for more than it was given is either a
+			// misconfigured source or a stolen key trying its luck.
+			let env = &incoming.envelope;
+			tracing::warn!(key_id = grant.key_id, brand = %env.subject.brand_id, kind = %env.source.kind, r#type = %env.type_key, reason = %e, "ingest: key not permitted");
 			return Ok(Outcome::Rejected(e));
 		}
 		let checked = wire::check(&incoming.envelope.type_key, incoming.envelope.source.kind, &incoming.properties, &incoming.envelope.subject);

@@ -4,7 +4,7 @@
 use jiff::{SignedDuration, Timestamp};
 use panel::{
 	IngestError, Outcome, Panel,
-	testing::{TestDb, event, panel, sign},
+	testing::{TestDb, event, panel, sign, sign_verbatim},
 };
 use panel_core::{event::SourceKind, ids::BrandId};
 use serde_json::{Value, json};
@@ -432,4 +432,19 @@ async fn what_postgres_would_refuse_is_rejected_not_a_500() {
 	assert!(got[..3].iter().all(|v| matches!(v.outcome, Outcome::Rejected(_))), "{got:?}");
 	assert_eq!(got[3].outcome, ACCEPTED, "the rest of the batch goes on");
 	assert_eq!(count(&db.pool().await, "SELECT count(*) FROM events").await, 1);
+}
+
+#[tokio::test]
+async fn a_source_is_named_by_its_key() {
+	let Some(db) = TestDb::create().await else { return };
+	let (panel, site, _) = setup(&db).await;
+	let mut e = event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}));
+	e["source"]["id"] = json!("vifnet-site");
+	let got = panel.ingest(sign_verbatim("aquafix-site", &site, &[e], now()).batch(), now()).await.unwrap();
+	assert_eq!(outcomes(&got), [Outcome::Rejected(panel_core::Invalid::new("source.id is not the id of the key that signed it"))]);
+	let e = event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}));
+	let got = panel.ingest(sign("aquafix-site", &site, &[e], now()).batch(), now()).await.unwrap();
+	assert_eq!(outcomes(&got), [ACCEPTED]);
+	let source_id: String = sqlx::query_scalar("SELECT source_id FROM events").fetch_one(&db.pool().await).await.unwrap();
+	assert_eq!(source_id, "aquafix-site");
 }

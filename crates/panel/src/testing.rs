@@ -108,8 +108,24 @@ impl Signed {
 	}
 }
 
-/// `{"events": events}`, signed at `at` with `secret`.
+/// `{"events": events}`, signed at `at` with `secret`, as a source sends it: each event's
+/// `source.id` set to the key id, which is what a source is called.
 pub fn sign(key_id: &str, secret: &str, events: &[Value], at: Timestamp) -> Signed {
+	let events: Vec<Value> = events
+		.iter()
+		.cloned()
+		.map(|mut e| {
+			if let Some(source) = e.get_mut("source").and_then(Value::as_object_mut) {
+				source.insert("id".to_owned(), json!(key_id));
+			}
+			e
+		})
+		.collect();
+	sign_verbatim(key_id, secret, &events, at)
+}
+
+/// [`sign`], leaving the events exactly as given.
+pub fn sign_verbatim(key_id: &str, secret: &str, events: &[Value], at: Timestamp) -> Signed {
 	let body = serde_json::to_vec(&json!({ "events": events })).expect("JSON");
 	let timestamp = at.as_second().to_string();
 	Signed {

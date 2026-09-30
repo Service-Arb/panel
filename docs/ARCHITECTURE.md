@@ -74,7 +74,8 @@ registry: type@version known?
   what arrived before it. Known types are checked strictly: unknown fields, a wrong vocabulary
   word, a lead event without a lead are rejected, and not journaled.
 - **A key writes what it was registered for.** Each source key has one `kind` and a set of
-  brands; an event claiming another brand, or another kind (a site key cannot pass its events
+  brands, and names its source: `source.id` must be the key id. An event claiming another
+  source, another brand, or another kind (a site key cannot pass its events
   off as typed in by hand), is rejected. Events of kind `panel` are the manual ones (§10a), and
   every projection row carries `manual`.
 - **A kind writes only its types** (`panel_core::event::may_write`): `lead.created` from `site`

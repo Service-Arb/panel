@@ -47,7 +47,8 @@ message Source {
   // site | review_archive | gbp | posthog | panel | sheet | telephony. Must be the kind the
   // signing key is registered for.
   string kind = 1;
-  // Which one: "aquafix", a user id for `panel`, …
+  // Which one. For a signed batch, the key id it is signed with ("aquafix-site"); anything
+  // else is rejected.
   string id = 2;
 }
 

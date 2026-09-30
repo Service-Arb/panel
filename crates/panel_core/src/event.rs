@@ -163,6 +163,11 @@ impl KeyGrant {
 		if envelope.source.kind != self.kind {
 			return Err(Invalid::new(format!("source.kind {} is not the kind this key is for", envelope.source.kind)));
 		}
+		// A source is called by its key: the id it gives itself cannot be another's, so what
+		// the journal says came from aquafix-site did.
+		if envelope.source.id != self.key_id {
+			return Err(Invalid::new("source.id is not the id of the key that signed it"));
+		}
 		if !self.brands.contains(&envelope.subject.brand_id) {
 			return Err(Invalid::new(format!("this key may not write for brand {}", envelope.subject.brand_id)));
 		}
@@ -184,7 +189,7 @@ mod tests {
 			id: EventId::from_raw(Uuid::now_v7()),
 			type_key: TypeKey::parse("lead.created", 1).unwrap(),
 			occurred_at: "2026-09-30T10:00:00Z".parse().unwrap(),
-			source: Source { kind, id: "aquafix".into() },
+			source: Source { kind, id: "aquafix-site".into() },
 			subject: Subject {
 				brand_id: BrandId::parse(brand).unwrap(),
 				location_id: None,
@@ -207,6 +212,9 @@ mod tests {
 			grant.permits(&envelope(SourceKind::Panel, "aquafix")).is_err(),
 			"a site key cannot pass its events off as typed in by hand"
 		);
+		let mut posing = envelope(SourceKind::Site, "aquafix");
+		posing.source.id = "vifnet-site".into();
+		assert_eq!(grant.permits(&posing).unwrap_err().0, "source.id is not the id of the key that signed it");
 	}
 
 	#[test]
