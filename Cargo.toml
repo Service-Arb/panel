@@ -4,6 +4,7 @@ members = [
     "crates/panel",
     "crates/panel_contracts",
     "crates/panel_core",
+    "crates/panel_server",
 ]
 
 [workspace.package]

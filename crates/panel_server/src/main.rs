@@ -1,0 +1,186 @@
+//! Composition root: settings, error monitoring and logs, then the CLI over the engine's
+//! `Panel`.
+
+mod settings;
+
+use std::{collections::BTreeSet, net::SocketAddr};
+
+use clap::{Parser, Subcommand};
+use ev_lib::error_monitoring;
+use eyre::WrapErr;
+use panel::{Panel, seal::DataKey, store::Store};
+use panel_core::{event::SourceKind, ids::BrandId};
+use panel_server::{DEFAULT_BIND, http};
+
+use crate::settings::Settings;
+
+#[derive(Parser)]
+#[command(name = "panel", version, about = "The Service-Arb panel: sa.funnel.v1 ingest, the event journal and the funnel projections")]
+struct Cli {
+	#[command(subcommand)]
+	cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+	/// The HTTP API.
+	Serve {
+		#[arg(long, default_value = DEFAULT_BIND)]
+		bind: SocketAddr,
+	},
+	/// Rebuild leads, calls and payments from the journal, judging every event against the
+	/// registry as it is now.
+	RebuildProjections,
+	/// The sources that may write events, and their keys.
+	#[command(subcommand)]
+	Source(SourceCmd),
+	/// Print a fresh PANEL_DATA_KEY.
+	GenDataKey,
+}
+
+#[derive(Subcommand)]
+enum SourceCmd {
+	/// Register a source; prints its secret, once.
+	Add {
+		/// Lowercase slug, e.g. aquafix-site.
+		key_id: String,
+		/// site | review_archive | gbp | posthog | panel | sheet | telephony
+		#[arg(long)]
+		kind: String,
+		/// A brand it may write for; repeat for several.
+		#[arg(long = "brand", required = true)]
+		brands: Vec<String>,
+	},
+	List,
+	/// Refuse its key from now on; what it wrote stays.
+	Revoke {
+		key_id: String,
+	},
+}
+
+// Sentry must be initialised before the async runtime starts, hence no #[tokio::main].
+fn main() -> eyre::Result<()> {
+	color_eyre::install()?;
+
+	// The deploy contract, straight out of the image: the gitops preflight diffs it with the
+	// cluster Secret's keys, so a missing variable is caught before the rollout.
+	if let Some(profile) = settings::print_required_vars_for() {
+		for var in Settings::required_var_names(&profile) {
+			println!("{var}");
+		}
+		return Ok(());
+	}
+	// Exits 78 (EX_CONFIG) on a bad environment, before anything else is built.
+	let settings = ev_lib::settings::or_exit(Settings::from_env());
+
+	// Held for the life of main: dropping it flushes. A no-op without SENTRY_DSN.
+	let _sentry = error_monitoring::init(&error_monitoring::Config {
+		dsn: settings.sentry_dsn.clone(),
+		environment: settings.app_env.clone(),
+		release: error_monitoring::release_name!().map(|r| r.into_owned()),
+		// the same name OTEL uses, so an issue and its trace agree on the service
+		service: std::env::var("OTEL_SERVICE_NAME").ok().filter(|s| !s.trim().is_empty()),
+		traces_sample_rate: error_monitoring::Config::traces_sample_rate_for(&settings.app_env),
+	});
+	let cli = Cli::parse();
+	init_tracing()?;
+
+	tokio::runtime::Builder::new_multi_thread()
+		.enable_all()
+		.build()
+		.wrap_err("building the tokio runtime")?
+		.block_on(run(cli, settings))
+}
+
+/// Logs go to stderr, so a CLI command's stdout stays its output.
+fn init_tracing() -> eyre::Result<()> {
+	use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
+	let filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(option_env!("LOG_DIRECTIVES").unwrap_or("info")))?;
+	tracing_subscriber::registry()
+		.with(filter)
+		.with(fmt::layer().with_writer(std::io::stderr))
+		.with(error_monitoring::tracing_layer())
+		.init();
+	Ok(())
+}
+
+async fn run(cli: Cli, settings: Settings) -> eyre::Result<()> {
+	let connect = || async { eyre::Ok(Panel::new(Store::connect(settings.database_url()?).await?, settings.data_key()?)) };
+	match cli.cmd {
+		Cmd::Serve { bind } => serve(connect().await?, bind).await,
+		Cmd::RebuildProjections => {
+			let r = connect().await?.rebuild_projections().await?;
+			println!(
+				"{} events: {} registered, {} unregistered, {} invalid; {} leads",
+				r.events, r.registered, r.unregistered, r.invalid, r.leads
+			);
+			Ok(())
+		}
+		Cmd::Source(cmd) => source(&connect().await?, cmd).await,
+		Cmd::GenDataKey => {
+			println!("{}", DataKey::generate_hex()?);
+			Ok(())
+		}
+	}
+}
+
+async fn source(panel: &Panel, cmd: SourceCmd) -> eyre::Result<()> {
+	match cmd {
+		SourceCmd::Add { key_id, kind, brands } => {
+			let kind: SourceKind = kind.parse()?;
+			let brands = brands.iter().map(|b| BrandId::parse(b)).collect::<Result<BTreeSet<_>, _>>()?;
+			let Some(added) = panel.add_source(&key_id, kind, brands).await? else {
+				eyre::bail!("a source {key_id} exists already");
+			};
+			println!("key id: {}\nsecret: {}\n(shown once; the source signs with it)", added.key_id, *added.secret);
+			Ok(())
+		}
+		SourceCmd::List => {
+			for s in panel.store().sources().await? {
+				let brands: Vec<&str> = s.grant.brands.iter().map(BrandId::as_str).collect();
+				let state = s.revoked_at.map_or_else(|| "active".to_owned(), |at| format!("revoked {at}"));
+				println!("{:<24} {:<14} {:<32} {state}", s.grant.key_id, s.grant.kind, brands.join(","));
+			}
+			Ok(())
+		}
+		SourceCmd::Revoke { key_id } => {
+			eyre::ensure!(panel.store().revoke_source(&key_id).await?, "no active source {key_id}");
+			Ok(())
+		}
+	}
+}
+
+async fn serve(panel: Panel, bind: SocketAddr) -> eyre::Result<()> {
+	let listener = tokio::net::TcpListener::bind(bind).await.wrap_err_with(|| format!("binding {bind}"))?;
+	tracing::info!(%bind, "serving");
+	axum::serve(listener, http::router(panel)).with_graceful_shutdown(shutdown_signal()).await.wrap_err("HTTP server")
+}
+
+async fn shutdown_signal() {
+	let ctrl_c = async {
+		if let Err(e) = tokio::signal::ctrl_c().await {
+			tracing::error!(error = %e, "listening for Ctrl-C");
+			std::future::pending::<()>().await;
+		}
+	};
+	#[cfg(unix)]
+	let term = async {
+		match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+			Ok(mut s) => {
+				s.recv().await;
+			}
+			Err(e) => {
+				tracing::error!(error = %e, "listening for SIGTERM");
+				std::future::pending::<()>().await;
+			}
+		}
+	};
+	#[cfg(not(unix))]
+	let term = std::future::pending::<()>();
+	tokio::select! {
+		() = ctrl_c => {}
+		() = term => {}
+	}
+	tracing::info!("shutting down");
+}
