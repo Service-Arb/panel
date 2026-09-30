@@ -98,8 +98,9 @@ impl TypeKey {
 		if !well_formed {
 			return Err(Invalid::new("type is not dotted lowercase words, e.g. \"lead.created\""));
 		}
-		if version == 0 {
-			return Err(Invalid::new("type_version starts at 1"));
+		// The journal keeps it in a Postgres integer.
+		if version == 0 || version > i32::MAX as u32 {
+			return Err(Invalid::new("type_version must be 1 to 2147483647"));
 		}
 		Ok(Self { name: name.to_owned(), version })
 	}
@@ -253,6 +254,8 @@ mod tests {
 			assert!(TypeKey::parse(bad, 1).is_err(), "{bad:?}");
 		}
 		assert!(TypeKey::parse("lead.created", 0).is_err());
+		assert!(TypeKey::parse("lead.created", i32::MAX as u32).is_ok());
+		assert!(TypeKey::parse("lead.created", i32::MAX as u32 + 1).is_err());
 		assert_eq!("review_archive".parse::<SourceKind>().unwrap(), SourceKind::ReviewArchive);
 		assert!("Site".parse::<SourceKind>().is_err());
 	}

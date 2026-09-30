@@ -412,3 +412,24 @@ async fn a_back_dated_creation_does_not_take_over_a_lead() {
 	panel.rebuild_projections().await.unwrap();
 	assert_eq!(lead_row().await, (manual, channel, created), "and the rebuild agrees");
 }
+
+#[tokio::test]
+async fn what_postgres_would_refuse_is_rejected_not_a_500() {
+	let Some(db) = TestDb::create().await else { return };
+	let (panel, site, _) = setup(&db).await;
+	let mut huge_version = event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}));
+	huge_version["typeVersion"] = json!(u32::MAX);
+	let events = [
+		huge_version,
+		event("review.new", at(0), "site", json!({"brandId": "aquafix"}), json!({"text": "nul \u{0} here"})),
+		event("review.new", at(0), "site", json!({"brandId": "aquafix"}), json!({"text": "x".repeat(17 * 1024)})),
+		event("lead.created", at(0), "site", lead("L-2"), json!({"channel": "form"})),
+	];
+	let got = panel
+		.ingest(sign("aquafix-site", &site, &events, now()).batch(), now())
+		.await
+		.expect("per event, not for the batch");
+	assert!(got[..3].iter().all(|v| matches!(v.outcome, Outcome::Rejected(_))), "{got:?}");
+	assert_eq!(got[3].outcome, ACCEPTED, "the rest of the batch goes on");
+	assert_eq!(count(&db.pool().await, "SELECT count(*) FROM events").await, 1);
+}

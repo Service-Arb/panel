@@ -18,6 +18,9 @@ use serde_json::{Map, Value};
 /// Events in one request, at most.
 pub const MAX_BATCH: usize = 500;
 
+/// An event's `properties`, and its `pii`, serialized, at most — registered or not.
+pub const MAX_OBJECT_BYTES: usize = 16 * 1024;
+
 /// An event that passed the envelope checks; its properties are not judged yet.
 #[derive(Clone, Debug)]
 pub struct Incoming {
@@ -35,7 +38,7 @@ pub struct Incoming {
 /// The events of a request body: `{"events": [...]}`, 1 to [`MAX_BATCH`] of them. What is
 /// wrong with the body as a whole is the caller's mistake.
 pub fn batch(body: &[u8]) -> Result<Vec<Value>, Invalid> {
-	let value: Value = serde_json::from_slice(body).map_err(|e| Invalid::new(format!("body is not JSON: {e}")))?;
+	let value: Value = serde_json::from_slice(body).map_err(|e| Invalid::new(format!("body is not JSON: {}", redact(&e))))?;
 	let Value::Object(mut top) = value else {
 		return Err(Invalid::new("body is not a JSON object"));
 	};
@@ -68,7 +71,7 @@ pub fn decode(raw: Value, now: Timestamp) -> Result<Incoming, Invalid> {
 		Some(v) => v.clone(),
 	};
 	let (properties, pii) = (object("properties"), object("pii"));
-	let event: v1::Event = serde_json::from_value(raw).map_err(|e| Invalid::new(format!("not a {SCHEMA} event: {e}")))?;
+	let event: v1::Event = serde_json::from_value(raw).map_err(|e| Invalid::new(format!("not a {SCHEMA} event: {}", redact(&e))))?;
 	if event.schema != SCHEMA {
 		return Err(Invalid::new(format!("schema is {:?}, not {SCHEMA:?}", event.schema)));
 	}
@@ -85,6 +88,9 @@ pub fn decode(raw: Value, now: Timestamp) -> Result<Incoming, Invalid> {
 	let source = event.source.as_ref().ok_or_else(|| Invalid::new("source is required"))?;
 	if !(1..=128).contains(&source.id.chars().count()) {
 		return Err(Invalid::new("source.id must be 1 to 128 characters"));
+	}
+	if source.id.contains('\0') {
+		return Err(Invalid::new("source.id contains a NUL character"));
 	}
 	let source = Source {
 		kind: source.kind.parse::<SourceKind>()?,
@@ -107,6 +113,8 @@ pub fn decode(raw: Value, now: Timestamp) -> Result<Incoming, Invalid> {
 		subject,
 	};
 	envelope.check_time(now)?;
+	check_object("properties", &properties)?;
+	check_object("pii", &pii)?;
 	let pii = pii.as_object().is_some_and(|o| !o.is_empty()).then_some(pii);
 	Ok(Incoming {
 		envelope,
@@ -114,6 +122,56 @@ pub fn decode(raw: Value, now: Timestamp) -> Result<Incoming, Invalid> {
 		pii,
 		canonical,
 	})
+}
+
+/// What Postgres would refuse, or what would cost too much to keep, refused here instead: a
+/// NUL character anywhere (`jsonb` and `text` cannot hold one — it would be a 500 for the
+/// whole batch), and an object past [`MAX_OBJECT_BYTES`].
+fn check_object(field: &str, value: &Value) -> Result<(), Invalid> {
+	fn has_nul(v: &Value) -> bool {
+		match v {
+			Value::String(s) => s.contains('\0'),
+			Value::Array(items) => items.iter().any(has_nul),
+			Value::Object(map) => map.iter().any(|(k, v)| k.contains('\0') || has_nul(v)),
+			Value::Null | Value::Bool(_) | Value::Number(_) => false,
+		}
+	}
+	if has_nul(value) {
+		return Err(Invalid::new(format!("{field} contains a NUL character")));
+	}
+	let size = serde_json::to_vec(value).map_err(|e| Invalid::new(format!("{field} does not serialize: {}", redact(&e))))?.len();
+	if size > MAX_OBJECT_BYTES {
+		return Err(Invalid::new(format!("{field} is {size} bytes, past the {MAX_OBJECT_BYTES} allowed")));
+	}
+	Ok(())
+}
+
+/// A JSON error as the source may be told it: which field and what was wrong, never the
+/// value — it may be the PII the event carries, and reasons end up in logs. Field names
+/// stay; everything quoted otherwise is replaced.
+fn redact(e: &serde_json::Error) -> String {
+	let msg = e.to_string();
+	if ["unknown field", "missing field", "duplicate field"].iter().any(|p| msg.starts_with(p)) {
+		return msg;
+	}
+	let mut out = String::with_capacity(msg.len());
+	let mut quote: Option<char> = None;
+	for c in msg.chars() {
+		match quote {
+			Some(q) if c == q => {
+				out.push('…');
+				out.push(c);
+				quote = None;
+			}
+			Some(_) => {}
+			None if c == '"' || c == '`' => {
+				out.push(c);
+				quote = Some(c);
+			}
+			None => out.push(c),
+		}
+	}
+	out
 }
 
 fn canonical(event: &v1::Event) -> Result<Vec<u8>, Invalid> {
@@ -228,7 +286,7 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 }
 
 fn props<T: DeserializeOwned>(key: &TypeKey, properties: &Value) -> Result<T, Invalid> {
-	serde_json::from_value(properties.clone()).map_err(|e| Invalid::new(format!("properties do not match {key}: {e}")))
+	serde_json::from_value(properties.clone()).map_err(|e| Invalid::new(format!("properties do not match {key}: {}", redact(&e))))
 }
 
 #[cfg(test)]
@@ -326,7 +384,7 @@ mod tests {
 		let Checked::Invalid(e) = check(&TypeKey::parse("call.logged", 1).unwrap(), SourceKind::Panel, &json!({"outcome": "voicemail"}), &subject) else {
 			panic!("an unknown outcome passed")
 		};
-		assert!(e.0.contains("voicemail"), "{e}");
+		assert_eq!(e.0, "properties.outcome is not one of answered, no_answer, wrong_number, later", "the vocabulary, not the value");
 		let Checked::Invalid(e) = check(
 			&TypeKey::parse("payment.received", 1).unwrap(),
 			SourceKind::Panel,
@@ -351,6 +409,52 @@ mod tests {
 			Checked::Invalid(Invalid::new("a site source may not write payment.received")),
 			"payments are entered by hand"
 		);
+	}
+
+	#[test]
+	fn what_postgres_would_refuse_is_rejected_per_event() {
+		let reject = |f: &dyn Fn(&mut Value)| {
+			let mut e = event();
+			f(&mut e);
+			decode(e, now()).unwrap_err().0
+		};
+		assert!(reject(&|e| e["typeVersion"] = json!(2_147_483_648u64)).contains("type_version"));
+		assert!(reject(&|e| e["source"]["id"] = json!("a\u{0}b")).contains("source.id contains a NUL"));
+		assert!(reject(&|e| e["properties"]["note"] = json!("x\u{0}")).contains("properties contains a NUL"));
+		assert!(reject(&|e| e["properties"]["a\u{0}"] = json!(1)).contains("properties contains a NUL"));
+		assert!(reject(&|e| e["pii"]["deep"] = json!([{"x": "\u{0}"}])).contains("pii contains a NUL"));
+		assert!(reject(&|e| e["properties"]["blob"] = json!("x".repeat(MAX_OBJECT_BYTES))).contains("past the 16384 allowed"));
+		let mut fits = event();
+		fits["properties"]["blob"] = json!("x".repeat(MAX_OBJECT_BYTES - 64));
+		assert!(decode(fits, now()).is_ok());
+	}
+
+	#[test]
+	fn errors_do_not_quote_values() {
+		let e = event();
+		let mut bad = e.clone();
+		bad["occurredAt"] = json!("+33 6 12 34 56 78");
+		let msg = decode(bad, now()).unwrap_err().0;
+		assert!(!msg.contains("+33"), "{msg}");
+		let subject = decode(e, now()).unwrap().envelope.subject;
+		let Checked::Invalid(msg) = check(
+			&TypeKey::parse("payment.received", 1).unwrap(),
+			SourceKind::Panel,
+			&json!({"billed": "Jean Dupont", "commission": 1, "currency": "EUR"}),
+			&subject,
+		) else {
+			panic!("a name passed for an amount")
+		};
+		assert!(!msg.0.contains("Jean"), "{msg}");
+		let Checked::Invalid(msg) = check(
+			&TypeKey::parse("payment.received", 1).unwrap(),
+			SourceKind::Panel,
+			&json!({"billed": 1, "commission": 1, "currency": "EUR", "phone": 1}),
+			&subject,
+		) else {
+			panic!("an unknown field passed")
+		};
+		assert!(msg.0.contains("phone"), "field names stay: {msg}");
 	}
 
 	#[test]

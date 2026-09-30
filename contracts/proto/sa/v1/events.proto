@@ -28,16 +28,18 @@ message Event {
   // What happened: "lead.created", "call.logged", … A type the panel does not know yet is
   // stored as unregistered, not dropped, and picked up once it is registered.
   string type = 3;
-  // Version of `properties` for this type, from 1.
+  // Version of `properties` for this type, 1 to 2147483647.
   uint32 type_version = 4;
   // When it happened in the world, not when it was sent.
   google.protobuf.Timestamp occurred_at = 5;
   Source source = 6;
   Subject subject = 7;
   // Checked against the message registered for `type@type_version` (the `…V<n>` messages
-  // below). May be omitted when that message has no required fields.
+  // below). May be omitted when that message has no required fields. At most 16 KiB as
+  // JSON, and no NUL character anywhere — for unregistered types too.
   google.protobuf.Struct properties = 8;
-  // Name, phone, email, … — kept apart, encrypted at rest, never in reporting.
+  // Name, phone, email, … — kept apart, encrypted at rest, never in reporting. Same limits
+  // as `properties`.
   optional google.protobuf.Struct pii = 9;
 }
 

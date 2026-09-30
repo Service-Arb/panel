@@ -58,7 +58,7 @@ impl LeadChannel {
 		match raw {
 			"form" => Ok(Self::Form),
 			"phone_inbound" => Ok(Self::PhoneInbound),
-			other => Err(Invalid::new(format!("properties.channel {other:?} is not one of form, phone_inbound"))),
+			_ => Err(Invalid::new("properties.channel is not one of form, phone_inbound")),
 		}
 	}
 }
@@ -91,7 +91,7 @@ impl ContactChannel {
 			"email" => Ok(Self::Email),
 			"telegram" => Ok(Self::Telegram),
 			"other" => Ok(Self::Other),
-			other => Err(Invalid::new(format!("properties.channel {other:?} is not one of phone, whatsapp, email, telegram, other"))),
+			_ => Err(Invalid::new("properties.channel is not one of phone, whatsapp, email, telegram, other")),
 		}
 	}
 }
@@ -123,7 +123,7 @@ impl CallOutcome {
 			"no_answer" => Ok(Self::NoAnswer),
 			"wrong_number" => Ok(Self::WrongNumber),
 			"later" => Ok(Self::Later),
-			other => Err(Invalid::new(format!("properties.outcome {other:?} is not one of answered, no_answer, wrong_number, later"))),
+			_ => Err(Invalid::new("properties.outcome is not one of answered, no_answer, wrong_number, later")),
 		}
 	}
 }
