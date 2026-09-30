@@ -28,6 +28,21 @@ impl Refresher for Never {
 	}
 }
 
+/// A refresher that rotates once, to `a2`/`r2`.
+struct Rotates;
+
+impl Refresher for Rotates {
+	async fn refresh(&self, _: &str) -> Result<Tokens, RefreshError> {
+		let now = Timestamp::now();
+		Ok(Tokens {
+			access: Zeroizing::new("a2".into()),
+			access_expires_at: now + SignedDuration::from_hours(24 * 400),
+			refresh: Zeroizing::new("r2".into()),
+			refresh_expires_at: now + SignedDuration::from_hours(24 * 400),
+		})
+	}
+}
+
 const GRANTS: &str = include_str!("../../../deploy/panel_app.sql");
 
 /// A login role for this test alone, holding the runtime grants, dropped at the end.
@@ -127,6 +142,15 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
 		assert_eq!(panel.funnel(today, today, None).await.unwrap().manual, 2);
 		assert!(panel.close_session(&SessionKey::of_cookie(&opened.cookie).unwrap()).await.unwrap());
+
+		// A rotation (its lease, its guarded write), a redeemed state, a sign-out everywhere.
+		let opened = panel.open_session(user, &tokens, now).await.unwrap();
+		let stale = now + SignedDuration::from_mins(15);
+		assert_eq!(panel.session(&opened.cookie, stale, &Rotates).await.unwrap().access.as_str(), "a2");
+		assert!(panel.consume_state("state", now).await.unwrap());
+		assert!(!panel.consume_state("state", now).await.unwrap());
+		assert!(panel.consume_state("state", now + SignedDuration::from_hours(1)).await.unwrap(), "expired marks are dropped");
+		assert_eq!(panel.close_all_sessions(&SessionKey::of_cookie(&opened.cookie).unwrap()).await.unwrap(), Some(user));
 
 		let pool = panel.store().pool();
 		for sql in [

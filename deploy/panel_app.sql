@@ -24,3 +24,6 @@ GRANT SELECT ON ALL TABLES IN SCHEMA reporting TO panel_app;
 
 -- Sign-in sessions: opened at the callback, their tokens rotated, closed at sign-out or expiry.
 GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO panel_app;
+
+-- Callback states, redeemed once; the expired ones are dropped on the way.
+GRANT SELECT, INSERT, DELETE ON consumed_states TO panel_app;

@@ -7,7 +7,7 @@
 //! session id; the database holds its hash and the tokens, sealed. What talks to concierge
 //! is the server's; this is told the tokens and, to rotate them, asks a [`Refresher`].
 
-use std::future::Future;
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use eyre::WrapErr;
@@ -28,6 +28,35 @@ pub const PRELOGIN_TTL: SignedDuration = SignedDuration::from_mins(10);
 
 /// An access token this close to expiry is rotated before it is used.
 pub const REFRESH_AHEAD: SignedDuration = SignedDuration::from_secs(30);
+
+/// How long a replica's lease on a rotation holds: longer than a call to concierge (5 s),
+/// so it lapses only when the holder is gone.
+pub const ROTATION_LEASE: SignedDuration = SignedDuration::from_secs(15);
+
+/// How long a request waits for another replica's rotation before answering 503.
+pub const ROTATION_WAIT: SignedDuration = SignedDuration::from_secs(6);
+
+const ROTATION_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The rotations under way in this process, one lock per session: its single flight.
+#[derive(Debug, Default)]
+pub struct Rotations(std::sync::Mutex<HashMap<SessionKey, Arc<tokio::sync::Mutex<()>>>>);
+
+impl Rotations {
+	fn of(&self, key: SessionKey) -> Arc<tokio::sync::Mutex<()>> {
+		let mut map = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+		map.entry(key).or_default().clone()
+	}
+
+	/// Drops the session's lock once nobody else holds or waits for it.
+	fn done(&self, key: SessionKey, flight: Arc<tokio::sync::Mutex<()>>) {
+		let mut map = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+		// The map's clone and this one: no one else is in line.
+		if Arc::strong_count(&flight) == 2 {
+			map.remove(&key);
+		}
+	}
+}
 
 /// A relying party's token pair, as concierge issues it.
 pub struct Tokens {
@@ -239,34 +268,76 @@ impl Panel {
 
 	/// The session a cookie names, its access token rotated first when it is about to expire.
 	///
-	/// The rotation runs with the session's row locked, and re-reads it under the lock: of
-	/// two requests that find the token stale at once, one rotates and the other takes what
-	/// it wrote. Presenting a refresh token twice would have concierge revoke the family.
+	/// A refresh token is presented to concierge once: presenting it twice has concierge
+	/// revoke the whole family. No pool connection is held while concierge is asked:
+	///
+	/// - within this process, one rotation per session at a time ([`Rotations`]); the others
+	///   wait for it, then find the fresh row;
+	/// - across replicas, a lease on the row (`rotating_until`, taken by one conditional
+	///   UPDATE): only its holder asks concierge; the others poll the row until the rotated
+	///   tokens land or [`ROTATION_WAIT`] passes (then 503). A lease outlives a call to
+	///   concierge, so it lapses only when its holder died, and is then taken over;
+	/// - the rotated tokens are written only if the row still has the tokens the rotation
+	///   started from, so nothing overwrites a newer pair.
+	///
+	/// If the holder's answer is lost after concierge rotated, the next rotation presents a
+	/// spent token and concierge closes the session: it fails closed, never open.
 	pub async fn session(&self, cookie: &str, now: Timestamp, refresher: &impl Refresher) -> Result<Session, SessionError> {
 		let key = SessionKey::of_cookie(cookie).ok_or(SessionError::Missing)?;
+		let row = self.session_row(&key, now).await?;
+		if row.access_expires_at > now + REFRESH_AHEAD {
+			return self.live(key, &row).map_err(SessionError::Internal);
+		}
+		let flight = self.rotations.of(key);
+		let turn = flight.lock().await;
+		let result = self.rotate(key, now, refresher).await;
+		drop(turn);
+		self.rotations.done(key, flight);
+		result
+	}
+
+	async fn session_row(&self, key: &SessionKey, now: Timestamp) -> Result<SessionRow, SessionError> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
 		let row = sessions::get(&mut conn, key.as_bytes()).await?.ok_or(SessionError::Missing)?;
 		if row.expires_at <= now {
 			sessions::delete(&mut conn, key.as_bytes()).await?;
 			return Err(SessionError::Missing);
 		}
-		if row.access_expires_at > now + REFRESH_AHEAD {
-			return self.live(key, &row).map_err(SessionError::Internal);
-		}
-		drop(conn);
+		Ok(row)
+	}
 
-		let mut tx = self.store.pool().begin().await.wrap_err("beginning a session refresh")?;
-		let row = sessions::lock(&mut tx, key.as_bytes()).await?.ok_or(SessionError::Missing)?;
-		if row.access_expires_at > now + REFRESH_AHEAD {
-			// Another request rotated it while this one waited for the lock.
-			return self.live(key, &row).map_err(SessionError::Internal);
-		}
+	async fn rotate(&self, key: SessionKey, now: Timestamp, refresher: &impl Refresher) -> Result<Session, SessionError> {
+		let waited_since = std::time::Instant::now();
+		let row = loop {
+			let row = self.session_row(&key, now).await?;
+			if row.access_expires_at > now + REFRESH_AHEAD {
+				// Rotated while this one waited: here, or by another replica.
+				return self.live(key, &row).map_err(SessionError::Internal);
+			}
+			let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
+			if sessions::claim_rotation(&mut conn, key.as_bytes(), row.access_expires_at, now, now + ROTATION_LEASE).await? {
+				break row;
+			}
+			drop(conn);
+			if waited_since.elapsed() >= ROTATION_WAIT.unsigned_abs() {
+				tracing::warn!(user_id = %row.user_id, "another replica holds the session's rotation");
+				return Err(SessionError::Unavailable);
+			}
+			tokio::time::sleep(ROTATION_POLL).await;
+		};
+		let seen = row.access_expires_at;
 		let refresh = self.open_token(Which::Refresh, &key, &row)?;
-		match refresher.refresh(&refresh).await {
+		let answer = refresher.refresh(&refresh).await;
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
+		match answer {
 			Ok(tokens) => {
 				let (access, refresh) = self.seal_tokens(&key, &tokens)?;
-				sessions::set_tokens(&mut tx, key.as_bytes(), &self.sealed(&access, &refresh, &tokens)).await?;
-				tx.commit().await.wrap_err("committing a session refresh")?;
+				if !sessions::set_tokens(&mut conn, key.as_bytes(), seen, &self.sealed(&access, &refresh, &tokens)).await? {
+					// The lease was taken over while concierge answered: that holder's pair,
+					// presented from the same refresh token, is the one concierge keeps.
+					tracing::warn!(user_id = %row.user_id, "a session was rotated twice; keeping the row's pair");
+					return Err(SessionError::Unavailable);
+				}
 				Ok(Session {
 					key,
 					user_id: row.user_id,
@@ -275,17 +346,38 @@ impl Panel {
 				})
 			}
 			Err(RefreshError::Rejected) => {
-				sessions::delete(&mut tx, key.as_bytes()).await?;
-				tx.commit().await.wrap_err("closing a refused session")?;
+				sessions::delete_refused(&mut conn, key.as_bytes(), seen).await?;
 				tracing::info!(user_id = %row.user_id, "concierge refused a session refresh; session closed");
 				Err(SessionError::Rejected)
 			}
 			Err(RefreshError::Unavailable(why)) => {
+				sessions::release_rotation(&mut conn, key.as_bytes(), seen).await?;
 				tracing::warn!(user_id = %row.user_id, why, "concierge unavailable for a session refresh");
 				Err(SessionError::Unavailable)
 			}
-			Err(RefreshError::Failed(e)) => Err(SessionError::Internal(e)),
+			Err(RefreshError::Failed(e)) => {
+				sessions::release_rotation(&mut conn, key.as_bytes(), seen).await?;
+				Err(SessionError::Internal(e))
+			}
 		}
+	}
+
+	/// Signs a user out everywhere: every session of the user whose session `key` is, closed.
+	/// Whose they were, or `None` when `key` names no session.
+	pub async fn close_all_sessions(&self, key: &SessionKey) -> eyre::Result<Option<Uuid>> {
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
+		sessions::delete_all_of(&mut conn, key.as_bytes()).await
+	}
+
+	/// Redeems a callback's `state`, once: `false` when it was already, and the callback must
+	/// then not present its code. The mark lives as long as the pre-login could.
+	pub async fn consume_state(&self, state: &str, now: Timestamp) -> eyre::Result<bool> {
+		let mut h = Sha256::new();
+		h.update(b"sa-panel/state/v1/");
+		h.update(state.as_bytes());
+		let hash: [u8; 32] = h.finalize().into();
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a sign-in state")?;
+		sessions::consume_state(&mut conn, &hash, now, now + PRELOGIN_TTL).await
 	}
 
 	/// Closes a session; `false` when there was none.

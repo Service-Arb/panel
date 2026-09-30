@@ -137,3 +137,66 @@ async fn pre_logins() {
 	// RFC 7636, appendix B.
 	assert_eq!(pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
 }
+
+/// Slow to answer, as concierge over the network is; counts what it was shown.
+struct Slow {
+	calls: AtomicUsize,
+	seen: Mutex<Vec<String>>,
+}
+
+impl Refresher for Slow {
+	async fn refresh(&self, refresh_token: &str) -> Result<Tokens, RefreshError> {
+		self.seen.lock().unwrap().push(refresh_token.to_owned());
+		let n = self.calls.fetch_add(1, Ordering::SeqCst) + 2;
+		tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+		Ok(tokens(n as u32, SignedDuration::from_hours(1)))
+	}
+}
+
+#[tokio::test]
+async fn two_replicas_present_a_refresh_token_once() {
+	let Some(db) = TestDb::create().await else { return };
+	let hex = panel::seal::DataKey::generate_hex().unwrap();
+	let replica = |store| panel::Panel::new(store, panel::seal::DataKey::from_hex(&hex).unwrap());
+	let (a, b) = (replica(db.store().await), replica(db.store().await));
+	let slow = Slow {
+		calls: AtomicUsize::new(0),
+		seen: Mutex::new(Vec::new()),
+	};
+	let opened = a.open_session(Uuid::now_v7(), &tokens(1, SignedDuration::from_mins(15)), now()).await.unwrap();
+	let later = now() + SignedDuration::from_mins(15) - SignedDuration::from_secs(10);
+	let (x, y) = tokio::join!(a.session(&opened.cookie, later, &slow), b.session(&opened.cookie, later, &slow));
+	assert_eq!((x.unwrap().access.as_str(), y.unwrap().access.as_str()), ("access-2", "access-2"));
+	assert_eq!(slow.seen.lock().unwrap().as_slice(), ["refresh-1"], "one replica asked, the other waited for its answer");
+
+	let lease: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT rotating_until FROM sessions").fetch_one(&db.pool().await).await.unwrap();
+	assert!(lease.is_none(), "the lease is dropped with the rotation");
+}
+
+#[tokio::test]
+async fn a_lease_of_a_dead_replica_lapses() {
+	let Some(db) = TestDb::create().await else { return };
+	let panel = panel(&db).await;
+	let opened = panel.open_session(Uuid::now_v7(), &tokens(1, SignedDuration::from_mins(15)), now()).await.unwrap();
+	let later = now() + SignedDuration::from_mins(15) - SignedDuration::from_secs(10);
+	// A replica took the lease and died.
+	sqlx::query("UPDATE sessions SET rotating_until = $1")
+		.bind(chrono::DateTime::<chrono::Utc>::from_timestamp((later + panel::session::ROTATION_LEASE).as_second(), 0).unwrap())
+		.execute(&db.pool().await)
+		.await
+		.unwrap();
+	let fake = Fake::new(None);
+	let before = std::time::Instant::now();
+	assert!(
+		matches!(panel.session(&opened.cookie, later, &fake).await, Err(SessionError::Unavailable)),
+		"held: wait, then 503"
+	);
+	assert!(before.elapsed() >= panel::session::ROTATION_WAIT.unsigned_abs());
+	assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+	let lapsed = later + panel::session::ROTATION_LEASE;
+	assert_eq!(
+		panel.session(&opened.cookie, lapsed, &fake).await.unwrap().access.as_str(),
+		"access-2",
+		"taken over once it lapsed"
+	);
+}

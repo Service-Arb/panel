@@ -118,11 +118,16 @@ pub struct Rebuilt {
 pub struct Panel {
 	store: Store,
 	key: Arc<DataKey>,
+	rotations: Arc<session::Rotations>,
 }
 
 impl Panel {
 	pub fn new(store: Store, key: DataKey) -> Self {
-		Self { store, key: Arc::new(key) }
+		Self {
+			store,
+			key: Arc::new(key),
+			rotations: Arc::default(),
+		}
 	}
 
 	pub fn store(&self) -> &Store {
