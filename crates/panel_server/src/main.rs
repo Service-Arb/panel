@@ -16,6 +16,7 @@ use panel_server::{
 	http,
 	signin::{SignIn, SignInConfig},
 	telegram::{self, BotApi, BotName},
+	web::{self, Files},
 };
 
 use crate::settings::Settings;
@@ -124,7 +125,8 @@ async fn run(cli: Cli, settings: Settings) -> eyre::Result<()> {
 		Cmd::Serve { bind } => {
 			let sign_in = settings.sign_in()?;
 			let telegram = settings.telegram()?;
-			serve(connect().await?, sign_in, telegram, bind).await
+			let front_end = settings.web()?;
+			serve(connect().await?, sign_in, telegram, front_end, bind).await
 		}
 		Cmd::RebuildProjections => {
 			let r = connect().await?.rebuild_projections().await?;
@@ -168,7 +170,7 @@ async fn source(panel: &Panel, cmd: SourceCmd) -> eyre::Result<()> {
 	}
 }
 
-async fn serve(panel: Panel, sign_in: Option<settings::SignInSettings>, telegram: Option<settings::TelegramSettings>, bind: SocketAddr) -> eyre::Result<()> {
+async fn serve(panel: Panel, sign_in: Option<settings::SignInSettings>, telegram: Option<settings::TelegramSettings>, front_end: Option<Files>, bind: SocketAddr) -> eyre::Result<()> {
 	let (stop, stopped) = tokio::sync::watch::channel(false);
 	let mut bot_work = None;
 	let app = match sign_in {
@@ -213,6 +215,13 @@ async fn serve(panel: Panel, sign_in: Option<settings::SignInSettings>, telegram
 				tracing::warn!("Telegram notifications off: they need the sign-in, to link users and confirm their access");
 			}
 			http::router(panel)
+		}
+	};
+	let app = match front_end {
+		Some(files) => web::serve(app, files),
+		None => {
+			tracing::warn!("PANEL_WEB_DIR unset: serving the API alone, no front end");
+			app
 		}
 	};
 	let listener = tokio::net::TcpListener::bind(bind).await.wrap_err_with(|| format!("binding {bind}"))?;

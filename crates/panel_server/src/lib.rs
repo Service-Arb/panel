@@ -10,6 +10,7 @@ pub mod cookies;
 pub mod http;
 pub mod signin;
 pub mod telegram;
+pub mod web;
 
 /// Where `serve` listens unless told otherwise; the image binds the same port on 0.0.0.0.
 pub const DEFAULT_BIND: &str = "127.0.0.1:59120";
