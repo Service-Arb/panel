@@ -18,6 +18,7 @@ use panel_core::{
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 };
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
@@ -49,6 +50,37 @@ pub enum ActionError {
 /// Who acts: the concierge user id of the signed-in operator or admin.
 #[derive(Clone, Copy, Debug)]
 pub struct Actor(pub Uuid);
+
+/// What an action did: recorded now, or found recorded already under the same idempotency
+/// key (a retry), in which case `value` is what the first attempt answered.
+#[derive(Clone, Debug)]
+pub struct Done<T> {
+	pub value: T,
+	pub replayed: bool,
+}
+
+/// The id of the event an action with the client's idempotency key makes: the same for the
+/// same user, action and key, so a retry lands on the journal's id and is found there.
+///
+/// Shaped as a UUIDv7 (version and variant bits), which is what the journal keys by, but
+/// its time field is hash, not time: the journal orders by `occurred_at`/`received_at`, the
+/// id only breaks ties.
+pub fn idempotent_id(by: Actor, action: &str, key: &str) -> Uuid {
+	let mut h = Sha256::new();
+	h.update(b"sa-panel/idempotency/v1/");
+	h.update(by.0.as_bytes());
+	h.update([0]);
+	h.update(action.as_bytes());
+	h.update([0]);
+	h.update(key.as_bytes());
+	let digest = h.finalize();
+	let mut bytes = [0u8; 16];
+	bytes.copy_from_slice(&digest[..16]);
+	uuid::Builder::from_bytes(bytes)
+		.with_version(uuid::Version::SortRand)
+		.with_variant(uuid::Variant::RFC4122)
+		.into_uuid()
+}
 
 /// A lead taken over the phone, bypassing the form (§10a "+ Call").
 #[derive(Clone, Debug)]
@@ -143,6 +175,15 @@ pub struct LeadQuery {
 /// A page is at most this many leads.
 pub const MAX_PAGE: u32 = 200;
 
+impl<T> Done<T> {
+	fn map<U>(self, f: impl FnOnce(T) -> U) -> Done<U> {
+		Done {
+			value: f(self.value),
+			replayed: self.replayed,
+		}
+	}
+}
+
 fn opaque_new(prefix: &str, now: Timestamp) -> String {
 	// A letter prefix keeps the id from ever being all digits, which `is_opaque` refuses as
 	// looking like a phone number.
@@ -159,20 +200,34 @@ impl Panel {
 	/// Records a lead that came in by phone: `lead.created{channel: phone_inbound}`, what it
 	/// needs and the number in its PII. Its id is made here.
 	pub async fn create_lead(&self, by: Actor, lead: NewLead, now: Timestamp) -> Result<(LeadId, EventId), ActionError> {
+		Ok(self.create_lead_once(by, lead, now, None).await?.value)
+	}
+
+	/// [`Self::create_lead`], at most once per idempotency `key` of the user.
+	pub async fn create_lead_once(&self, by: Actor, lead: NewLead, now: Timestamp, key: Option<&str>) -> Result<Done<(LeadId, EventId)>, ActionError> {
+		let id = key.map(|k| idempotent_id(by, "lead.created", k));
+		if let Some(done) = self.replayed(by, id).await? {
+			return Ok(done);
+		}
 		let need = bounded("need", Some(lead.need))
 			.map_err(ActionError::Invalid)?
 			.ok_or_else(|| ActionError::Invalid(Invalid::new("need is required")))?;
 		let phone = bounded("phone", lead.phone).map_err(ActionError::Invalid)?;
-		let lead_id = LeadId::parse(&opaque_new("p", now)).map_err(|e| eyre::eyre!("a made lead id: {e}"))?;
+		let lead_id = match key {
+			Some(k) => format!("p-{}", idempotent_id(by, "lead.created/lead_id", k).simple()),
+			None => opaque_new("p", now),
+		};
+		let lead_id = LeadId::parse(&lead_id).map_err(|e| eyre::eyre!("a made lead id: {e}"))?;
 		let mut pii = Map::new();
 		pii.insert("need".into(), json!(need));
 		if let Some(phone) = phone {
 			pii.insert("phone".into(), json!(phone));
 		}
 		let subject = json!({"brandId": lead.brand.as_str(), "locationId": lead.location.as_str(), "leadId": lead_id.as_str()});
-		let id = self
+		let done = self
 			.act(
 				by,
+				id,
 				"lead.created",
 				subject,
 				json!({"channel": "phone_inbound", "enteredBy": by.0.to_string()}),
@@ -180,12 +235,21 @@ impl Panel {
 				now,
 			)
 			.await?;
-		Ok((lead_id, id))
+		Ok(done)
 	}
 
 	/// Moves a lead: `lead.contacted`, `lead.quoted`, `job.won`, `lead.lost` or
 	/// `job.completed`.
 	pub async fn move_lead(&self, by: Actor, brand: &BrandId, lead: &LeadId, to: StageMove, now: Timestamp) -> Result<EventId, ActionError> {
+		Ok(self.move_lead_once(by, brand, lead, to, now, None).await?.value)
+	}
+
+	/// [`Self::move_lead`], at most once per idempotency `key` of the user and lead.
+	pub async fn move_lead_once(&self, by: Actor, brand: &BrandId, lead: &LeadId, to: StageMove, now: Timestamp, key: Option<&str>) -> Result<Done<EventId>, ActionError> {
+		let id = key.map(|k| idempotent_id(by, &format!("stage/{brand}/{lead}"), k));
+		if let Some(done) = self.replayed(by, id).await? {
+			return Ok(done.map(|(_, e)| e));
+		}
 		let current = self.lead_row(brand, lead).await?.ok_or(ActionError::NotFound)?;
 		let mut subject = subject_of(&current);
 		let (r#type, properties) = match to {
@@ -207,14 +271,14 @@ impl Panel {
 				("job.completed", json!({}))
 			}
 		};
-		self.act(by, r#type, subject, properties, None, now).await
+		Ok(self.act(by, id, r#type, subject, properties, None, now).await?.map(|(_, e)| e))
 	}
 
 	/// An outgoing call started from the panel (`call.attempted`); its event id is the attempt
 	/// id the outcome names.
 	pub async fn attempt_call(&self, by: Actor, brand: &BrandId, lead: &LeadId, now: Timestamp) -> Result<EventId, ActionError> {
 		let current = self.lead_row(brand, lead).await?.ok_or(ActionError::NotFound)?;
-		self.act(by, "call.attempted", subject_of(&current), json!({}), None, now).await
+		Ok(self.act(by, None, "call.attempted", subject_of(&current), json!({}), None, now).await?.value.1)
 	}
 
 	/// How an attempted call of this lead ended (`call.logged`).
@@ -226,20 +290,50 @@ impl Panel {
 		}
 		drop(conn);
 		let properties = json!({"outcome": call.outcome, "attemptId": call.attempt.to_string()});
-		self.act(by, "call.logged", subject_of(&current), properties, None, now).await
+		Ok(self.act(by, None, "call.logged", subject_of(&current), properties, None, now).await?.value.1)
 	}
 
 	/// A payment for a lead (`payment.received`).
 	pub async fn record_payment(&self, by: Actor, brand: &BrandId, lead: &LeadId, p: Payment, now: Timestamp) -> Result<EventId, ActionError> {
+		Ok(self.record_payment_once(by, brand, lead, p, now, None).await?.value)
+	}
+
+	/// [`Self::record_payment`], at most once per idempotency `key` of the user and lead.
+	pub async fn record_payment_once(&self, by: Actor, brand: &BrandId, lead: &LeadId, p: Payment, now: Timestamp, key: Option<&str>) -> Result<Done<EventId>, ActionError> {
+		let id = key.map(|k| idempotent_id(by, &format!("payment/{brand}/{lead}"), k));
+		if let Some(done) = self.replayed(by, id).await? {
+			return Ok(done.map(|(_, e)| e));
+		}
 		let current = self.lead_row(brand, lead).await?.ok_or(ActionError::NotFound)?;
 		let properties = json!({"billed": p.billed, "commission": p.commission, "currency": p.currency});
-		self.act(by, "payment.received", subject_of(&current), properties, None, now).await
+		Ok(self.act(by, id, "payment.received", subject_of(&current), properties, None, now).await?.map(|(_, e)| e))
+	}
+
+	/// The event an idempotent action made before, if it did: `(lead, event)`. An id taken by
+	/// anyone else than this user acting in the panel cannot be a retry of theirs.
+	async fn replayed(&self, by: Actor, id: Option<Uuid>) -> Result<Option<Done<(LeadId, EventId)>>, ActionError> {
+		let Some(id) = id else { return Ok(None) };
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+		let Some((kind, source, lead)) = reads::event_origin(&mut conn, id).await? else {
+			return Ok(None);
+		};
+		if kind != "panel" || source != by.0.to_string() {
+			return Err(ActionError::Conflict("this idempotency key is taken"));
+		}
+		let lead = LeadId::parse(lead.as_deref().unwrap_or_default()).map_err(|e| eyre::eyre!("a journaled lead id: {e}"))?;
+		Ok(Some(Done {
+			value: (lead, EventId::from_raw(id)),
+			replayed: true,
+		}))
 	}
 
 	/// Builds the event and hands it to the journal exactly as ingest would.
-	async fn act(&self, by: Actor, r#type: &str, subject: Value, properties: Value, pii: Option<Value>, now: Timestamp) -> Result<EventId, ActionError> {
+	/// `id`: the event's, when the action is idempotent; else a fresh one. Answers the lead
+	/// and the event.
+	#[expect(clippy::too_many_arguments, reason = "an event's fields, each named at the call site")]
+	async fn act(&self, by: Actor, id: Option<Uuid>, r#type: &str, subject: Value, properties: Value, pii: Option<Value>, now: Timestamp) -> Result<Done<(LeadId, EventId)>, ActionError> {
 		let mut raw = json!({
-			"id": new_uuid(now).to_string(),
+			"id": id.unwrap_or_else(|| new_uuid(now)).to_string(),
 			"schema": SCHEMA,
 			"type": r#type,
 			"typeVersion": 1,
@@ -263,10 +357,21 @@ impl Panel {
 		match self.journal(&incoming, None, status, Some(fact), now).await? {
 			crate::Outcome::Accepted { .. } => {
 				tracing::info!(user_id = %by.0, r#type, brand = %env.subject.brand_id, "operator action recorded");
-				Ok(env.id)
+				let lead = env.subject.lead_id.clone().ok_or_else(|| eyre::eyre!("an operator action without a lead"))?;
+				Ok(Done {
+					value: (lead, env.id),
+					replayed: false,
+				})
 			}
-			crate::Outcome::Rejected(e) => Err(ActionError::Invalid(e)),
-			crate::Outcome::Duplicate => Err(ActionError::Internal(eyre::eyre!("a fresh event id was taken"))),
+			// The same key twice at once: the other request journaled it first (with its own
+			// `occurredAt`, hence other content). What it recorded is the answer.
+			outcome @ (crate::Outcome::Duplicate | crate::Outcome::Rejected(_)) => match self.replayed(by, id).await? {
+				Some(done) => Ok(done),
+				None => match outcome {
+					crate::Outcome::Rejected(e) => Err(ActionError::Invalid(e)),
+					_ => Err(ActionError::Internal(eyre::eyre!("a fresh event id was taken"))),
+				},
+			},
 		}
 	}
 

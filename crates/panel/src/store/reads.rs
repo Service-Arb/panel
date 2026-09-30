@@ -239,6 +239,15 @@ pub async fn lead_events(conn: &mut PgConnection, brand: &BrandId, lead: &LeadId
 		.collect()
 }
 
+/// Who journaled the event `id`, and about which lead: `(source_kind, source_id, lead_id)`.
+pub async fn event_origin(conn: &mut PgConnection, id: Uuid) -> eyre::Result<Option<(String, String, Option<String>)>> {
+	sqlx::query_as("SELECT source_kind, source_id, lead_id FROM events WHERE id = $1")
+		.bind(id)
+		.fetch_optional(&mut *conn)
+		.await
+		.wrap_err("looking up an event's origin")
+}
+
 /// Whether `attempt` is a `call.attempted` of this lead.
 pub async fn is_call_attempt(conn: &mut PgConnection, brand: &BrandId, lead: &LeadId, attempt: Uuid) -> eyre::Result<bool> {
 	sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM calls WHERE event_id = $1 AND brand_id = $2 AND lead_id = $3 AND kind = 'attempted')")
