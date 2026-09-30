@@ -89,3 +89,58 @@ async fn ingest_over_http() {
 	let res = app.oneshot(Request::get("/health").body(Body::empty()).unwrap()).await.unwrap();
 	assert_eq!(res.status(), StatusCode::OK);
 }
+
+/// A body that never arrives.
+fn stalled() -> Body {
+	Body::from_stream(futures::stream::pending::<Result<Vec<u8>, std::io::Error>>())
+}
+
+fn request(key_id: &str, timestamp: &str, body: Body) -> Request<Body> {
+	Request::post("/api/ingest/v1/events")
+		.header("x-sa-key-id", key_id)
+		.header("x-sa-timestamp", timestamp)
+		.header("x-sa-signature", "00")
+		.body(body)
+		.unwrap()
+}
+
+#[tokio::test]
+async fn costly_requests_are_refused_before_the_body_is_read() {
+	let Some(db) = TestDb::create().await else { return };
+	let panel = panel(&db).await;
+	let now = Timestamp::now().as_second().to_string();
+	let stale = (Timestamp::now().as_second() - 600).to_string();
+	let quick = std::time::Duration::from_secs(5);
+
+	// Both would hang on the stalled body if it were read first.
+	let app = panel_server::http::router(panel.clone());
+	for (key_id, ts) in [("aquafix-site", stale.as_str()), ("Not a key id", now.as_str())] {
+		let res = tokio::time::timeout(quick, app.clone().oneshot(request(key_id, ts, stalled())))
+			.await
+			.expect("answered without the body")
+			.unwrap();
+		assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{key_id} {ts}");
+	}
+
+	let limits = panel_server::http::Limits {
+		max_concurrent: 1,
+		body_timeout: std::time::Duration::from_millis(200),
+		request_timeout: std::time::Duration::from_secs(5),
+	};
+	let app = panel_server::http::router_with(panel, limits);
+	let res = tokio::time::timeout(quick, app.clone().oneshot(request("aquafix-site", &now, stalled()))).await.unwrap().unwrap();
+	assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT, "a body too slow to arrive");
+
+	// One slow request holds the only slot; the next is shed, not queued.
+	let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+	let held = futures::stream::once(async move {
+		let _ = rx.await;
+		Ok::<_, std::io::Error>(b"{}".to_vec())
+	});
+	let first = tokio::spawn(app.clone().oneshot(request("aquafix-site", &now, Body::from_stream(held))));
+	tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	let res = app.clone().oneshot(request("aquafix-site", &now, Body::from("{}"))).await.unwrap();
+	assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+	tx.send(()).unwrap();
+	assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::UNAUTHORIZED, "the held one goes on to be judged");
+}

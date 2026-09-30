@@ -38,7 +38,9 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
 ## Ingest → journal → projections
 
 ```text
-POST /api/ingest/v1/events
+POST /api/ingest/v1/events        at most 32 at once (else 503), 30 s in all (else 408)
+  │ headers present, |now − x-sa-timestamp| ≤ 5 min, x-sa-key-id a slug     else 401, body unread
+  │ body read: ≤ 4 MiB within 10 s                                          else 413 / 408
   │ x-sa-key-id → sources (not revoked) → secret, unsealed
   │ HMAC over "sa-ingest/v1.<x-sa-timestamp>.<body>"                        else 401
   │ body → {"events": [1..500]}                                             else 400
@@ -104,3 +106,11 @@ registry: type@version known?
   a new migration is applying it.
 - **Secrets come from the environment only** (`DATABASE_URL`, `PANEL_DATA_KEY`, `SENTRY_DSN`),
   through `ev_lib::settings`; both of the first are required at boot when `APP_ENV=production`.
+
+## Deploy requirements
+
+- **Ingest stays inside the cluster.** Its sources (the landings, review_archive) reach it
+  by service DNS (§3.3); the IngressRoute that publishes `sa.evinvest.ltd` must not route
+  `/api/ingest`, and the NetworkPolicy lets in only the pods that send. The signature is
+  what authenticates a batch; keeping the route off the internet is what keeps its cost —
+  a database lookup and a MAC per request — away from anyone who can reach a URL.

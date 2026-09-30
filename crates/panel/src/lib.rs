@@ -39,8 +39,9 @@ use crate::{
 	wire::{Checked, Incoming},
 };
 
-/// The [`IngestError::Unauthorized`] of a delivery outside the replay window: the only one
-/// a caller may be told apart, since it is only ever reached under a valid signature.
+/// The [`IngestError::Unauthorized`] of a delivery outside the replay window: the only one a
+/// caller is told apart. It is checked before the key, and says only that the caller's clock
+/// and ours disagree.
 pub const STALE: &str = "stale or malformed timestamp";
 
 /// Why a whole batch was refused. Per-event verdicts are [`Outcome`]s instead.
@@ -157,7 +158,22 @@ impl Panel {
 	}
 
 	async fn authenticate(&self, batch: &SignedBatch<'_>, now: Timestamp) -> Result<KeyGrant, IngestError> {
+		let refuse = |e: SignatureError| {
+			IngestError::Unauthorized(match e {
+				SignatureError::MalformedTimestamp | SignatureError::Stale => STALE,
+				SignatureError::Mismatch => "bad signature",
+			})
+		};
+		// Free checks first, before the database: the window, and whether the key id could
+		// be one at all. A key id that could not is not logged — it is the caller's string.
+		signature::check_window(batch.timestamp, now).map_err(refuse)?;
+		if !panel_core::ids::is_slug(batch.key_id) {
+			return Err(IngestError::Unauthorized("unknown key"));
+		}
 		let Some(source) = self.store.active_source(batch.key_id).await? else {
+			// The MAC is computed anyway, against a key nobody holds, so an unknown key takes
+			// as long to refuse as a bad signature and key ids cannot be told apart by timing.
+			let _refused = signature::verify(&[0u8; 32], batch.timestamp, batch.signature, batch.body, now);
 			tracing::warn!(key_id = batch.key_id, "ingest: unknown or revoked key");
 			return Err(IngestError::Unauthorized("unknown key"));
 		};
@@ -170,10 +186,7 @@ impl Panel {
 			.wrap_err_with(|| format!("opening the secret of source {}", batch.key_id))?;
 		signature::verify(&secret, batch.timestamp, batch.signature, batch.body, now).map_err(|e| {
 			tracing::warn!(key_id = batch.key_id, error = %e, "ingest: signature refused");
-			IngestError::Unauthorized(match e {
-				SignatureError::MalformedTimestamp | SignatureError::Stale => STALE,
-				SignatureError::Mismatch => "bad signature",
-			})
+			refuse(e)
 		})?;
 		Ok(source.grant)
 	}
