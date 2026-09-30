@@ -1,4 +1,5 @@
 import { type LeadFilter, STAGES, type Stage } from "@/entities/lead";
+import type { MessageKey } from "@/shared/i18n";
 
 /** The filter lives in the URL, so a view can be linked and survives a reload. */
 export function leadFilterFrom(params: URLSearchParams): LeadFilter {
@@ -24,3 +25,14 @@ export function paramsWith(params: URLSearchParams, patch: Partial<LeadFilter>):
 export function stageOrNull(v: string | null): Stage | null {
   return STAGES.find((s) => s === v) ?? null;
 }
+
+/**
+ * The phone's stage segments (the mockup's "New · In progress · Quotes"): the
+ * three stages that wait on the operator. The API filters by one stage, so
+ * "in progress" is `contacted`.
+ */
+export const SEGMENTS: readonly { stage: Stage; key: MessageKey }[] = [
+  { stage: "created", key: "filter.segment.new" },
+  { stage: "contacted", key: "filter.segment.inProgress" },
+  { stage: "quoted", key: "filter.segment.quotes" },
+];

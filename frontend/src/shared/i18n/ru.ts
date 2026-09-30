@@ -38,6 +38,10 @@ export const ru: Record<MessageKey, string> = {
   "filter.location": "Точка",
   "filter.location.all": "Все точки",
   "filter.overdue": "Только просроченные",
+  "filter.more": "Ещё фильтры",
+  "filter.segment.new": "Новые",
+  "filter.segment.inProgress": "В работе",
+  "filter.segment.quotes": "Сметы",
 
   "stage.created": "Новая",
   "stage.contacted": "Контакт",

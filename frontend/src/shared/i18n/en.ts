@@ -37,6 +37,10 @@ export const en = {
   "filter.location": "Location",
   "filter.location.all": "All locations",
   "filter.overdue": "Overdue only",
+  "filter.more": "More filters",
+  "filter.segment.new": "New",
+  "filter.segment.inProgress": "In progress",
+  "filter.segment.quotes": "Quotes",
 
   "stage.created": "New",
   "stage.contacted": "Contacted",
