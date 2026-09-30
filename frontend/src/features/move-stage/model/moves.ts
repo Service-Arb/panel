@@ -1,4 +1,5 @@
 import type { Stage } from "@/entities/lead";
+import type { T } from "@/shared/i18n";
 
 export type MoveKind = "contacted" | "quoted" | "won" | "lost" | "completed";
 
@@ -24,3 +25,14 @@ export const MOVES: Record<Stage, readonly MoveKind[]> = {
  */
 export const LOST_REASONS = ["too_expensive", "no_answer", "went_elsewhere", "out_of_area", "not_needed", "spam", "other"] as const;
 export type LostReason = (typeof LOST_REASONS)[number];
+
+/** Whether a lead in this stage has a next step at all; the card hides "Next step" otherwise. */
+export function hasMoves(stage: Stage): boolean {
+  return MOVES[stage].length > 0;
+}
+
+/** A reason as a person reads it; a slug from outside the panel's list shows as it is. */
+export function lostReasonLabel(reason: string, t: T): string {
+  const known = LOST_REASONS.find((r) => r === reason);
+  return known ? t(`lost.${known}`) : reason;
+}

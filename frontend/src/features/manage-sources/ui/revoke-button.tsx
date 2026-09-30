@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
   Button,
+  buttonVariants,
   toast,
 } from "@evinvest/uikit";
 
@@ -44,7 +45,7 @@ export function RevokeButton({ keyId, onRevoked }: { keyId: string; onRevoked: (
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel className={TOUCH_TARGET}>{t("move.cancel")}</AlertDialogCancel>
-          <AlertDialogAction className="bg-accent-error text-on-accent-error hover:bg-accent-error/90" onClick={() => void revoke()}>
+          <AlertDialogAction className={buttonVariants({ variant: "destructive", className: TOUCH_TARGET })} onClick={() => void revoke()}>
             {t("sources.revoke.confirm")}
           </AlertDialogAction>
         </AlertDialogFooter>

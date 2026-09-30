@@ -4,10 +4,11 @@ import { Separator, Skeleton } from "@evinvest/uikit";
 
 import { type LeadRef, contactOf, encodeRef, fetchLeadCard } from "@/entities/lead";
 import { CallButton } from "@/features/call-lead";
-import { StageActions } from "@/features/move-stage";
+import { StageActions, hasMoves } from "@/features/move-stage";
 import { PaymentForm, takesPayment } from "@/features/record-payment";
 import { useT } from "@/shared/i18n";
 import { useResource } from "@/shared/lib/use-resource";
+import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
 
 import { EventList } from "./event-list";
@@ -28,10 +29,12 @@ export function LeadCardPanel({ leadRef, version, onChanged }: { leadRef: LeadRe
     <div className="flex flex-col gap-4">
       <LeadDetails lead={lead} />
       {phone && <CallButton leadRef={leadRef} phone={phone} />}
-      <section className="flex flex-col gap-2">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-ink-soft">{t("card.actions")}</h3>
-        <StageActions lead={lead} onMoved={onChanged} />
-      </section>
+      {hasMoves(lead.stage) && (
+        <section className="flex flex-col gap-2">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-ink-soft">{t("card.actions")}</h3>
+          <StageActions lead={lead} onMoved={onChanged} />
+        </section>
+      )}
       {takesPayment(lead.stage) && (
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-medium uppercase tracking-wide text-ink-soft">{t("payment.title")}</h3>
@@ -41,7 +44,7 @@ export function LeadCardPanel({ leadRef, version, onChanged }: { leadRef: LeadRe
       <Separator />
       <section className="flex flex-col gap-2">
         <h3 className="text-xs font-medium uppercase tracking-wide text-ink-soft">{t("card.events")}</h3>
-        <EventList events={events} />
+        {events.length > 0 ? <EventList events={events} /> : <EmptyState className="p-4" title={t("card.events.empty")} />}
       </section>
     </div>
   );

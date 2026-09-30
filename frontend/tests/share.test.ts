@@ -26,10 +26,15 @@ describe("a share on screen", () => {
 
 describe("a share counted in the browser", () => {
   it("follows the backend's rule: no percent under 30, whole, half up", () => {
-    expect(shareOf(10, 29)).toEqual({ n: 10, of: 29, percent: null, small_sample: true });
-    expect(shareOf(10, 30).percent).toBe(33);
-    expect(shareOf(1, 40).percent).toBe(3);
-    expect(shareOf(0, 0).small_sample).toBe(true);
+    expect(shareOf(10, 29, 30)).toEqual({ n: 10, of: 29, percent: null, small_sample: true });
+    expect(shareOf(10, 30, 30).percent).toBe(33);
+    expect(shareOf(1, 40, 30).percent).toBe(3);
+    expect(shareOf(0, 0, 30).small_sample).toBe(true);
+  });
+
+  it("takes the minimum sample the backend answered with, not one of its own", () => {
+    expect(shareOf(10, 20, 20).percent).toBe(50);
+    expect(shareOf(10, 20, 50).percent).toBeNull();
   });
 });
 
@@ -37,8 +42,8 @@ describe("the biggest loss", () => {
   const step = (stage: FunnelStep["stage"], reached: number, prev: number | null): FunnelStep => ({
     stage,
     reached,
-    of_previous: prev === null ? null : shareOf(reached, prev),
-    of_leads: shareOf(reached, 20),
+    of_previous: prev === null ? null : shareOf(reached, prev, 30),
+    of_leads: shareOf(reached, 20, 30),
   });
 
   it("is the step that drops the most leads, counted in leads", () => {

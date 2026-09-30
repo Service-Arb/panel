@@ -3,6 +3,7 @@
 import { Badge } from "@evinvest/uikit";
 
 import { type Lead, SlaBadge, StageBadge, contactOf } from "@/entities/lead";
+import { lostReasonLabel } from "@/features/move-stage";
 import { useT } from "@/shared/i18n";
 
 /** Who and what: the customer as they left it, where, and how long they have waited. */
@@ -27,7 +28,7 @@ export function LeadDetails({ lead }: { lead: Lead }) {
           {lead.brand} · {lead.location ?? t("places.unknown")}
         </span>
       </div>
-      {lead.lost_reason && <p className="text-sm text-ink-mid">{t("card.lostReason", { reason: lead.lost_reason })}</p>}
+      {lead.lost_reason && <p className="text-sm text-ink-mid">{t("card.lostReason", { reason: lostReasonLabel(lead.lost_reason, t) })}</p>}
       {shown.length === 0 ? (
         <p className="text-sm text-ink-soft">{t("card.noPii")}</p>
       ) : (

@@ -21,14 +21,12 @@ export function formatShare(share: Share, t: T): string {
   return t("share.percent", { percent: share.percent });
 }
 
-/** `panel_core::funnel::MIN_SAMPLE`: below this many in the denominator there is no percent. */
-export const MIN_SAMPLE = 30;
-
 /**
  * A share counted here, by the backend's rule (`Share::new`): a whole percent,
  * rounded half up, only from `minSample` on. For counts the API does not make yet.
+ * `minSample` is the backend's (`min_sample` of `/funnel`), never a number of our own.
  */
-export function shareOf(n: number, of: number, minSample = MIN_SAMPLE): Share {
+export function shareOf(n: number, of: number, minSample: number): Share {
   const percent = of >= minSample && of > 0 ? Math.floor((n * 100 + Math.floor(of / 2)) / of) : null;
   return { n, of, percent, small_sample: percent === null };
 }

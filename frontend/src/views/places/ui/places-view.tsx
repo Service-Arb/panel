@@ -1,20 +1,34 @@
 "use client";
 
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle, Skeleton } from "@evinvest/uikit";
+import { Skeleton } from "@evinvest/uikit";
 import { useState } from "react";
 
+import { fetchFunnel } from "@/entities/funnel";
 import { fetchLeads } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
-import { daysAgo } from "@/shared/lib/format";
+import { daysAgo, utcDay } from "@/shared/lib/format";
 import { useResource } from "@/shared/lib/use-resource";
+import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
 import { PageHeader } from "@/shared/ui/page-header";
 
-import { PLACES_LIMIT, aggregatePlaces, loadWindow } from "../model/aggregate";
+import { PLACES_LIMIT, type PlaceRow, aggregatePlaces, loadWindow } from "../model/aggregate";
 import { PlaceCard } from "./place-card";
 
 const WINDOW_DAYS = 30;
 const ALL = { stage: null, brand: null, location: null, overdue: false };
+
+/**
+ * The leads of the window, and the minimum sample from `/funnel` — the backend
+ * decides below how many a share is "n of m", the browser does not.
+ */
+async function load(from: Date, now: Date) {
+  const [window, funnel] = await Promise.all([
+    loadWindow((cursor, limit) => fetchLeads(ALL, cursor, limit), from.toISOString()),
+    fetchFunnel({ from: utcDay(from), to: utcDay(now), brand: null }),
+  ]);
+  return { ...window, rows: aggregatePlaces(window.leads, from.toISOString()), minSample: funnel.min_sample };
+}
 
 /**
  * Locations with a mini funnel each. The API has no per-location funnel yet, so
@@ -23,8 +37,11 @@ const ALL = { stage: null, brand: null, location: null, overdue: false };
  */
 export function PlacesView() {
   const t = useT();
-  const [fromIso] = useState(() => daysAgo(new Date(), WINDOW_DAYS).toISOString());
-  const data = useResource(`places:${fromIso}`, () => loadWindow((cursor, limit) => fetchLeads(ALL, cursor, limit), fromIso));
+  const [range] = useState(() => {
+    const now = new Date();
+    return { now, from: daysAgo(now, WINDOW_DAYS) };
+  });
+  const data = useResource(`places:${range.from.toISOString()}`, () => load(range.from, range.now));
 
   return (
     <div className="flex flex-col gap-4 p-4 md:p-6">
@@ -32,26 +49,19 @@ export function PlacesView() {
       <p className="text-sm text-ink-soft">{t("places.window", { days: WINDOW_DAYS })}</p>
       {data.status === "loading" && <Skeleton className="h-48 w-full" />}
       {data.status === "error" && <ErrorState failure={data.failure} onRetry={data.reload} />}
-      {data.status === "ok" && !data.data.complete && (
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>{t("places.tooMany.title")}</EmptyTitle>
-            <EmptyDescription>{t("places.tooMany.body", { limit: PLACES_LIMIT })}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      )}
-      {data.status === "ok" && data.data.complete && <PlaceGrid rows={aggregatePlaces(data.data.leads, fromIso)} />}
+      {data.status === "ok" && !data.data.complete && <EmptyState title={t("places.tooMany.title")} description={t("places.tooMany.body", { limit: PLACES_LIMIT })} />}
+      {data.status === "ok" && data.data.complete && <PlaceGrid rows={data.data.rows} minSample={data.data.minSample} />}
     </div>
   );
 }
 
-function PlaceGrid({ rows }: { rows: ReturnType<typeof aggregatePlaces> }) {
+function PlaceGrid({ rows, minSample }: { rows: PlaceRow[]; minSample: number }) {
   const t = useT();
-  if (rows.length === 0) return <p className="text-sm text-ink-soft">{t("places.empty")}</p>;
+  if (rows.length === 0) return <EmptyState title={t("places.empty")} description={t("places.empty.body")} />;
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {rows.map((row) => (
-        <PlaceCard key={`${row.brand}/${row.location ?? ""}`} row={row} />
+        <PlaceCard key={`${row.brand}/${row.location ?? ""}`} row={row} minSample={minSample} />
       ))}
     </div>
   );

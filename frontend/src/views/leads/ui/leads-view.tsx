@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Empty, EmptyHeader, EmptyTitle, Skeleton } from "@evinvest/uikit";
+import { Button, Skeleton } from "@evinvest/uikit";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useState } from "react";
 
@@ -11,6 +11,7 @@ import { LeadFilters, leadFilterFrom, paramsWith } from "@/features/lead-filters
 import { KNOWN_BRANDS } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
+import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
 import { PageHeader } from "@/shared/ui/page-header";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
@@ -47,6 +48,12 @@ export function LeadsView() {
     reload();
   }, [reload]);
 
+  const created = (ref: LeadRef) => {
+    changed();
+    openLead(ref);
+  };
+  const filtered = filter.stage !== null || filter.brand !== null || filter.location !== null || filter.overdue;
+
   const leads: Lead[] = list.status === "ok" ? list.leads : [];
   const places = leads.flatMap((l) => (l.location ? [{ brand: l.brand, location: l.location }] : []));
   const brands = uniq([...KNOWN_BRANDS, ...leads.map((l) => l.brand)]);
@@ -56,20 +63,20 @@ export function LeadsView() {
     <CallFlowProvider onLogged={changed}>
       <div className="flex flex-col gap-4 p-4 md:p-6">
         <PageHeader title={t("leads.title")}>
-          <CreateLeadButton brands={brands} places={places} onCreated={(ref) => {
-              changed();
-              openLead(ref);
-            }} />
+          <CreateLeadButton brands={brands} places={places} onCreated={created} />
         </PageHeader>
         <LeadFilters filter={filter} brands={brands} locations={locations} onChange={setFilter} />
         {list.status === "loading" && <Skeleton className="h-64 w-full" />}
         {list.status === "error" && <ErrorState failure={list.failure} onRetry={reload} />}
         {list.status === "ok" && leads.length === 0 && (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>{t("leads.empty")}</EmptyTitle>
-            </EmptyHeader>
-          </Empty>
+          <EmptyState title={t("leads.empty")} description={t(filtered ? "leads.empty.filtered" : "leads.empty.none")}>
+            {filtered && (
+              <Button variant="outline" className={TOUCH_TARGET} onClick={() => go(new URLSearchParams())}>
+                {t("leads.resetFilters")}
+              </Button>
+            )}
+            <CreateLeadButton brands={brands} places={places} onCreated={created} />
+          </EmptyState>
         )}
         {leads.length > 0 && (isDesktop ? <LeadTable leads={leads} onOpen={(l) => openLead(refOf(l))} /> : <LeadList leads={leads} onOpen={(l) => openLead(refOf(l))} />)}
         {list.status === "ok" && list.cursor && (
