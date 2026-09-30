@@ -1,0 +1,346 @@
+syntax = "proto3";
+
+package concierge.v1;
+
+// UserDirectory — the authoritative user/identity control plane.
+//
+// Owns investor accounts and their profile metadata. This is the identity plane:
+// money lives in the separate banking plane and is NEVER mirrored here. Every RPC
+// is authorized from the verified access-token Claims injected by the inbound auth
+// layer; self-service RPCs act on the caller's own `sub`, admin RPCs are gated by
+// the admin allowlist (config).
+service UserDirectory {
+  // The calling user's own identity (resolved from the access-token `sub`).
+  rpc GetMe(GetMeRequest) returns (UserProfile);
+
+  // Update the caller's own editable profile fields (full-replace of the set in
+  // UpdateProfileRequest). Identity/auth fields (email, status) are not editable here.
+  rpc UpdateProfile(UpdateProfileRequest) returns (UserProfile);
+
+  // Admin (allowlist): bump a user's token_version so all their outstanding access
+  // tokens are rejected. The token-revocation control surface.
+  rpc RevokeTokens(RevokeTokensRequest) returns (RevokeTokensResponse);
+
+  // DEPRECATED — always refuses, naming HoldUser or
+  // GovernanceService.OpenUserSuspension.
+  //
+  // The verb was ambiguous in the one way that mattered: it was both the emergency
+  // brake (the frozen flag the money plane re-reads at dispatch, which stops a
+  // withdrawal already in the queue) and a permanent judgement on an account, decided
+  // by one person with no record of why. Those need opposite treatments — the first
+  // must stay instant, the second must not be one person's to make — so the caller now
+  // has to say which one they mean. Kept in the contract rather than deleted so an
+  // older console gets an explanatory refusal instead of an UNIMPLEMENTED.
+  rpc DisableUser(DisableUserRequest) returns (DisableUserResponse) { option deprecated = true; };
+
+  // Admin (UserSuspend): the emergency brake. Freezes the account NOW and lapses on
+  // its own after 24h unless the owners ratify it with OpenUserSuspension. One actor
+  // may stop money temporarily; one actor may never stop it permanently. Emits
+  // SUSPENDED across the cross-plane bridge, and REINSTATED again when it lapses.
+  rpc HoldUser(HoldUserRequest) returns (HoldUserResponse);
+
+  // Admin (allowlist): re-enable a disabled user, lifting the sign-in/refresh
+  // freeze. Emits REINSTATED across the cross-plane bridge.
+  //
+  // Refuses with FAILED_PRECONDITION when the suspension was the owners' verdict,
+  // naming GovernanceService.OpenUserReinstatement — otherwise one admin could
+  // overturn a consilium and the consilium would be advisory.
+  rpc ReinstateUser(ReinstateUserRequest) returns (ReinstateUserResponse);
+
+  // Admin (allowlist): set a user's KYC level. Emits KYC_CHANGED across the
+  // cross-plane bridge (so the money plane learns the new level). Echoes the
+  // level now in effect.
+  //
+  // Refuses with PERMISSION_DENIED when user_id is the CALLER's own account.
+  // KycManage is held by Admin as well as Owner, and tier 1 is the floor for
+  // withdrawals on the money plane, so without this an operator could lift their
+  // own money gate. A console must not offer this control on the operator's own
+  // row: the refusal is decided from the session alone and belongs in front of
+  // the call. Raising your own level goes through the verification front door,
+  // which reaches tier 1; above that, and for any downgrade, another holder of
+  // KycManage acts.
+  rpc SetKycLevel(SetKycLevelRequest) returns (SetKycLevelResponse);
+
+  // Admin (UserRead): list/search users for the operator console — paginated, with a
+  // free-text query and optional role/status filters (see ListUsersRequest). Returns
+  // lightweight summaries, not full profiles.
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+
+  // Admin (UserRead): the full profile of ANY user by id (the admin sibling of the
+  // self-only GetMe), for the user-detail drawer.
+  rpc GetUser(GetUserRequest) returns (UserProfile);
+
+  // Admin (RoleGrant, Owner only): set a user's platform access role. Emits
+  // ROLE_CHANGED across the cross-plane bridge so the money plane mirrors it. Echoes
+  // the role now in effect.
+  rpc SetRole(SetRoleRequest) returns (SetRoleResponse);
+
+  // Give a user a role over ONE resource (`allocation:<service_id>`), replacing the role
+  // they hold there if any. Non-money access only — a vertical's panel; it never crosses
+  // the bridge. Echoes the grant now in effect; re-granting the role already held is a
+  // no-op.
+  //
+  // A disabled account is refused FAILED_PRECONDITION: reinstate it first.
+  //
+  // Who may: a global admin/owner — any scope, any role. The scope's own `admin` —
+  // `operator` inside that scope, and never an `admin` grant in either direction
+  // (neither minting one nor moving an existing one). Anyone else: PERMISSION_DENIED.
+  // A malformed scope or role is INVALID_ARGUMENT — including `viewer`, which no longer
+  // exists: a read-only holder is just an ordinary user and gets no grant. An unknown
+  // user_id is NOT_FOUND, reported only to a caller who holds some authority over the
+  // scope.
+  rpc GrantScope(GrantScopeRequest) returns (GrantScopeResponse);
+
+  // Take a user's grant on a scope away. Same authority rule as GrantScope: a scope
+  // admin may revoke `operator` grants in their scope, never an `admin` one.
+  // NOT_FOUND when the user holds no active grant there.
+  rpc RevokeScope(RevokeScopeRequest) returns (RevokeScopeResponse);
+
+  // The active grants on one scope, with each holder's email and names, for the
+  // cabinet's "Access" tab. Global admin/owner, or the scope's `admin` — who gets
+  // `legal_name` empty: the team sees each other's email and chosen name, the legal
+  // name stays with staff.
+  rpc ListScopedGrants(ListScopedGrantsRequest) returns (ListScopedGrantsResponse);
+}
+
+message GetMeRequest {}
+
+message UserProfile {
+  string user_id = 1;
+  string email = 2;
+  bool email_verified = 3;
+  string status = 4;
+  uint64 token_version = 5;
+  // Editable profile fields (control plane; empty until the user sets them). email and
+  // status above stay read-only — email is the IdP's, status is admin-managed.
+  string legal_name = 6;
+  string preferred_name = 7;
+  string phone = 8;
+  string date_of_birth = 9;
+  string nationality = 10;
+  string tax_residence = 11;
+  string residential_address = 12;
+  string language = 13;
+  string base_currency = 14;
+  string timezone = 15;
+  // The user's KYC level (admin-managed; mirrored to the money plane).
+  uint32 kyc_level = 16;
+  // The user's platform access role (snake_case: investor/operator/admin/owner).
+  // Admin-managed via SetRole; read-only here.
+  string role = 17;
+  // True when `role` above came from the OWNER_SUBJECTS emergency allowlist rather than
+  // from `users.role`. See UserSummary.role_is_break_glass in auth.proto — same flag,
+  // same meaning: real authority, granted by the environment while the fund has no
+  // persisted owner, seating nobody. Render it as a warning, never as ownership.
+  bool role_is_break_glass = 18;
+  // WHY the account is disabled — and therefore who may undo it. Empty on an active
+  // user, and also on one suspended before this field existed (those keep the old
+  // one-act, never-lapsing semantics they were actually suspended under).
+  //   "admin_hold"  — one operator's brake; lapses at hold_expires_at; ReinstateUser
+  //                   lifts it in one act.
+  //   "governance"  — the owners' ratified verdict; never lapses; ReinstateUser
+  //                   refuses and names OpenUserReinstatement.
+  string suspended_by = 19;
+  // Unix SECONDS an "admin_hold" lapses. 0 when nothing lapses.
+  int64 hold_expires_at = 20;
+  // The caller's ACTIVE scoped grants. Filled by GetMe only — every other RPC returning
+  // a UserProfile leaves it empty, so an empty list elsewhere means "not reported", not
+  // "holds none". A global role is NOT folded in here: a panel that admits global
+  // admins/owners reads `role` above for that.
+  repeated ScopedGrant scopes = 21;
+}
+
+// A user's role over one resource.
+message ScopedGrant {
+  string user_id = 1;
+  // `allocation:<service_id>`, service_id in [a-z0-9_]{1,64}.
+  string scope = 2;
+  // operator/admin.
+  string role = 3;
+  // Who made this grant (user id).
+  string granted_by = 4;
+  // Unix SECONDS.
+  int64 granted_at = 5;
+}
+
+// The caller's editable profile, full-replace. Same 10 fields as the editable part of
+// UserProfile; an empty string clears the field.
+message UpdateProfileRequest {
+  string legal_name = 1;
+  string preferred_name = 2;
+  string phone = 3;
+  string date_of_birth = 4;
+  string nationality = 5;
+  string tax_residence = 6;
+  string residential_address = 7;
+  string language = 8;
+  string base_currency = 9;
+  string timezone = 10;
+}
+
+message RevokeTokensRequest {
+  string user_id = 1;
+  // Recorded verbatim on the audit row. Optional here: revoking sessions is the
+  // reflex you want an operator to reach for without composing a sentence first.
+  string reason = 2;
+}
+
+message RevokeTokensResponse {
+  uint64 token_version = 1;
+}
+
+message DisableUserRequest {
+  string user_id = 1;
+}
+
+message DisableUserResponse {}
+
+message HoldUserRequest {
+  string user_id = 1;
+  // REQUIRED. A brake that stops someone's money with no stated cause cannot be
+  // reviewed afterwards, and the owners asked to ratify it are reading exactly this.
+  string reason = 2;
+}
+
+message HoldUserResponse {
+  // Unix SECONDS the hold lapses unless the owners ratify it.
+  int64 hold_expires_at = 1;
+}
+
+message ReinstateUserRequest {
+  string user_id = 1;
+  // Recorded verbatim on the audit row.
+  string reason = 2;
+}
+
+message ReinstateUserResponse {}
+
+message SetKycLevelRequest {
+  string user_id = 1;
+  uint32 kyc_level = 2;
+  // Recorded verbatim on the audit row.
+  string reason = 3;
+}
+
+message SetKycLevelResponse {
+  // The user's KYC level now in effect (echoes the applied level).
+  uint32 kyc_level = 1;
+}
+
+// A lightweight user row for the operator console's user list (not the full profile).
+// Named distinctly from auth.proto's login `UserSummary` (same package).
+message AdminUserSummary {
+  string user_id = 1;
+  string email = 2;
+  string status = 3;
+  uint32 kyc_level = 4;
+  string role = 5;
+  uint64 token_version = 6;
+  // Unix SECONDS the user was provisioned (joined).
+  int64 created_at = 7;
+  // True when `role` above came from the OWNER_SUBJECTS emergency allowlist rather than
+  // from `users.role` — see UserProfile.role_is_break_glass. This is the field that
+  // stops the console listing an "owner" the consilium has never heard of.
+  bool role_is_break_glass = 8;
+  // Why the account is disabled; see UserProfile.suspended_by. On the list because a
+  // held account and a suspended one need different action buttons, and a console that
+  // cannot tell them apart offers the wrong one.
+  string suspended_by = 9;
+  // Unix SECONDS an "admin_hold" lapses. 0 when nothing lapses.
+  int64 hold_expires_at = 10;
+}
+
+message ListUsersRequest {
+  // Free-text match over email/user_id (empty = no text filter).
+  string query = 1;
+  // Optional exact filters (empty string = unfiltered).
+  string role = 2;
+  string status = 3;
+  // Page window. `limit` is clamped server-side; `offset` is a simple row offset.
+  uint32 limit = 4;
+  uint32 offset = 5;
+}
+
+message ListUsersResponse {
+  repeated AdminUserSummary users = 1;
+  // Total matching the filters (before the page window), for the list header count.
+  uint64 total = 2;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message SetRoleRequest {
+  string user_id = 1;
+  // The role to grant (snake_case: investor/operator/admin/owner).
+  //
+  // `owner` is refused in both directions and `admin` in the GRANTING direction, each
+  // naming the proposal that does it instead. Taking `admin` away is still one act:
+  // containing a rogue operator must never be the slower path.
+  string role = 2;
+  // Recorded verbatim on the audit row.
+  string reason = 3;
+}
+
+message SetRoleResponse {
+  // The role now in effect (echoes the applied role).
+  string role = 1;
+}
+
+message GrantScopeRequest {
+  // Who receives the grant. A scope's admin must name them by `email` (an exact,
+  // case-insensitive match on the account's address): addressing by `user_id` is for a
+  // global admin/owner only and is PERMISSION_DENIED otherwise, because ids of other
+  // users are visible to a scope admin and granting one would reveal its owner's
+  // address through the roster. An email no account holds is NOT_FOUND; one held by
+  // several accounts is FAILED_PRECONDITION (grant by user_id as a global admin).
+  oneof target {
+    string user_id = 1;
+    string email = 5;
+  }
+  string scope = 2;
+  // operator/admin.
+  string role = 3;
+  // Recorded verbatim on the audit row.
+  string reason = 4;
+}
+
+message GrantScopeResponse {
+  ScopedGrant grant = 1;
+}
+
+message RevokeScopeRequest {
+  // Whose grant. Either form, for a scope admin too: the answer depends only on
+  // whether that person holds a grant in the caller's own scope, which the caller can
+  // already list — so a user_id reveals nothing new, and it is the key the roster
+  // hands back. An id or email with no active grant here is NOT_FOUND, alike.
+  oneof target {
+    string user_id = 1;
+    string email = 4;
+  }
+  string scope = 2;
+  // Recorded verbatim on the audit row.
+  string reason = 3;
+}
+
+message RevokeScopeResponse {}
+
+message ListScopedGrantsRequest {
+  string scope = 1;
+}
+
+// One holder of a scope, with enough identity to render the row.
+message ScopeHolder {
+  ScopedGrant grant = 1;
+  string email = 2;
+  // Empty until the user sets them (see UserProfile). `legal_name` is also empty for a
+  // caller who is only the scope's admin.
+  string legal_name = 3;
+  string preferred_name = 4;
+}
+
+message ListScopedGrantsResponse {
+  // Oldest grant first.
+  repeated ScopeHolder holders = 1;
+}
