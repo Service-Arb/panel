@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
+import { DocumentLang } from "@/shared/i18n";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -19,7 +21,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-svh bg-background font-sans text-ink antialiased">{children}</body>
+      <body className="min-h-svh bg-background font-sans text-ink antialiased">
+        <DocumentLang />
+        {children}
+      </body>
     </html>
   );
 }

@@ -1,4 +1,4 @@
-import { BarChart3, Inbox, KeyRound, LayoutGrid, MapPin, type LucideIcon } from "lucide-react";
+import { BarChart3, Ellipsis, Inbox, KeyRound, LayoutGrid, MapPin, type LucideIcon } from "lucide-react";
 
 import type { Role } from "@/entities/session";
 import { ROUTES } from "@/shared/config/routes";
@@ -11,6 +11,8 @@ export interface NavItem {
   /** Leaves the app: Grafana is a separate instance behind the backend (spec §6). */
   external?: true;
   roles?: readonly Role[];
+  /** Other screens this entry stands for, lit with it: "More" holds Sources on a phone. */
+  also?: readonly string[];
 }
 
 /** The desktop sidebar (spec §10: hybrid 1+2). */
@@ -27,7 +29,7 @@ export const TABS: readonly NavItem[] = [
   { href: ROUTES.overview, key: "nav.overview", icon: BarChart3 },
   { href: ROUTES.leads, key: "nav.leads", icon: Inbox },
   { href: ROUTES.places, key: "nav.places", icon: MapPin },
-  { href: ROUTES.more, key: "nav.more", icon: LayoutGrid },
+  { href: ROUTES.more, key: "nav.more", icon: Ellipsis, also: [ROUTES.sources] },
 ];
 
 export function visibleTo(role: Role) {
@@ -35,7 +37,7 @@ export function visibleTo(role: Role) {
 }
 
 /** `/leads/` and `/leads` are the same screen: the export writes one, the dev server serves the other. */
-export function isActive(pathname: string, href: string): boolean {
+export function isActive(pathname: string, href: string, also: readonly string[] = []): boolean {
   const strip = (p: string) => p.replace(/\/+$/, "") || "/";
-  return strip(pathname) === strip(href);
+  return [href, ...also].some((h) => strip(pathname) === strip(h));
 }

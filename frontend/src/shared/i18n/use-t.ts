@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { type Locale, type T, localeOf, translator } from "./translate";
 
@@ -16,6 +16,15 @@ export function useLocale(): Locale {
     () => localeOf(navigator.language),
     () => "en",
   );
+}
+
+/** Keeps `<html lang>` on the language the page is actually in (the export says "en"). */
+export function DocumentLang() {
+  const locale = useLocale();
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+  return null;
 }
 
 export function useT(): T {

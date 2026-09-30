@@ -22,7 +22,7 @@ export function TabBar() {
     >
       {TABS.map((tab) => {
         const Icon = tab.icon;
-        const active = isActive(pathname, tab.href);
+        const active = isActive(pathname, tab.href, tab.also);
         return (
           <Link
             key={tab.href}

@@ -46,7 +46,8 @@ export function PanelOverlay({ open, onOpenChange, title, description, desktop, 
             <DrawerTitle>{title}</DrawerTitle>
             {description && <DrawerDescription>{description}</DrawerDescription>}
           </DrawerHeader>
-          <div className="overflow-y-auto px-4 pb-4">{children}</div>
+          {/* DrawerContent scrolls its own body; a second scroller would fight the drag. */}
+          <div className="px-4 pb-4">{children}</div>
         </DrawerContent>
       </Drawer>
     );
