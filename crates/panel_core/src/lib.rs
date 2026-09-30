@@ -5,11 +5,15 @@
 //! - [`event`]: the envelope of a `sa.funnel.v1` event, and what a signing key may write;
 //! - [`fact`]: the registered event types, typed and checked;
 //! - [`lead`]: a lead's stage and stage times, folded from its facts;
+//! - [`signature`]: how a source signs a batch, and how the panel checks it;
+//! - [`role`]: who may do what inside the panel.
 
 pub mod event;
 pub mod fact;
 pub mod ids;
 pub mod lead;
+pub mod role;
+pub mod signature;
 
 /// Why an event (or a part of one) cannot be accepted. The message is what the source is
 /// told, so it names the field and never echoes a secret or PII.
