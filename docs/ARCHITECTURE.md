@@ -18,7 +18,7 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
                                      its subject
   src/lead.rs                        Stage, and fold: a lead's facts → its stage and stage times
   src/signature.rs                   the HMAC scheme of a batch and its replay window
-  src/role.rs                        viewer / operator / admin and what each may do (§5.4)
+  src/role.rs                        operator / admin and what each may do (§5.4)
 crates/panel/                        the engine
   src/lib.rs                         the `Panel` facade: ingest, sources, PII, rebuild
   src/wire.rs                        protojson → the core: one event decoded and checked; the
