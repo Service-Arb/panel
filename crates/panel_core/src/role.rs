@@ -1,6 +1,6 @@
-//! Roles inside the panel (spec §5.4). A role comes from the caller's scope grant
-//! `allocation:service_arb` in concierge; signing in is not built yet, so for now this is
-//! only the table of what each role may do.
+//! Roles inside the panel (spec §5.4), and how one is read off the caller's identity in
+//! concierge: their grant on the scope `allocation:service_arb`, or a global admin/owner
+//! role standing in for one.
 //!
 //! There is no read-only role: someone who only looks is an ordinary user without a grant,
 //! and a scoped service does not let them in at all.
@@ -23,7 +23,24 @@ pub enum GrafanaRole {
 	Editor,
 }
 
+/// The concierge scope a panel role is granted on.
+pub const SCOPE: &str = "allocation:service_arb";
+
 impl Role {
+	/// The caller's role in the panel, from concierge's `GetMe`: `global` is their platform
+	/// role (investor/operator/admin/owner), `grants` their scoped grants as
+	/// `(scope, role)`. A grant on [`SCOPE`] gives its role; a global `admin` or `owner`
+	/// counts as a panel admin with or without one (concierge admits them to the client on
+	/// the same rule). The higher of the two wins. `None`: not let in.
+	///
+	/// A global `operator` is not a panel operator: that role is about the fund, and this
+	/// allocation's team is whoever its grants name.
+	pub fn admitted<'a>(global: &str, grants: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<Self> {
+		let scoped = grants.into_iter().filter(|(scope, _)| *scope == SCOPE).filter_map(|(_, role)| role.parse::<Self>().ok()).max();
+		let global = matches!(global, "admin" | "owner").then_some(Self::Admin);
+		scoped.max(global)
+	}
+
 	pub fn as_str(self) -> &'static str {
 		match self {
 			Self::Operator => "operator",
@@ -88,5 +105,18 @@ mod tests {
 		}
 		assert!("viewer".parse::<Role>().is_err(), "the owner dropped it (2026-09-30)");
 		assert!("owner".parse::<Role>().is_err());
+	}
+
+	#[test]
+	fn admission() {
+		let ours = |role| (SCOPE, role);
+		assert_eq!(Role::admitted("investor", [ours("operator")]), Some(Role::Operator));
+		assert_eq!(Role::admitted("investor", [ours("admin"), ours("operator")]), Some(Role::Admin));
+		assert_eq!(Role::admitted("admin", []), Some(Role::Admin), "a global admin without a grant");
+		assert_eq!(Role::admitted("owner", [ours("operator")]), Some(Role::Admin), "the higher of the two");
+		assert_eq!(Role::admitted("operator", []), None, "a fund operator is not this allocation's");
+		assert_eq!(Role::admitted("investor", [("allocation:real_estate", "admin")]), None, "another allocation's grant");
+		assert_eq!(Role::admitted("investor", [ours("viewer")]), None, "no such role any more");
+		assert_eq!(Role::admitted("investor", []), None);
 	}
 }

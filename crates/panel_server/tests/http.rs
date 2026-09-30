@@ -126,6 +126,7 @@ async fn costly_requests_are_refused_before_the_body_is_read() {
 		max_concurrent: 1,
 		body_timeout: std::time::Duration::from_millis(200),
 		request_timeout: std::time::Duration::from_secs(5),
+		..Default::default()
 	};
 	let app = panel_server::http::router_with(panel, limits);
 	let res = tokio::time::timeout(quick, app.clone().oneshot(request("aquafix-site", &now, stalled()))).await.unwrap().unwrap();

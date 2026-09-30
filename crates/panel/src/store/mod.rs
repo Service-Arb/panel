@@ -4,6 +4,8 @@
 
 pub mod events;
 pub mod projections;
+pub mod reads;
+pub mod sessions;
 pub mod sources;
 
 use chrono::{DateTime, Utc};
@@ -46,7 +48,14 @@ impl Store {
 	}
 
 	pub async fn connect_with(options: PgConnectOptions) -> eyre::Result<Self> {
-		let pool = PgPoolOptions::new().max_connections(16).connect_with(options).await.wrap_err("connecting to Postgres")?;
+		// A request waits at most this long for a connection, then fails: a pool drained by a
+		// burst answers 500 quickly instead of stacking every request behind it.
+		let pool = PgPoolOptions::new()
+			.max_connections(16)
+			.acquire_timeout(std::time::Duration::from_secs(3))
+			.connect_with(options)
+			.await
+			.wrap_err("connecting to Postgres")?;
 		let store = Self { pool };
 		store.check_schema().await?;
 		Ok(store)

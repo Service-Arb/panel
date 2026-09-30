@@ -10,7 +10,12 @@ use ev_lib::error_monitoring;
 use eyre::WrapErr;
 use panel::{Panel, seal::DataKey, store::Store};
 use panel_core::{event::SourceKind, ids::BrandId};
-use panel_server::{DEFAULT_BIND, http};
+use panel_server::{
+	DEFAULT_BIND,
+	concierge::Concierge,
+	http,
+	signin::{SignIn, SignInConfig},
+};
 
 use crate::settings::Settings;
 
@@ -115,7 +120,10 @@ async fn run(cli: Cli, settings: Settings) -> eyre::Result<()> {
 			let options = settings.migrate_database_url()?.parse().wrap_err("MIGRATE_DATABASE_URL is not a Postgres URL")?;
 			Store::migrate(options).await
 		}
-		Cmd::Serve { bind } => serve(connect().await?, bind).await,
+		Cmd::Serve { bind } => {
+			let sign_in = settings.sign_in()?;
+			serve(connect().await?, sign_in, bind).await
+		}
 		Cmd::RebuildProjections => {
 			let r = connect().await?.rebuild_projections().await?;
 			println!(
@@ -158,10 +166,28 @@ async fn source(panel: &Panel, cmd: SourceCmd) -> eyre::Result<()> {
 	}
 }
 
-async fn serve(panel: Panel, bind: SocketAddr) -> eyre::Result<()> {
+async fn serve(panel: Panel, sign_in: Option<settings::SignInSettings>, bind: SocketAddr) -> eyre::Result<()> {
+	let app = match sign_in {
+		Some(s) => {
+			let concierge = Concierge::new(&s.concierge_grpc, &s.client_secret)?;
+			tracing::info!(panel_origin = s.panel_origin, "signing in through concierge");
+			http::app(SignIn::new(
+				panel,
+				concierge,
+				SignInConfig {
+					panel_origin: s.panel_origin,
+					concierge_origin: s.concierge_origin,
+				},
+			))
+		}
+		None => {
+			tracing::warn!("sign-in not configured: serving ingest only, no /auth, no /api/v1");
+			http::router(panel)
+		}
+	};
 	let listener = tokio::net::TcpListener::bind(bind).await.wrap_err_with(|| format!("binding {bind}"))?;
 	tracing::info!(%bind, "serving");
-	axum::serve(listener, http::router(panel)).with_graceful_shutdown(shutdown_signal()).await.wrap_err("HTTP server")
+	axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await.wrap_err("HTTP server")
 }
 
 async fn shutdown_signal() {

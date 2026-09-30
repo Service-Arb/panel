@@ -17,8 +17,13 @@ journal in Postgres, PII sealed apart; the funnel's projections (`leads` with th
 `calls`, `payments`) are derived from it and can be rebuilt from it at any time. A `reporting`
 schema exposes them without PII, for the panel's Grafana.
 
-Not here yet: sign-in (concierge as identity provider), the UI, Telegram, the GBP and PostHog
-imports. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for where things live.
+People sign in through concierge (the panel is its relying party, client `sa`): the scope
+`allocation:service_arb` lets them in, as an operator or an admin, and `/api/v1` is the
+operator API the panel's front end works through — leads and their stages, semi-manual
+calls, payments typed in by hand, the funnel, and (admins) the sources.
+
+Not here yet: the UI, Telegram, the GBP and PostHog imports. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for where things live.
 <!-- markdownlint-disable -->
 <details>
 <summary>
@@ -46,7 +51,10 @@ panel source add aquafix-site --kind site --brand aquafix
 panel source list
 panel source revoke aquafix-site
 
-# HTTP on 127.0.0.1:59120
+# HTTP on 127.0.0.1:59120. Ingest alone, unless signing in is configured — all four or none:
+#   PANEL_PUBLIC_ORIGIN=https://sa.evinvest.ltd   CONCIERGE_PUBLIC_ORIGIN=https://evinvest.ltd
+#   CONCIERGE_GRPC_ADDR=http://concierge:55670    RP_CLIENT_SECRET_SA=<the secret concierge hashed>
+# which adds /auth/login, /auth/callback, /auth/logout and the operator API under /api/v1.
 panel serve
 
 # leads, calls and payments again from the journal, against the registry as it is now

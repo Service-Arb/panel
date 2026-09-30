@@ -5,13 +5,43 @@
 use jiff::{SignedDuration, Timestamp};
 use panel::{
 	Outcome, Panel,
+	operator::{Actor, LeadQuery, NewLead, Pii},
 	seal::DataKey,
+	session::{RefreshError, Refresher, SessionKey, Tokens},
 	store::Store,
 	testing::{TestDb, event, sign},
 };
-use panel_core::{event::SourceKind, ids::BrandId};
+use panel_core::{
+	event::SourceKind,
+	ids::{BrandId, LocationId},
+};
 use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection};
+use zeroize::Zeroizing;
+
+/// A refresher that must not be asked: the tokens above are fresh.
+struct Never;
+
+impl Refresher for Never {
+	async fn refresh(&self, _: &str) -> Result<Tokens, RefreshError> {
+		unreachable!("the tokens are fresh")
+	}
+}
+
+/// A refresher that rotates once, to `a2`/`r2`.
+struct Rotates;
+
+impl Refresher for Rotates {
+	async fn refresh(&self, _: &str) -> Result<Tokens, RefreshError> {
+		let now = Timestamp::now();
+		Ok(Tokens {
+			access: Zeroizing::new("a2".into()),
+			access_expires_at: now + SignedDuration::from_hours(24 * 400),
+			refresh: Zeroizing::new("r2".into()),
+			refresh_expires_at: now + SignedDuration::from_hours(24 * 400),
+		})
+	}
+}
 
 const GRANTS: &str = include_str!("../../../deploy/panel_app.sql");
 
@@ -87,6 +117,41 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		assert_eq!(panel.rebuild_projections().await.unwrap().leads, 1);
 		assert!(panel.store().revoke_source("aquafix-ops").await.unwrap());
 
+		// Signed-in users: a session, and what an operator does and reads.
+		let tokens = Tokens {
+			access: Zeroizing::new("a".into()),
+			access_expires_at: now + SignedDuration::from_mins(15),
+			refresh: Zeroizing::new("r".into()),
+			refresh_expires_at: now + SignedDuration::from_hours(1),
+		};
+		let user = uuid::Uuid::now_v7();
+		let opened = panel.open_session(user, &tokens, now).await.unwrap();
+		assert_eq!(panel.session(&opened.cookie, now, &Never).await.unwrap().user_id, user);
+		let by = Actor(user);
+		let new = NewLead {
+			brand: BrandId::parse("aquafix").unwrap(),
+			location: LocationId::parse("paris-11").unwrap(),
+			need: "a boiler".into(),
+			phone: None,
+		};
+		let (lead, _) = panel.create_lead(by, new, now).await.unwrap();
+		let brand = BrandId::parse("aquafix").unwrap();
+		panel.attempt_call(by, &brand, &lead, now).await.unwrap();
+		assert_eq!(panel.leads(&LeadQuery { limit: 10, ..LeadQuery::default() }, Pii::Reveal, now).await.unwrap().leads.len(), 2);
+		assert!(panel.lead_card(&brand, &lead, Pii::Reveal, now).await.unwrap().is_some());
+		let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
+		assert_eq!(panel.funnel(today, today, None).await.unwrap().manual, 2);
+		assert!(panel.close_session(&SessionKey::of_cookie(&opened.cookie).unwrap()).await.unwrap());
+
+		// A rotation (its lease, its guarded write), a redeemed state, a sign-out everywhere.
+		let opened = panel.open_session(user, &tokens, now).await.unwrap();
+		let stale = now + SignedDuration::from_mins(15);
+		assert_eq!(panel.session(&opened.cookie, stale, &Rotates).await.unwrap().access.as_str(), "a2");
+		assert!(panel.consume_state("state", now).await.unwrap());
+		assert!(!panel.consume_state("state", now).await.unwrap());
+		assert!(panel.consume_state("state", now + SignedDuration::from_hours(1)).await.unwrap(), "expired marks are dropped");
+		assert_eq!(panel.close_all_sessions(&SessionKey::of_cookie(&opened.cookie).unwrap()).await.unwrap(), Some(user));
+
 		let pool = panel.store().pool();
 		for sql in [
 			"DELETE FROM events",
@@ -100,7 +165,7 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 			assert!(err.contains("permission denied") || err.contains("must be owner"), "{sql}: {err}");
 		}
 		let n: i64 = sqlx::query_scalar("SELECT count(*) FROM reporting.leads").fetch_one(pool).await.unwrap();
-		assert_eq!(n, 1);
+		assert_eq!(n, 2, "the ingested lead and the one taken by phone");
 		pool.close().await;
 	}
 }

@@ -10,9 +10,10 @@ readme.workspace = true
 
 [features]
 # Throwaway databases and signed batches, for this crate's and the server's tests.
-testing = ["dep:tokio", "uuid/v7"]
+testing = []
 
 [dependencies]
+base64.workspace = true
 chacha20poly1305.workspace = true
 chrono.workspace = true
 eyre.workspace = true
@@ -26,15 +27,15 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, optional = true }
+tokio.workspace = true
 tracing.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v7"] }
 zeroize.workspace = true
 
 [dev-dependencies]
 panel = { workspace = true, features = ["testing"] }
-tokio.workspace = true
 uuid = { workspace = true, features = ["v7"] }
 zeroize.workspace = true
 

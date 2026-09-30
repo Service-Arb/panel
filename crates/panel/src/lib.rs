@@ -8,8 +8,12 @@
 //!
 //! [`Panel`] is the facade the server talks to; [`wire`] turns protojson into the domain of
 //! `panel_core`; [`store`] is Postgres; [`seal`] encrypts what must not sit in the clear.
+//! [`operator`] is what a signed-in user does and reads, as events through the same journal;
+//! [`session`] is signing in through concierge and the sessions that follow.
 
+pub mod operator;
 pub mod seal;
+pub mod session;
 pub mod store;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -114,11 +118,16 @@ pub struct Rebuilt {
 pub struct Panel {
 	store: Store,
 	key: Arc<DataKey>,
+	rotations: Arc<session::Rotations>,
 }
 
 impl Panel {
 	pub fn new(store: Store, key: DataKey) -> Self {
-		Self { store, key: Arc::new(key) }
+		Self {
+			store,
+			key: Arc::new(key),
+			rotations: Arc::default(),
+		}
 	}
 
 	pub fn store(&self) -> &Store {

@@ -10,5 +10,10 @@ journal in Postgres, PII sealed apart; the funnel's projections (`leads` with th
 `calls`, `payments`) are derived from it and can be rebuilt from it at any time. A `reporting`
 schema exposes them without PII, for the panel's Grafana.
 
-Not here yet: sign-in (concierge as identity provider), the UI, Telegram, the GBP and PostHog
-imports. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for where things live.
+People sign in through concierge (the panel is its relying party, client `sa`): the scope
+`allocation:service_arb` lets them in, as an operator or an admin, and `/api/v1` is the
+operator API the panel's front end works through — leads and their stages, semi-manual
+calls, payments typed in by hand, the funnel, and (admins) the sources.
+
+Not here yet: the UI, Telegram, the GBP and PostHog imports. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for where things live.

@@ -13,7 +13,10 @@ panel source add aquafix-site --kind site --brand aquafix
 panel source list
 panel source revoke aquafix-site
 
-# HTTP on 127.0.0.1:59120
+# HTTP on 127.0.0.1:59120. Ingest alone, unless signing in is configured — all four or none:
+#   PANEL_PUBLIC_ORIGIN=https://sa.evinvest.ltd   CONCIERGE_PUBLIC_ORIGIN=https://evinvest.ltd
+#   CONCIERGE_GRPC_ADDR=http://concierge:55670    RP_CLIENT_SECRET_SA=<the secret concierge hashed>
+# which adds /auth/login, /auth/callback, /auth/logout and the operator API under /api/v1.
 panel serve
 
 # leads, calls and payments again from the journal, against the registry as it is now

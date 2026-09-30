@@ -31,8 +31,15 @@ crates/panel/                        the engine
   src/testing.rs                     (feature `testing`) throwaway databases, signed batches
   migrations/                        the schema, `reporting` included
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
-  src/http.rs                        POST /api/ingest/v1/events, GET /health
+  src/http.rs                        POST /api/ingest/v1/events, GET /health; the sign-in and
+                                     /api/v1 mounted on top when signing in is configured
+  src/signin.rs                      /auth/login, /auth/callback, /auth/logout; the /api/v1 gate
+  src/concierge.rs                   concierge over gRPC: ExchangeCode, RefreshClientToken, GetMe
+  src/cookies.rs                     __Host- cookies, the double-submit CSRF check
+  src/api.rs                         the operator API: JSON over the engine's `operator` module
   src/settings.rs                    the environment (ev_lib `settings!`)
+contracts/proto/concierge/v1/        concierge's auth and directory protos, vendored at the
+                                     commit in REV (`sync.sh` refreshes them)
 deploy/panel_app.sql                 the runtime role's grants (applied by the tests too)
 ```
 
@@ -58,6 +65,99 @@ registry: type@version known?
                ├─ id taken, other content                                 → rejected
                └─ new: calls / payments row; lead recomputed from all its events → accepted
 ```
+
+## Signing in (§4)
+
+The panel is a relying party of concierge, client id `sa`, with its own origin and its own
+cookies; the browser never holds a concierge token.
+
+```text
+GET /auth/login      state + PKCE verifier, sealed into sa_prelogin (10 min)
+                     → 302 <concierge>/api/auth/authorize?client_id=sa&redirect_uri=…&state&code_challenge
+GET /auth/callback   state = the cookie's (constant time), and not redeemed before
+                     (consumed_states), else 400 and the code is never presented;
+                     ExchangeCode(code, redirect_uri, verifier, client secret); the browser's
+                     previous session, if any, closed → a session row (tokens sealed under
+                     PANEL_DATA_KEY, keyed by the hash of a random id) → sa_session (HttpOnly)
+                     + sa_csrf → 303 /
+/api/v1/*            not GET: x-sa-csrf must equal sa_csrf; the session (access token rotated
+                     when within 30 s of expiry, see below); GetMe (cached ≤ 60 s per session,
+                     asked afresh for POST/DELETE /sources, one retry when concierge does not
+                     answer) → the role, else 401 (cookies cleared) / 403 / 503
+POST /auth/logout    CSRF; every session of the user is closed
+```
+
+- **The role** is `panel_core::role::Role::admitted`: a grant on `allocation:service_arb`
+  gives its role, a global admin/owner is an admin; the higher wins. Nothing else gets in —
+  concierge refuses them a code already, and the panel asks again on every request.
+- **Revocation.** concierge refusing a refresh or `GetMe` closes the session here; concierge
+  unreachable is a 503 and keeps it. A scope revoked at concierge is seen within the 60 s of
+  the cache (at once by the source-key mutations). Signing out of evinvest.ltd revokes the
+  concierge token family: the panel's session ends at its next rotation, so within the
+  access token's lifetime.
+- **Rotation, a refresh token presented once.** No pool connection is held while concierge
+  is asked. In one process, a single flight per session: the others wait and find the fresh
+  row. Across replicas, a lease on the row (`sessions.rotating_until`, taken by one
+  conditional UPDATE, 15 s — longer than a call to concierge): only its holder asks, the
+  others poll the row for up to 6 s, then answer 503; a lease whose holder died lapses and is
+  taken over. The rotated pair is written only if the row still has the pair the rotation
+  started from. If the holder's answer is lost after concierge rotated, the next rotation
+  presents a spent token and concierge closes the family: it fails closed.
+- **Bounded.** `/auth/*`: at most 8 at once (else 503), 10 s each. `/api/v1`: 32, 15 s. The
+  pool gives a connection within 3 s or the request fails. Every answer carries
+  `X-Content-Type-Options: nosniff`; the sign-in's HTML pages a CSP of `default-src 'self';
+  frame-ancestors 'none'; base-uri 'none'; form-action 'self'`.
+- **Cookies** are `__Host-` and `Secure` when `PANEL_PUBLIC_ORIGIN` is https, bare over plain
+  http (development only), all `SameSite=Lax`: the callback arrives by a top-level navigation.
+- `serve` without any of the four sign-in variables answers ingest alone; some but not all
+  of them is a configuration error at boot.
+
+## The operator API, `/api/v1`
+
+JSON; timestamps RFC 3339, money in minor units (|amount| ≤ 10^10, currency one of EUR,
+USD, GBP, AUD — checked here, not in the registry, so a rebuild never re-judges old events),
+errors `{"error": "…"}` with 400 / 403 / 404 / 409 / 503. Writes need the CSRF header and
+journal an event of kind `panel` (manual), so they go through the same registry and
+projections as ingest.
+
+`POST /leads`, `…/stage` and `…/payments` take an optional `Idempotency-Key` header (1–128
+visible ASCII). The event id is then derived from (user, action, lead, key) — shaped as a
+UUIDv7, its time field hash — and so is a new lead's id: a retry finds the first attempt in
+the journal and is answered `200` with the same body, journaling nothing. Without the key,
+every request is a new event (`201`).
+
+```text
+GET    /me                                        {user_id, role, email, preferred_name}
+GET    /leads?stage&brand&location&overdue&cursor&limit
+                                                  {leads: [Lead], next_cursor}; newest created
+                                                  first, limit ≤ 200 (default 50)
+POST   /leads                                     {brand, location, need, phone?} → 201
+                                                  {brand, lead_id: "p-<uuidv7>", event_id}
+GET    /leads/{brand}/{lead}                      {lead: Lead, events: [Event]}
+POST   /leads/{brand}/{lead}/stage                {stage: contacted, channel?} | {stage: quoted,
+                                                  amount?, currency?} | {stage: won, job_id?} |
+                                                  {stage: lost, reason, note?} | {stage: completed}
+                                                  → 201 {event_id}
+POST   /leads/{brand}/{lead}/calls/attempt        → 201 {attempt_id}
+POST   /leads/{brand}/{lead}/calls/{attempt}/outcome
+                                                  {outcome: answered|no_answer|wrong_number|later}
+POST   /leads/{brand}/{lead}/payments             {billed, commission, currency}
+GET    /funnel?from&to&brand                      days, UTC, default the last 30, ≤ 366
+                                                  {stages: [{stage, reached, of_previous, of_leads}],
+                                                   lost, manual, min_sample}
+GET    /sources                     admin         {sources: [{key_id, kind, brands, created_at,
+                                                  revoked_at}]}
+POST   /sources                     admin, fresh  {key_id, kind, brands} → 201 {key_id, secret}
+                                                  (shown once), 409 if taken; kind panel → 400
+                                                  (the panel writes without a key)
+DELETE /sources/{key_id}            admin, fresh  204, 404
+```
+
+`Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`, …)
+plus `sla` while it waits for its first contact — `{waiting_since, waiting_seconds,
+overdue}`, overdue after 30 minutes — and `pii` (the customer's name, phone, need) for the
+roles that see it. A share is `{n, of, percent, small_sample}`; `percent` is null while `of`
+is under `min_sample` (§10.1), so the front end can only draw "n of of".
 
 ## Invariants
 
@@ -114,8 +214,9 @@ registry: type@version known?
   and refuses to start on a database that lacks a migration of its build. No command migrates
   on its own, not even in development: run `panel migrate` there too, with both URLs the same.
 - **Secrets come from the environment only** (`DATABASE_URL`, `MIGRATE_DATABASE_URL`,
-  `PANEL_DATA_KEY`, `SENTRY_DSN`),
-  through `ev_lib::settings`; both of the first are required at boot when `APP_ENV=production`.
+  `PANEL_DATA_KEY`, `SENTRY_DSN`, `RP_CLIENT_SECRET_SA`),
+  through `ev_lib::settings`; with `APP_ENV=production`, `DATABASE_URL`, `PANEL_DATA_KEY` and the
+  four sign-in variables are required at boot (`panel --print-required-vars` lists them).
 
 ## Deploy requirements
 
@@ -124,6 +225,13 @@ registry: type@version known?
   `/api/ingest`, and the NetworkPolicy lets in only the pods that send. The signature is
   what authenticates a batch; keeping the route off the internet is what keeps its cost —
   a database lookup and a MAC per request — away from anyone who can reach a URL.
+- **concierge within reach.** The panel's pods call concierge's gRPC (`CONCIERGE_GRPC_ADDR`)
+  for every sign-in, token rotation and `GetMe`; the egress policy must allow it. concierge
+  must register client `sa` with redirect URI `<PANEL_PUBLIC_ORIGIN>/auth/callback` exactly,
+  and hold the hash of `RP_CLIENT_SECRET_SA`.
+- **Rate-limit `/auth` per client IP at Traefik** (a `RateLimit` middleware on the
+  IngressRoute's `/auth` prefix, e.g. 10/min with a burst of 20). The panel bounds how many
+  sign-ins run at once, not who starts them; per-IP limits are the edge's.
 - **Migrate, grant, then roll out.** A release that carries a migration runs `panel migrate`
   (as a Job or an init container with `MIGRATE_DATABASE_URL`) before the new pods start, then
   `deploy/panel_app.sql` as the owner, so a new table is granted too. Both roles, `panel_app`
