@@ -1,0 +1,143 @@
+// sa.funnel.v1 — the events the panel accepts at `POST /api/ingest/v1/events`.
+//
+// The wire is protojson (the proto3 JSON mapping): field names in lowerCamelCase
+// (`occurredAt`, `typeVersion`; the snake_case names are accepted too), `Timestamp` as an
+// RFC 3339 string, int64 as a JSON string or number.
+//
+// Closed vocabularies (source kinds, call outcomes, lead channels) are strings rather than
+// proto enums so the JSON carries the words the spec uses (`"site"`, `"no_answer"`) and
+// not `SOURCE_KIND_SITE`; the panel checks each against its list and rejects any other.
+//
+// Compatibility: a message here is only ever extended with new optional fields. Anything
+// else — a field removed, retyped or made required — is a new `type_version`, a new
+// `<Type>V<n>` message beside the old one; old versions stay accepted.
+syntax = "proto3";
+
+package sa.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// One fact about the funnel, as a source reports it.
+message Event {
+  // UUIDv7, issued by the source; the idempotency key. Resending an event with the same
+  // id and the same content is answered `duplicate`; with other content, `rejected`.
+  string id = 1;
+  // Always "sa.funnel.v1".
+  string schema = 2;
+  // What happened: "lead.created", "call.logged", … A type the panel does not know yet is
+  // stored as unregistered, not dropped, and picked up once it is registered.
+  string type = 3;
+  // Version of `properties` for this type, from 1.
+  uint32 type_version = 4;
+  // When it happened in the world, not when it was sent.
+  google.protobuf.Timestamp occurred_at = 5;
+  Source source = 6;
+  Subject subject = 7;
+  // Checked against the message registered for `type@type_version` (the `…V<n>` messages
+  // below). May be omitted when that message has no required fields.
+  google.protobuf.Struct properties = 8;
+  // Name, phone, email, … — kept apart, encrypted at rest, never in reporting.
+  optional google.protobuf.Struct pii = 9;
+}
+
+message Source {
+  // site | review_archive | gbp | posthog | panel | sheet | telephony. Must be the kind the
+  // signing key is registered for.
+  string kind = 1;
+  // Which one: "aquafix", a user id for `panel`, …
+  string id = 2;
+}
+
+// What the event is about. Ids are opaque to the panel: 1–128 of [A-Za-z0-9._:-].
+message Subject {
+  // Lowercase slug, e.g. "aquafix". Must be one of the brands the signing key may write.
+  string brand_id = 1;
+  optional string location_id = 2;
+  // Unique within the brand.
+  optional string lead_id = 3;
+  optional string job_id = 4;
+}
+
+// The body of `POST /api/ingest/v1/events`.
+message IngestRequest {
+  // 1 to 500 events. Each is judged on its own.
+  repeated Event events = 1;
+}
+
+// The body of the 207 answer: one result per event, in the request's order.
+message IngestResponse {
+  repeated EventResult results = 1;
+}
+
+message EventResult {
+  // Position in the request.
+  uint32 index = 1;
+  // The event's id as sent; empty when it had none.
+  string id = 2;
+  // accepted | duplicate | rejected
+  string status = 3;
+  // Why it was rejected; for an accepted event of an unregistered type, that it was stored
+  // without being projected.
+  optional string reason = 4;
+}
+
+// ── properties, one message per type@type_version ──────────────────────────────────────
+
+// lead.created@1 — subject.lead_id required.
+message LeadCreatedV1 {
+  // form | phone_inbound
+  string channel = 1;
+  // Who typed it in, for leads entered by hand (a panel user id).
+  optional string entered_by = 2;
+  // What the customer said they need is their words, so it goes in `pii` (as `need`),
+  // not here: properties are stored in the clear, `pii` encrypted.
+}
+
+// lead.contacted@1 — subject.lead_id required.
+message LeadContactedV1 {
+  // phone | whatsapp | email | telegram | other
+  optional string channel = 1;
+}
+
+// lead.quoted@1 — subject.lead_id required.
+message LeadQuotedV1 {
+  // In minor units of `currency`; both or neither.
+  optional int64 amount = 1;
+  // ISO 4217, e.g. "EUR".
+  optional string currency = 2;
+}
+
+// job.won@1 — subject.lead_id and subject.job_id required.
+message JobWonV1 {}
+
+// lead.lost@1 — subject.lead_id required.
+message LeadLostV1 {
+  // Lowercase slug: no_answer, too_expensive, out_of_area, …
+  string reason = 1;
+  optional string note = 2;
+}
+
+// job.completed@1 — subject.lead_id and subject.job_id required.
+message JobCompletedV1 {}
+
+// payment.received@1 — subject.lead_id required.
+message PaymentReceivedV1 {
+  // What the customer paid, in minor units of `currency`; at least 0.
+  int64 billed = 1;
+  // Our share of it, in the same units; 0 to `billed`.
+  int64 commission = 2;
+  // ISO 4217, e.g. "EUR".
+  string currency = 3;
+}
+
+// call.attempted@1 — an outgoing call started from the panel; subject.lead_id required.
+message CallAttemptedV1 {}
+
+// call.logged@1 — how a call ended, as the operator tells it; subject.lead_id required.
+message CallLoggedV1 {
+  // answered | no_answer | wrong_number | later
+  string outcome = 1;
+  // The id of the call.attempted event this closes, when there was one.
+  optional string attempt_id = 2;
+}
