@@ -80,8 +80,6 @@ impl Directory for Operators {
 	}
 }
 
-const GRANTS: &str = include_str!("../../../deploy/panel_app.sql");
-
 /// A login role for this test alone, holding the runtime grants, dropped at the end.
 struct AppRole {
 	admin: sqlx::postgres::PgConnectOptions,
@@ -94,8 +92,9 @@ impl AppRole {
 		let mut owner = PgConnection::connect_with(&db.options).await.unwrap();
 		// The name is ours (a UUID's hex): safe to splice into the statements.
 		owner.execute(sqlx::AssertSqlSafe(format!("CREATE ROLE {name} LOGIN"))).await.unwrap();
-		owner.execute(sqlx::AssertSqlSafe(GRANTS.replace("panel_app", &name))).await.unwrap();
 		owner.close().await.unwrap();
+		// What `panel migrate --grant-to` runs.
+		Store::grant_runtime(db.options.clone(), &name).await.unwrap();
 		Self { admin: db.options.clone(), name }
 	}
 
@@ -252,4 +251,16 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		assert_eq!(n, 4, "the ingested lead and the three taken by phone");
 		pool.close().await;
 	}
+}
+
+#[tokio::test]
+async fn grants_go_to_a_plain_role_name_only() {
+	let Some(db) = TestDb::create().await else { return };
+	Store::migrate(db.options.clone()).await.unwrap();
+	for bad in ["", "Panel_App", "panel_app; DROP TABLE events", "1panel", &"a".repeat(64)] {
+		let e = Store::grant_runtime(db.options.clone(), bad).await.unwrap_err();
+		assert!(format!("{e}").contains("plain lowercase name"), "{bad:?}: {e}");
+	}
+	let missing = Store::grant_runtime(db.options.clone(), "panel_app_nobody_made").await.unwrap_err();
+	assert!(format!("{missing:#}").contains("does the role exist"), "{missing:#}");
 }
