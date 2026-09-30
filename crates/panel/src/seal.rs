@@ -68,15 +68,27 @@ impl DataKey {
 	/// let anyone with a dump confirm a guess at the PII in it (a phone number has few
 	/// enough possibilities to try them all).
 	pub fn content_mac(&self, canonical: &[u8]) -> [u8; 32] {
-		let mut derived = Zeroizing::new([0u8; 32]);
-		let mut h = Sha256::new();
-		h.update(b"sa-panel/content-mac/v1");
-		h.update(self.key.as_slice());
-		derived.copy_from_slice(&h.finalize());
+		let derived = self.derive(b"sa-panel/content-mac/v1");
 		// HMAC takes a key of any length, so this cannot fail.
 		let mut mac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(derived.as_slice()).expect("HMAC accepts any key length");
 		mac.update(canonical);
 		mac.finalize().into_bytes().into()
+	}
+
+	/// The key the Telegram buttons' callback data is signed with
+	/// (`panel_core::notify::callback_data`).
+	pub fn telegram_callback_key(&self) -> Zeroizing<[u8; 32]> {
+		self.derive(b"sa-panel/tg-callback-key/v1")
+	}
+
+	/// A key for one purpose, named by `label`, that says nothing of this one or the others.
+	fn derive(&self, label: &[u8]) -> Zeroizing<[u8; 32]> {
+		let mut derived = Zeroizing::new([0u8; 32]);
+		let mut h = Sha256::new();
+		h.update(label);
+		h.update(self.key.as_slice());
+		derived.copy_from_slice(&h.finalize());
+		derived
 	}
 
 	/// `nonce(24) || ciphertext+tag`.
@@ -120,6 +132,11 @@ pub fn pii_aad(event_id: uuid::Uuid) -> Vec<u8> {
 /// Associated data of a source's HMAC secret.
 pub fn source_secret_aad(key_id: &str) -> Vec<u8> {
 	[b"sa-panel/source-secret/v1/".as_slice(), key_id.as_bytes()].concat()
+}
+
+/// Associated data of a queued Telegram message's text.
+pub fn telegram_text_aad(rule: &str, event_id: uuid::Uuid, chat_id: i64) -> Vec<u8> {
+	[b"sa-panel/tg-text/v1/".as_slice(), rule.as_bytes(), b"/", event_id.as_bytes(), &chat_id.to_be_bytes()].concat()
 }
 
 #[cfg(test)]

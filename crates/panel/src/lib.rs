@@ -9,12 +9,14 @@
 //! [`Panel`] is the facade the server talks to; [`wire`] turns protojson into the domain of
 //! `panel_core`; [`store`] is Postgres; [`seal`] encrypts what must not sit in the clear.
 //! [`operator`] is what a signed-in user does and reads, as events through the same journal;
-//! [`session`] is signing in through concierge and the sessions that follow.
+//! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
+//! bot's notifications and buttons.
 
 pub mod operator;
 pub mod seal;
 pub mod session;
 pub mod store;
+pub mod telegram;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod wire;

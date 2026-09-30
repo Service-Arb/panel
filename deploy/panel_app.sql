@@ -27,3 +27,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO panel_app;
 
 -- Callback states, redeemed once; the expired ones are dropped on the way.
 GRANT SELECT, INSERT, DELETE ON consumed_states TO panel_app;
+
+-- Telegram: link tokens redeemed once, links made and dropped, the users' rules, the fan-out
+-- marks and the outbox (pruned once delivered), the poller's lease and offset.
+GRANT SELECT, INSERT, DELETE ON telegram_link_tokens TO panel_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON telegram_links, telegram_rules, telegram_outbox TO panel_app;
+GRANT SELECT, INSERT, DELETE ON telegram_fanout TO panel_app;
+GRANT SELECT, UPDATE ON telegram_poller TO panel_app;
+
+-- The bot's unsolicited replies, throttled per chat.
+GRANT SELECT, INSERT, UPDATE, DELETE ON telegram_replies TO panel_app;

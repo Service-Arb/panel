@@ -7,6 +7,7 @@ pub mod projections;
 pub mod reads;
 pub mod sessions;
 pub mod sources;
+pub mod telegram;
 
 use chrono::{DateTime, Utc};
 use eyre::WrapErr;

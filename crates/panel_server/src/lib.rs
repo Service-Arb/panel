@@ -1,5 +1,5 @@
 //! The panel service: the HTTP surface over the engine's [`panel::Panel`] — ingest, the
-//! sign-in through concierge and the operator API. The binary
+//! sign-in through concierge, the operator API — and the Telegram bot. The binary
 //! (`panel`) adds the CLI and the process bootstrap.
 //!
 //! A library target too, so tests can serve the real router in-process.
@@ -9,6 +9,7 @@ pub mod concierge;
 pub mod cookies;
 pub mod http;
 pub mod signin;
+pub mod telegram;
 
 /// Where `serve` listens unless told otherwise; the image binds the same port on 0.0.0.0.
 pub const DEFAULT_BIND: &str = "127.0.0.1:59120";
