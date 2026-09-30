@@ -132,6 +132,21 @@ impl Envelope {
 	}
 }
 
+/// Whether a kind of source may write a type (spec §2, the "source" column). What only an
+/// operator can know — a quote, a win, a loss, a finished job — comes from the panel alone,
+/// and payments too, which are entered by hand (owner, 2026-09-30); calls and contacts also
+/// from telephony, once there is one. A type the panel does not know is open to every kind
+/// (§3.2): it is stored, not projected, and judged again once it is registered.
+pub fn may_write(kind: SourceKind, type_name: &str) -> bool {
+	use SourceKind::{Panel, Site, Telephony};
+	match type_name {
+		"lead.created" => matches!(kind, Site | Panel),
+		"lead.contacted" | "call.attempted" | "call.logged" => matches!(kind, Panel | Telephony),
+		"lead.quoted" | "job.won" | "lead.lost" | "job.completed" | "payment.received" => matches!(kind, Panel),
+		_ => true,
+	}
+}
+
 /// A source's signing key, as the panel knows it: which kind of source holds it and which
 /// brands it may write for. The key of aquafix cannot write vifnet's events.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,6 +164,9 @@ impl KeyGrant {
 		}
 		if !self.brands.contains(&envelope.subject.brand_id) {
 			return Err(Invalid::new(format!("this key may not write for brand {}", envelope.subject.brand_id)));
+		}
+		if !may_write(self.kind, &envelope.type_key.name) {
+			return Err(Invalid::new(format!("a {} source may not write {}", self.kind, envelope.type_key.name)));
 		}
 		Ok(())
 	}
@@ -188,6 +206,37 @@ mod tests {
 			grant.permits(&envelope(SourceKind::Panel, "aquafix")).is_err(),
 			"a site key cannot pass its events off as typed in by hand"
 		);
+	}
+
+	#[test]
+	fn who_writes_what() {
+		use SourceKind::*;
+		let table: [(&str, &[SourceKind]); 9] = [
+			("lead.created", &[Site, Panel]),
+			("lead.contacted", &[Panel, Telephony]),
+			("lead.quoted", &[Panel]),
+			("job.won", &[Panel]),
+			("lead.lost", &[Panel]),
+			("job.completed", &[Panel]),
+			("payment.received", &[Panel]),
+			("call.attempted", &[Panel, Telephony]),
+			("call.logged", &[Panel, Telephony]),
+		];
+		for (name, allowed) in table {
+			for kind in SourceKind::ALL {
+				assert_eq!(may_write(kind, name), allowed.contains(&kind), "{kind} {name}");
+			}
+		}
+		assert!(SourceKind::ALL.into_iter().all(|k| may_write(k, "review.new")), "unknown types are open");
+
+		let site = KeyGrant {
+			key_id: "aquafix-site".into(),
+			kind: Site,
+			brands: [BrandId::parse("aquafix").unwrap()].into(),
+		};
+		let mut payment = envelope(Site, "aquafix");
+		payment.type_key = TypeKey::parse("payment.received", 1).unwrap();
+		assert_eq!(site.permits(&payment).unwrap_err().0, "a site source may not write payment.received");
 	}
 
 	#[test]

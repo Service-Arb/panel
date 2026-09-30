@@ -186,7 +186,7 @@ impl Panel {
 		if let Err(e) = grant.permits(&incoming.envelope) {
 			return Ok(Outcome::Rejected(e));
 		}
-		let checked = wire::check(&incoming.envelope.type_key, &incoming.properties, &incoming.envelope.subject);
+		let checked = wire::check(&incoming.envelope.type_key, incoming.envelope.source.kind, &incoming.properties, &incoming.envelope.subject);
 		let (status, _) = Status::of(&checked);
 		let fact = match checked {
 			Checked::Registered(fact) => Some(fact),
@@ -229,6 +229,7 @@ impl Panel {
 			let recorded = Recorded {
 				id: env.id,
 				occurred_at: env.occurred_at,
+				received_at: now,
 				source_kind: env.source.kind,
 				subject: env.subject.clone(),
 				fact,
@@ -292,6 +293,7 @@ impl Panel {
 				let recorded = Recorded {
 					id: stored.id,
 					occurred_at: stored.occurred_at,
+					received_at: stored.received_at,
 					source_kind: stored.source_kind,
 					subject: stored.subject,
 					fact,

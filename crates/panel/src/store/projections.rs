@@ -111,6 +111,7 @@ pub fn registered(e: Stored) -> Option<Recorded> {
 		Checked::Registered(fact) => Some(Recorded {
 			id: e.id,
 			occurred_at: e.occurred_at,
+			received_at: e.received_at,
 			source_kind: e.source_kind,
 			subject: e.subject,
 			fact,

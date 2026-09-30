@@ -59,6 +59,8 @@ impl Stage {
 pub struct Recorded {
 	pub id: EventId,
 	pub occurred_at: Timestamp,
+	/// When the panel journaled it: which of several `lead.created` counts.
+	pub received_at: Timestamp,
 	pub source_kind: SourceKind,
 	pub subject: Subject,
 	pub fact: Fact,
@@ -118,8 +120,18 @@ pub struct LeadState {
 /// The stage follows the latest progress: it only moves forward through the funnel (a
 /// `lead.contacted` after `job.won` is a call about the job, not a step back), a
 /// `lead.lost` moves it to `Lost` from anywhere, and progress after a loss reopens it.
+///
+/// A lead is created once: the `lead.created` the panel journaled first — by `received_at`,
+/// not `occurred_at` — is the one that counts, and any later one is left out altogether. A
+/// source could otherwise back-date a second creation and take over a lead someone else
+/// made: its channel, whether it was typed in by hand, when it came in.
 pub fn fold(events: &[Recorded]) -> Option<LeadState> {
-	let mut ordered: Vec<&Recorded> = events.iter().collect();
+	let creation = events
+		.iter()
+		.filter(|e| matches!(e.fact, Fact::LeadCreated { .. }))
+		.min_by_key(|e| (e.received_at, e.id.raw()))
+		.map(|e| e.id);
+	let mut ordered: Vec<&Recorded> = events.iter().filter(|e| !matches!(e.fact, Fact::LeadCreated { .. }) || Some(e.id) == creation).collect();
 	ordered.sort_by_key(|e| (e.occurred_at, e.id.raw()));
 	let first = *ordered.first()?;
 	let lead_id = first.subject.lead_id.clone()?;
@@ -145,9 +157,7 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		if let Some(job) = &e.subject.job_id {
 			state.job_id = Some(job.clone());
 		}
-		if let Fact::LeadCreated { channel, .. } = &e.fact
-			&& state.channel.is_none()
-		{
+		if let Fact::LeadCreated { channel, .. } = &e.fact {
 			state.channel = Some(*channel);
 			state.manual = e.source_kind.is_manual();
 		}
@@ -186,6 +196,7 @@ mod tests {
 		Recorded {
 			id: EventId::from_raw(Uuid::now_v7()),
 			occurred_at: at(minutes),
+			received_at: at(minutes),
 			source_kind: kind,
 			subject: Subject {
 				brand_id: BrandId::parse("aquafix").unwrap(),
@@ -270,6 +281,26 @@ mod tests {
 		assert_eq!(s.stage, Stage::Contacted);
 		assert_eq!(s.lost_reason, None);
 		assert_eq!(s.times.lost, Some(at(5)), "that it was lost once stays on record");
+	}
+
+	#[test]
+	fn the_first_creation_journaled_is_the_one() {
+		let by_hand = ev(
+			10,
+			SourceKind::Panel,
+			Fact::LeadCreated {
+				channel: LeadChannel::PhoneInbound,
+				entered_by: Some("op-1".into()),
+			},
+		);
+		let mut back_dated = ev(0, SourceKind::Site, created());
+		back_dated.received_at = at(20);
+		let s = fold(&[by_hand.clone(), back_dated.clone()]).unwrap();
+		assert!(s.manual);
+		assert_eq!(s.channel, Some(LeadChannel::PhoneInbound));
+		assert_eq!(s.times.created, Some(at(10)), "the back-dated one does not move it");
+		assert_eq!(s.last_event_id, by_hand.id);
+		assert_eq!(fold(&[back_dated, by_hand]).unwrap(), s, "whatever the order they are read in");
 	}
 
 	#[test]

@@ -8,7 +8,7 @@ use jiff::Timestamp;
 use panel_contracts::{SCHEMA, v1};
 use panel_core::{
 	Invalid,
-	event::{Envelope, Source, SourceKind, Subject, TypeKey},
+	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
 	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, bounded},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
 };
@@ -182,7 +182,15 @@ pub const REGISTERED: &[(&str, u32, &str)] = &[
 /// Checks an event's properties against its `type@version`, and what the type needs of its
 /// subject. The same call judges an event on arrival and again when the projections are
 /// rebuilt, so a type registered later picks up what arrived before it.
-pub fn check(key: &TypeKey, properties: &Value, subject: &Subject) -> Checked {
+pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subject) -> Checked {
+	// Again here, not only in the key's grant: the rebuild judges stored events through this
+	// call alone.
+	if !may_write(kind, &key.name) {
+		return match REGISTERED.iter().any(|(name, version, _)| *name == key.name && *version == key.version) {
+			true => Checked::Invalid(Invalid::new(format!("a {kind} source may not write {}", key.name))),
+			false => Checked::Unregistered,
+		};
+	}
 	let fact = match (key.name.as_str(), key.version) {
 		("lead.created", 1) => props::<v1::LeadCreatedV1>(key, properties).and_then(|p| {
 			Ok(Fact::LeadCreated {
@@ -258,7 +266,7 @@ mod tests {
 		assert_eq!(got.envelope.occurred_at.to_string(), "2026-09-30T10:00:00.123456Z", "cut to microseconds");
 		assert_eq!(got.pii.unwrap()["phone"], "+33 6 00 00 00 00");
 		assert_eq!(
-			check(&got.envelope.type_key, &got.properties, &got.envelope.subject),
+			check(&got.envelope.type_key, got.envelope.source.kind, &got.properties, &got.envelope.subject),
 			Checked::Registered(Fact::LeadCreated {
 				channel: LeadChannel::Form,
 				entered_by: None
@@ -307,17 +315,21 @@ mod tests {
 	fn the_registry() {
 		let subject = decode(event(), now()).unwrap().envelope.subject;
 		for (name, version, _) in REGISTERED {
-			let got = check(&TypeKey::parse(name, *version).unwrap(), &json!({}), &subject);
+			let got = check(&TypeKey::parse(name, *version).unwrap(), SourceKind::Panel, &json!({}), &subject);
 			assert_ne!(got, Checked::Unregistered, "{name}@{version} is listed but not handled");
 		}
-		assert_eq!(check(&TypeKey::parse("lead.created", 2).unwrap(), &json!({"x": 1}), &subject), Checked::Unregistered);
-		assert_eq!(check(&TypeKey::parse("review.new", 1).unwrap(), &json!({}), &subject), Checked::Unregistered);
-		let Checked::Invalid(e) = check(&TypeKey::parse("call.logged", 1).unwrap(), &json!({"outcome": "voicemail"}), &subject) else {
+		assert_eq!(
+			check(&TypeKey::parse("lead.created", 2).unwrap(), SourceKind::Panel, &json!({"x": 1}), &subject),
+			Checked::Unregistered
+		);
+		assert_eq!(check(&TypeKey::parse("review.new", 1).unwrap(), SourceKind::Panel, &json!({}), &subject), Checked::Unregistered);
+		let Checked::Invalid(e) = check(&TypeKey::parse("call.logged", 1).unwrap(), SourceKind::Panel, &json!({"outcome": "voicemail"}), &subject) else {
 			panic!("an unknown outcome passed")
 		};
 		assert!(e.0.contains("voicemail"), "{e}");
 		let Checked::Invalid(e) = check(
 			&TypeKey::parse("payment.received", 1).unwrap(),
+			SourceKind::Panel,
 			&json!({"billed": 100, "commission": 10, "currency": "EUR", "tip": 5}),
 			&subject,
 		) else {
@@ -327,10 +339,17 @@ mod tests {
 		assert_eq!(
 			check(
 				&TypeKey::parse("payment.received", 1).unwrap(),
+				SourceKind::Panel,
 				&json!({"billed": "12000", "commission": 1800, "currency": "EUR"}),
 				&subject
 			),
 			Checked::Registered(Fact::payment(12_000, 1_800, "EUR").unwrap())
+		);
+		let payment = json!({"billed": 100, "commission": 10, "currency": "EUR"});
+		assert_eq!(
+			check(&TypeKey::parse("payment.received", 1).unwrap(), SourceKind::Site, &payment, &subject),
+			Checked::Invalid(Invalid::new("a site source may not write payment.received")),
+			"payments are entered by hand"
 		);
 	}
 

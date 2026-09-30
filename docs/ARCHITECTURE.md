@@ -73,6 +73,14 @@ registry: type@version known?
   brands; an event claiming another brand, or another kind (a site key cannot pass its events
   off as typed in by hand), is rejected. Events of kind `panel` are the manual ones (§10a), and
   every projection row carries `manual`.
+- **A kind writes only its types** (`panel_core::event::may_write`): `lead.created` from `site`
+  or `panel`; `lead.contacted` and the calls from `panel` or `telephony`; quotes, wins, losses,
+  completed jobs and payments from `panel` alone (payments are entered by hand). Unknown types
+  are open to every kind. Checked on the key at ingest and again by the registry, so the
+  rebuild drops anything that slipped in.
+- **A lead is created once.** Of several `lead.created`, the first the panel journaled counts
+  (by `received_at`, then id) and the others are left out of the projection, so a source
+  cannot back-date a creation to take over someone else's lead.
 - **The timestamp is signed.** The MAC covers `<timestamp>.<body>`, so the 5-minute window
   cannot be dodged by re-stamping a captured request (the weakness concierge's Didit handler
   works around). An unknown key and a bad signature answer the same.

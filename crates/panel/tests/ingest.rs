@@ -344,3 +344,71 @@ async fn pii_is_sealed_and_kept_out_of_reporting() {
 		assert!(!["pii", "properties", "secret", "sealed"].iter().any(|bad| c.contains(bad)), "{c} in reporting");
 	}
 }
+
+#[tokio::test]
+async fn a_site_key_writes_no_operator_events() {
+	let Some(db) = TestDb::create().await else { return };
+	let (panel, site, _) = setup(&db).await;
+	let events = [
+		event("payment.received", at(0), "site", lead("L-1"), json!({"billed": 100, "commission": 10, "currency": "EUR"})),
+		event("job.won", at(0), "site", json!({"brandId": "aquafix", "leadId": "L-1", "jobId": "J-1"}), json!({})),
+		event("call.logged", at(0), "site", lead("L-1"), json!({"outcome": "answered"})),
+	];
+	let got = panel.ingest(sign("aquafix-site", &site, &events, now()).batch(), now()).await.unwrap();
+	assert_eq!(got[0].outcome, Outcome::Rejected(panel_core::Invalid::new("a site source may not write payment.received")));
+	assert!(got.iter().all(|v| matches!(v.outcome, Outcome::Rejected(_))), "{got:?}");
+	let pool = db.pool().await;
+	assert_eq!(count(&pool, "SELECT count(*) FROM events").await, 0);
+
+	// One that got into the journal anyway — an older panel, a hand-made row — is dropped
+	// by the rebuild, which judges through the same rule.
+	panel
+		.ingest(
+			sign("aquafix-site", &site, &[event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}))], now()).batch(),
+			now(),
+		)
+		.await
+		.unwrap();
+	sqlx::query(
+		"INSERT INTO events (id, schema, type, type_version, occurred_at, received_at, source_kind, source_id, brand_id, lead_id, properties, content_sha256, status) \
+		 VALUES ($1, 'sa.funnel.v1', 'payment.received', 1, now(), now(), 'site', 'x', 'aquafix', 'L-1', '{\"billed\": 100, \"commission\": 10, \"currency\": \"EUR\"}', $2, 'registered')",
+	)
+	.bind(uuid::Uuid::now_v7())
+	.bind(vec![0u8; 32])
+	.execute(&pool)
+	.await
+	.unwrap();
+	let rebuilt = panel.rebuild_projections().await.unwrap();
+	assert_eq!((rebuilt.registered, rebuilt.invalid), (1, 1));
+	assert_eq!(count(&pool, "SELECT count(*) FROM payments").await, 0);
+	assert_eq!(
+		count(&pool, "SELECT count(*) FROM events WHERE status = 'invalid' AND status_reason LIKE 'a site source%'").await,
+		1
+	);
+}
+
+#[tokio::test]
+async fn a_back_dated_creation_does_not_take_over_a_lead() {
+	let Some(db) = TestDb::create().await else { return };
+	let (panel, site, ops) = setup(&db).await;
+	let by_hand = event("lead.created", at(10), "panel", lead("L-1"), json!({"channel": "phone_inbound", "enteredBy": "op-1"}));
+	panel.ingest(sign("aquafix-ops", &ops, &[by_hand], now()).batch(), now()).await.unwrap();
+	let back_dated = event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}));
+	let later = now() + SignedDuration::from_mins(1);
+	let got = panel.ingest(sign("aquafix-site", &site, &[back_dated], later).batch(), later).await.unwrap();
+	assert_eq!(outcomes(&got), [ACCEPTED], "journaled: it is a fact that the site said so");
+
+	let pool = db.pool().await;
+	let lead_row = || async {
+		sqlx::query_as::<_, (bool, Option<String>, chrono::DateTime<chrono::Utc>)>("SELECT manual, channel, created_at FROM leads WHERE lead_id = 'L-1'")
+			.fetch_one(&pool)
+			.await
+			.unwrap()
+	};
+	let (manual, channel, created) = lead_row().await;
+	assert!(manual);
+	assert_eq!(channel.as_deref(), Some("phone_inbound"));
+	assert_eq!(created.timestamp(), at(10).as_second());
+	panel.rebuild_projections().await.unwrap();
+	assert_eq!(lead_row().await, (manual, channel, created), "and the rebuild agrees");
+}

@@ -121,6 +121,7 @@ pub struct Stored {
 	pub id: EventId,
 	pub type_key: TypeKey,
 	pub occurred_at: Timestamp,
+	pub received_at: Timestamp,
 	pub source_kind: SourceKind,
 	pub subject: Subject,
 	pub properties: Value,
@@ -131,7 +132,7 @@ pub struct Stored {
 impl Stored {
 	/// What the registry makes of it now.
 	pub fn check(&self) -> Checked {
-		check(&self.type_key, &self.properties, &self.subject)
+		check(&self.type_key, self.source_kind, &self.properties, &self.subject)
 	}
 }
 
@@ -141,6 +142,7 @@ struct Row {
 	r#type: String,
 	type_version: i32,
 	occurred_at: DateTime<Utc>,
+	received_at: DateTime<Utc>,
 	source_kind: String,
 	brand_id: String,
 	location_id: Option<String>,
@@ -161,6 +163,7 @@ impl TryFrom<Row> for Stored {
 			id: EventId::from_raw(r.id),
 			type_key: TypeKey::parse(&r.r#type, version).wrap_err_with(at)?,
 			occurred_at: from_pg(r.occurred_at)?,
+			received_at: from_pg(r.received_at)?,
 			source_kind: r.source_kind.parse().wrap_err_with(at)?,
 			subject: Subject {
 				brand_id: BrandId::parse(&r.brand_id).wrap_err_with(at)?,
@@ -178,7 +181,7 @@ impl TryFrom<Row> for Stored {
 // A macro, not a const, so every query stays a literal (`concat!`) that sqlx takes as audited.
 macro_rules! columns {
 	() => {
-		"id, type, type_version, occurred_at, source_kind, brand_id, location_id, lead_id, job_id, properties, status, status_reason"
+		"id, type, type_version, occurred_at, received_at, source_kind, brand_id, location_id, lead_id, job_id, properties, status, status_reason"
 	};
 }
 
