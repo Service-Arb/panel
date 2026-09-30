@@ -1,0 +1,73 @@
+"use client";
+
+import { Collapsible, CollapsibleContent, CollapsibleTrigger, Label, Switch, buttonVariants } from "@evinvest/uikit";
+import { ChevronDown } from "lucide-react";
+import { useId } from "react";
+
+import { type LeadFilter, STAGES } from "@/entities/lead";
+import { useT } from "@/shared/i18n";
+import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
+import { FilterSelect } from "@/shared/ui/filter-select";
+import { TOUCH_TARGET } from "@/shared/ui/touch";
+
+import { stageOrNull } from "../model/params";
+import { StageSegments } from "./stage-segments";
+
+type Props = { filter: LeadFilter; brands: string[]; locations: string[]; onChange: (patch: Partial<LeadFilter>) => void };
+
+/**
+ * Stage, brand, location and "overdue only" — the questions the queue is sorted
+ * by. On a phone the stages an operator works through are segments under the
+ * thumb, and the rest folds under "More filters" (the mockup's hybrid).
+ */
+export function LeadFilters(props: Props) {
+  const t = useT();
+  const isDesktop = useMediaQuery(DESKTOP_QUERY);
+  const { filter, onChange } = props;
+
+  if (isDesktop) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterSelect
+          label={t("filter.stage")}
+          allLabel={t("filter.stage.all")}
+          value={filter.stage}
+          options={STAGES.map((s) => ({ value: s, label: t(`stage.${s}`) }))}
+          onChange={(v) => onChange({ stage: stageOrNull(v) })}
+        />
+        <SecondaryFilters {...props} />
+      </div>
+    );
+  }
+
+  const more = filter.brand !== null || filter.location !== null || filter.overdue;
+  return (
+    <div className="flex flex-col gap-2">
+      <StageSegments stage={filter.stage} onChange={(stage) => onChange({ stage })} />
+      <Collapsible defaultOpen={more} className="flex flex-col gap-2">
+        <CollapsibleTrigger className={buttonVariants({ variant: "ghost", size: "sm", className: `group self-start px-1 ${TOUCH_TARGET}` })}>
+          {t("filter.more")}
+          <ChevronDown aria-hidden className="transition-transform group-aria-expanded:rotate-180" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="flex flex-col gap-2">
+          <SecondaryFilters {...props} />
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
+function SecondaryFilters({ filter, brands, locations, onChange }: Props) {
+  const t = useT();
+  const id = useId();
+  return (
+    <>
+      <FilterSelect label={t("filter.brand")} allLabel={t("filter.brand.all")} value={filter.brand} options={brands.map((b) => ({ value: b, label: b }))} onChange={(brand) => onChange({ brand, location: null })} />
+      <FilterSelect label={t("filter.location")} allLabel={t("filter.location.all")} value={filter.location} options={locations.map((l) => ({ value: l, label: l }))} onChange={(location) => onChange({ location })} />
+      <div className="flex items-center gap-2 px-1 max-md:min-h-11">
+        <Switch id={`${id}-overdue`} checked={filter.overdue} onCheckedChange={(overdue) => onChange({ overdue })} />
+        <Label htmlFor={`${id}-overdue`}>{t("filter.overdue")}</Label>
+      </div>
+    </>
+  );
+}
