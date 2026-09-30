@@ -284,6 +284,21 @@ impl Panel {
 	/// spent token and concierge closes the session: it fails closed, never open.
 	pub async fn session(&self, cookie: &str, now: Timestamp, refresher: &impl Refresher) -> Result<Session, SessionError> {
 		let key = SessionKey::of_cookie(cookie).ok_or(SessionError::Missing)?;
+		self.session_of_key(key, now, refresher).await
+	}
+
+	/// The user's newest live session, rotated like [`Self::session`]: what the panel asks
+	/// concierge with on the user's behalf when there is no request of theirs to carry a
+	/// cookie (a Telegram button). `Missing` when they have none.
+	pub async fn session_of_user(&self, user_id: Uuid, now: Timestamp, refresher: &impl Refresher) -> Result<Session, SessionError> {
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
+		let id_hash = sessions::newest_of_user(&mut conn, user_id, now).await?.ok_or(SessionError::Missing)?;
+		drop(conn);
+		let key = SessionKey(id_hash.as_slice().try_into().wrap_err("a stored session key")?);
+		self.session_of_key(key, now, refresher).await
+	}
+
+	async fn session_of_key(&self, key: SessionKey, now: Timestamp, refresher: &impl Refresher) -> Result<Session, SessionError> {
 		let row = self.session_row(&key, now).await?;
 		if row.access_expires_at > now + REFRESH_AHEAD {
 			return self.live(key, &row).map_err(SessionError::Internal);

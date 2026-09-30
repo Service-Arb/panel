@@ -195,6 +195,16 @@ pub async fn delete(conn: &mut PgConnection, id_hash: &[u8]) -> eyre::Result<boo
 	Ok(deleted == 1)
 }
 
+/// The id hash of the user's newest session still within its deadline.
+pub async fn newest_of_user(conn: &mut PgConnection, user_id: Uuid, now: Timestamp) -> eyre::Result<Option<Vec<u8>>> {
+	sqlx::query_scalar("SELECT id_hash FROM sessions WHERE user_id = $1 AND expires_at > $2 ORDER BY created_at DESC LIMIT 1")
+		.bind(user_id)
+		.bind(to_pg(now)?)
+		.fetch_optional(&mut *conn)
+		.await
+		.wrap_err("finding a user's session")
+}
+
 /// Drops the sessions past their deadline.
 pub async fn prune(conn: &mut PgConnection, now: Timestamp) -> eyre::Result<u64> {
 	Ok(sqlx::query("DELETE FROM sessions WHERE expires_at <= $1")

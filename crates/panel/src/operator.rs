@@ -293,6 +293,22 @@ impl Panel {
 		Ok(self.act(by, None, "call.logged", subject_of(&current), properties, None, now).await?.value.1)
 	}
 
+	/// A call attempted and not answered, in one go (the Telegram button "no answer"):
+	/// `call.attempted`, then `call.logged{no_answer}` naming it — each at most once per
+	/// idempotency `key` of the user and lead, so a retry after a failure between the two
+	/// finishes the pair instead of starting another.
+	pub async fn no_answer_once(&self, by: Actor, brand: &BrandId, lead: &LeadId, now: Timestamp, key: &str) -> Result<Done<EventId>, ActionError> {
+		let logged = idempotent_id(by, &format!("no_answer/logged/{brand}/{lead}"), key);
+		if let Some(done) = self.replayed(by, Some(logged)).await? {
+			return Ok(done.map(|(_, e)| e));
+		}
+		let current = self.lead_row(brand, lead).await?.ok_or(ActionError::NotFound)?;
+		let attempt = idempotent_id(by, &format!("no_answer/attempt/{brand}/{lead}"), key);
+		let attempt = self.act(by, Some(attempt), "call.attempted", subject_of(&current), json!({}), None, now).await?.value.1;
+		let properties = json!({"outcome": "no_answer", "attemptId": attempt.raw().to_string()});
+		Ok(self.act(by, Some(logged), "call.logged", subject_of(&current), properties, None, now).await?.map(|(_, e)| e))
+	}
+
 	/// A payment for a lead (`payment.received`).
 	pub async fn record_payment(&self, by: Actor, brand: &BrandId, lead: &LeadId, p: Payment, now: Timestamp) -> Result<EventId, ActionError> {
 		Ok(self.record_payment_once(by, brand, lead, p, now, None).await?.value)
