@@ -1,0 +1,3 @@
+# `next build` writes the static export here; the image copies it, git does not keep it.
+/out/
+next-env.d.ts
