@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 
+# The generated code pulled in with `include!` uses these; machete cannot see into OUT_DIR.
+[package.metadata.cargo-machete]
+ignored = ["pbjson", "prost", "serde"]
+
 [dependencies]
 pbjson.workspace = true
 pbjson-types.workspace = true
@@ -25,7 +29,3 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
-
-# The generated code pulled in with `include!` uses these; machete cannot see into OUT_DIR.
-[package.metadata.cargo-machete]
-ignored = ["pbjson", "prost", "serde"]
