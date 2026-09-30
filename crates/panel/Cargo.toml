@@ -35,6 +35,7 @@ zeroize.workspace = true
 [dev-dependencies]
 panel = { workspace = true, features = ["testing"] }
 tokio.workspace = true
+uuid = { workspace = true, features = ["v7"] }
 
 [lints]
 workspace = true

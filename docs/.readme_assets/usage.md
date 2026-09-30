@@ -5,12 +5,15 @@
 export PANEL_DATA_KEY="$(panel gen-data-key)"
 export DATABASE_URL=postgres://postgres@localhost:5432/service_arb_panel
 
+# The schema, as its owner; every other command refuses a database that lacks a migration.
+MIGRATE_DATABASE_URL="$DATABASE_URL" panel migrate
+
 # A source: its key may write events of one kind, for the brands named. The secret is printed once.
 panel source add aquafix-site --kind site --brand aquafix
 panel source list
 panel source revoke aquafix-site
 
-# HTTP on 127.0.0.1:59120 (migrations are applied on connect)
+# HTTP on 127.0.0.1:59120
 panel serve
 
 # leads, calls and payments again from the journal, against the registry as it is now

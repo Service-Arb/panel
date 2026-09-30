@@ -33,6 +33,7 @@ crates/panel/                        the engine
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
   src/http.rs                        POST /api/ingest/v1/events, GET /health
   src/settings.rs                    the environment (ev_lib `settings!`)
+deploy/panel_app.sql                 the runtime role's grants (applied by the tests too)
 ```
 
 ## Ingest → journal → projections
@@ -103,9 +104,14 @@ registry: type@version known?
   ingest count; none selects `properties`, `pii_sealed` or a secret. They run with their
   owner's rights, so a Grafana role granted `SELECT` on `reporting` alone reads nothing else.
   That role (`sa_grafana`) is the deploy's to create, not a migration's.
-- **Migrations run on connect**, from `crates/panel/migrations` (embedded). Shipping an image with
-  a new migration is applying it.
-- **Secrets come from the environment only** (`DATABASE_URL`, `PANEL_DATA_KEY`, `SENTRY_DSN`),
+- **Two database roles.** `panel migrate` applies the migrations as the schema's owner
+  (`MIGRATE_DATABASE_URL`); everything else runs as the runtime role (`DATABASE_URL`), holding
+  only the grants of [`deploy/panel_app.sql`](../deploy/panel_app.sql) — append to the journal
+  and re-judge its status, derive the projections, add and revoke sources, read `reporting` —
+  and refuses to start on a database that lacks a migration of its build. No command migrates
+  on its own, not even in development: run `panel migrate` there too, with both URLs the same.
+- **Secrets come from the environment only** (`DATABASE_URL`, `MIGRATE_DATABASE_URL`,
+  `PANEL_DATA_KEY`, `SENTRY_DSN`),
   through `ev_lib::settings`; both of the first are required at boot when `APP_ENV=production`.
 
 ## Deploy requirements
@@ -115,3 +121,8 @@ registry: type@version known?
   `/api/ingest`, and the NetworkPolicy lets in only the pods that send. The signature is
   what authenticates a batch; keeping the route off the internet is what keeps its cost —
   a database lookup and a MAC per request — away from anyone who can reach a URL.
+- **Migrate, grant, then roll out.** A release that carries a migration runs `panel migrate`
+  (as a Job or an init container with `MIGRATE_DATABASE_URL`) before the new pods start, then
+  `deploy/panel_app.sql` as the owner, so a new table is granted too. Both roles, `panel_app`
+  included, are the deploy's to create (devops); `sa_grafana` gets `USAGE` on `reporting` and
+  `SELECT` on its views, nothing else.

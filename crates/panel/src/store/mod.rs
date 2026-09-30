@@ -11,8 +11,12 @@ use eyre::WrapErr;
 use jiff::Timestamp;
 use sqlx::{
 	PgPool,
+	migrate::Migrator,
 	postgres::{PgConnectOptions, PgPoolOptions},
 };
+
+/// The schema, embedded from `migrations/`.
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The panel's database.
 #[derive(Clone, Debug)]
@@ -21,16 +25,46 @@ pub struct Store {
 }
 
 impl Store {
-	/// Connects and brings the schema up to date. Migrations run here, at start: shipping
-	/// an image with a new migration is applying it.
+	/// Applies the migrations `migrations/` holds and this database lacks, as the role that
+	/// owns the schema (`panel migrate`, `MIGRATE_DATABASE_URL`). Nothing else migrates: the
+	/// runtime role may not, so a rollout that ships a migration runs this first.
+	pub async fn migrate(options: PgConnectOptions) -> eyre::Result<()> {
+		let pool = PgPoolOptions::new()
+			.max_connections(1)
+			.connect_with(options)
+			.await
+			.wrap_err("connecting to Postgres to migrate")?;
+		MIGRATOR.run(&pool).await.wrap_err("applying migrations")?;
+		pool.close().await;
+		Ok(())
+	}
+
+	/// Connects as the runtime role, and refuses a database that lacks any of this build's
+	/// migrations: its queries would fail one by one, later and less clearly.
 	pub async fn connect(url: &str) -> eyre::Result<Self> {
 		Self::connect_with(url.parse().wrap_err("DATABASE_URL is not a Postgres URL")?).await
 	}
 
 	pub async fn connect_with(options: PgConnectOptions) -> eyre::Result<Self> {
 		let pool = PgPoolOptions::new().max_connections(16).connect_with(options).await.wrap_err("connecting to Postgres")?;
-		sqlx::migrate!("./migrations").run(&pool).await.wrap_err("applying migrations")?;
-		Ok(Self { pool })
+		let store = Self { pool };
+		store.check_schema().await?;
+		Ok(store)
+	}
+
+	async fn check_schema(&self) -> eyre::Result<()> {
+		let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success")
+			.fetch_all(&self.pool)
+			.await
+			.wrap_err("reading which migrations are applied (none? run `panel migrate`)")?;
+		let missing: Vec<String> = MIGRATOR
+			.iter()
+			.filter(|m| m.migration_type.is_up_migration() && !applied.contains(&m.version))
+			.map(|m| format!("{} {}", m.version, m.description))
+			.collect();
+		// Newer ones than this build knows are fine: that is a rollback onto a schema moved on.
+		eyre::ensure!(missing.is_empty(), "the database lacks migrations {}: run `panel migrate`", missing.join(", "));
+		Ok(())
 	}
 
 	pub fn pool(&self) -> &PgPool {

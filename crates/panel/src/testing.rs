@@ -46,8 +46,9 @@ impl TestDb {
 		Some(Self { admin, name, options })
 	}
 
-	/// A connected, migrated store on this database.
+	/// A connected store on this database, migrated first.
 	pub async fn store(&self) -> Store {
+		Store::migrate(self.options.clone()).await.expect("migrating the test database");
 		Store::connect_with(self.options.clone()).await.expect("connecting to the test database")
 	}
 
