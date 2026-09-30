@@ -4,6 +4,7 @@
 
 pub mod events;
 pub mod projections;
+pub mod reads;
 pub mod sessions;
 pub mod sources;
 
