@@ -40,7 +40,7 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
 ```text
 POST /api/ingest/v1/events
   │ x-sa-key-id → sources (not revoked) → secret, unsealed
-  │ HMAC over "<x-sa-timestamp>.<body>", then |now − timestamp| ≤ 5 min      else 401, nothing read
+  │ HMAC over "sa-ingest/v1.<x-sa-timestamp>.<body>"                        else 401
   │ body → {"events": [1..500]}                                             else 400
   ▼
 each event on its own ─ decode (protojson) ─ envelope checks ─ key may write this kind and brand?
@@ -81,7 +81,7 @@ registry: type@version known?
 - **A lead is created once.** Of several `lead.created`, the first the panel journaled counts
   (by `received_at`, then id) and the others are left out of the projection, so a source
   cannot back-date a creation to take over someone else's lead.
-- **The timestamp is signed.** The MAC covers `<timestamp>.<body>`, so the 5-minute window
+- **The timestamp is signed.** The MAC covers `sa-ingest/v1.<timestamp>.<body>`, so the 5-minute window
   cannot be dodged by re-stamping a captured request (the weakness concierge's Didit handler
   works around). An unknown key and a bad signature answer the same.
 - **Projections are functions of the journal.** A lead is never patched: every event about it

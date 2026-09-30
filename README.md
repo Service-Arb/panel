@@ -56,7 +56,7 @@ panel rebuild-projections
 POST /api/ingest/v1/events
 x-sa-key-id:    aquafix-site
 x-sa-timestamp: 1790762400                       unix seconds; ±5 minutes of the panel's clock
-x-sa-signature: hex(HMAC-SHA256(secret, "<x-sa-timestamp>." + <raw body>))
+x-sa-signature: hex(HMAC-SHA256(secret, "sa-ingest/v1." + <x-sa-timestamp> + "." + <raw body>))
 
 {"events": [ …1 to 500 sa.v1.Event, protojson… ]}
 ```
