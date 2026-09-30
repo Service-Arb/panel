@@ -8,13 +8,14 @@ use std::{collections::BTreeSet, net::SocketAddr};
 use clap::{Parser, Subcommand};
 use ev_lib::error_monitoring;
 use eyre::WrapErr;
-use panel::{Panel, seal::DataKey, store::Store};
+use panel::{Panel, seal::DataKey, store::Store, telegram::Notifier};
 use panel_core::{event::SourceKind, ids::BrandId};
 use panel_server::{
 	DEFAULT_BIND,
 	concierge::Concierge,
 	http,
 	signin::{SignIn, SignInConfig},
+	telegram::{self, BotApi, BotName},
 };
 
 use crate::settings::Settings;
@@ -122,7 +123,8 @@ async fn run(cli: Cli, settings: Settings) -> eyre::Result<()> {
 		}
 		Cmd::Serve { bind } => {
 			let sign_in = settings.sign_in()?;
-			serve(connect().await?, sign_in, bind).await
+			let telegram = settings.telegram()?;
+			serve(connect().await?, sign_in, telegram, bind).await
 		}
 		Cmd::RebuildProjections => {
 			let r = connect().await?.rebuild_projections().await?;
@@ -166,28 +168,64 @@ async fn source(panel: &Panel, cmd: SourceCmd) -> eyre::Result<()> {
 	}
 }
 
-async fn serve(panel: Panel, sign_in: Option<settings::SignInSettings>, bind: SocketAddr) -> eyre::Result<()> {
+async fn serve(panel: Panel, sign_in: Option<settings::SignInSettings>, telegram: Option<settings::TelegramSettings>, bind: SocketAddr) -> eyre::Result<()> {
+	let (stop, stopped) = tokio::sync::watch::channel(false);
+	let mut bot_work = None;
 	let app = match sign_in {
 		Some(s) => {
 			let concierge = Concierge::new(&s.concierge_grpc, &s.client_secret)?;
 			tracing::info!(panel_origin = s.panel_origin, "signing in through concierge");
-			http::app(SignIn::new(
-				panel,
-				concierge,
-				SignInConfig {
-					panel_origin: s.panel_origin,
-					concierge_origin: s.concierge_origin,
-				},
-			))
+			let bot = match telegram {
+				Some(tg) => {
+					let name = BotName::on(tg.username);
+					let notifier = Notifier {
+						panel: panel.clone(),
+						bot: BotApi::new(telegram::API_BASE, &tg.token)?,
+						concierge: concierge.clone(),
+						locale: tg.locale,
+					};
+					tracing::info!("telegram notifications on");
+					// Held, and awaited at shutdown: the poller gives its lease back on the way out.
+					bot_work = Some(tokio::spawn(telegram::run(notifier, name.clone(), stopped)));
+					name
+				}
+				None => {
+					tracing::warn!("TELEGRAM_BOT_TOKEN unset: Telegram notifications off");
+					BotName::off()
+				}
+			};
+			http::app_with_telegram(
+				SignIn::new(
+					panel,
+					concierge,
+					SignInConfig {
+						panel_origin: s.panel_origin,
+						concierge_origin: s.concierge_origin,
+					},
+				),
+				http::Limits::default(),
+				bot,
+			)
 		}
 		None => {
 			tracing::warn!("sign-in not configured: serving ingest only, no /auth, no /api/v1");
+			if telegram.is_some() {
+				tracing::warn!("Telegram notifications off: they need the sign-in, to link users and confirm their access");
+			}
 			http::router(panel)
 		}
 	};
 	let listener = tokio::net::TcpListener::bind(bind).await.wrap_err_with(|| format!("binding {bind}"))?;
 	tracing::info!(%bind, "serving");
-	axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await.wrap_err("HTTP server")
+	let served = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await.wrap_err("HTTP server");
+	// Nobody may be listening any more: the bot is simply not running then.
+	let _sent = stop.send(true);
+	if let Some(work) = bot_work
+		&& let Err(e) = work.await
+	{
+		panel_server::report(&eyre::eyre!(e), "the telegram worker panicked");
+	}
+	served
 }
 
 async fn shutdown_signal() {

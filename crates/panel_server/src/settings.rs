@@ -1,6 +1,7 @@
 //! The environment: secrets and the deployment profile. Where to listen is a flag.
 
 use panel::seal::DataKey;
+use panel_core::notify::Locale;
 
 ev_lib::settings! {
 	/// Each secret is needed only by what uses it; a missing one fails that, with an error
@@ -39,6 +40,14 @@ ev_lib::settings! {
 		#[secret]
 		#[required_in("production")]
 		rp_client_secret_sa: Option<String>,
+		/// The panel's bot (`@evinvest_sa_bot`; not `telegram_token_main`). Unset: no Telegram
+		/// notifications, and `serve` says so. Needs the sign-in configured too.
+		#[secret]
+		telegram_bot_token: Option<String>,
+		/// The bot's username, for the `t.me/<bot>` links. Unset: asked of `getMe` at start.
+		telegram_bot_username: Option<String>,
+		/// The language of the bot's messages: `ru` or `en`.
+		telegram_locale: String = "ru",
 		app_env: String = "development",
 	}
 }
@@ -55,6 +64,36 @@ impl Settings {
 	pub fn data_key(&self) -> eyre::Result<DataKey> {
 		let hex = self.panel_data_key.as_deref().ok_or_else(|| eyre::eyre!("PANEL_DATA_KEY must be set"))?;
 		Ok(DataKey::from_hex(hex)?)
+	}
+}
+
+/// The Telegram bot, when it is configured.
+pub struct TelegramSettings {
+	pub token: String,
+	pub username: Option<String>,
+	pub locale: Locale,
+}
+
+impl std::fmt::Debug for TelegramSettings {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("TelegramSettings")
+			.field("username", &self.username)
+			.field("locale", &self.locale)
+			.finish_non_exhaustive()
+	}
+}
+
+impl Settings {
+	/// `None` without `TELEGRAM_BOT_TOKEN`: the bot is off.
+	pub fn telegram(&self) -> eyre::Result<Option<TelegramSettings>> {
+		let Some(token) = self.telegram_bot_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
+			return Ok(None);
+		};
+		Ok(Some(TelegramSettings {
+			token: token.to_owned(),
+			username: self.telegram_bot_username.as_deref().map(str::trim).filter(|u| !u.is_empty()).map(str::to_owned),
+			locale: self.telegram_locale.parse()?,
+		}))
 	}
 }
 
@@ -156,6 +195,9 @@ mod tests {
 				"CONCIERGE_PUBLIC_ORIGIN",
 				"CONCIERGE_GRPC_ADDR",
 				"RP_CLIENT_SECRET_SA",
+				"TELEGRAM_BOT_TOKEN",
+				"TELEGRAM_BOT_USERNAME",
+				"TELEGRAM_LOCALE",
 				"APP_ENV"
 			]
 		);
@@ -206,6 +248,21 @@ mod tests {
 		.unwrap();
 		assert_eq!(full.sign_in().unwrap().unwrap().concierge_grpc, "http://concierge:55670");
 		assert!(!format!("{full:?}").contains(&secret), "the client secret never prints");
+	}
+
+	#[test]
+	fn telegram_is_off_without_a_token() {
+		assert!(from(&[]).unwrap().telegram().unwrap().is_none());
+		let token = "123456:secret-bot-token";
+		let on = from(&[("TELEGRAM_BOT_TOKEN", token), ("TELEGRAM_BOT_USERNAME", "evinvest_sa_bot")]).unwrap();
+		let tg = on.telegram().unwrap().unwrap();
+		assert_eq!((tg.username.as_deref(), tg.locale), (Some("evinvest_sa_bot"), Locale::Ru));
+		assert!(!format!("{on:?} {tg:?}").contains(token), "the token never prints");
+		assert_eq!(
+			from(&[("TELEGRAM_BOT_TOKEN", token), ("TELEGRAM_LOCALE", "en")]).unwrap().telegram().unwrap().unwrap().locale,
+			Locale::En
+		);
+		assert!(from(&[("TELEGRAM_BOT_TOKEN", token), ("TELEGRAM_LOCALE", "de")]).unwrap().telegram().is_err());
 	}
 
 	#[test]

@@ -387,6 +387,7 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> 
 		}
 	};
 	let cached = if freshness == Freshness::Cached { s.cached_me(&session.key) } else { None };
+	let fresh = cached.is_none();
 	let me = match cached {
 		Some(me) => me,
 		None => match get_me(s, &session.access).await {
@@ -419,7 +420,16 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> 
 		return Err(Box::new(json_error(StatusCode::BAD_GATEWAY, "sign-in failed")));
 	}
 	let grants = me.scopes.iter().map(|(scope, role)| (scope.as_str(), role.as_str()));
-	let Some(role) = Role::admitted(&me.role, grants) else {
+	let admitted = Role::admitted(&me.role, grants);
+	if fresh {
+		// A Telegram link sends only on a role concierge confirmed lately; every answer the
+		// gate gets is such a confirmation (or its withdrawal). A no-op for an unlinked user.
+		let display = if me.preferred_name.trim().is_empty() { &me.email } else { &me.preferred_name };
+		if let Err(e) = s.panel.telegram_access_seen(me.user_id, admitted, display, Timestamp::now()).await {
+			crate::report(&e, "recording a user's access for Telegram");
+		}
+	}
+	let Some(role) = admitted else {
 		return Err(Box::new(json_error(StatusCode::FORBIDDEN, "no access to the panel")));
 	};
 	Ok(Caller {

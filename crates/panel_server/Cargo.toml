@@ -28,6 +28,7 @@ jiff.workspace = true
 panel.workspace = true
 panel_contracts.workspace = true
 panel_core.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 subtle.workspace = true
@@ -45,6 +46,7 @@ zeroize.workspace = true
 [dev-dependencies]
 futures.workspace = true
 panel = { workspace = true, features = ["testing"] }
+sqlx.workspace = true
 tower = { workspace = true, features = ["util"] }
 
 [lints]

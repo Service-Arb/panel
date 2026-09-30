@@ -39,6 +39,7 @@ use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
 use crate::{
 	api,
 	signin::{self, SignIn},
+	telegram::{self, BotName, TelegramState},
 };
 
 /// 500 events of about 8 KiB each: a batch is refused well before it strains anything.
@@ -87,6 +88,11 @@ pub fn app(sign_in: SignIn) -> Router {
 }
 
 pub fn app_with(sign_in: SignIn, limits: Limits) -> Router {
+	app_with_telegram(sign_in, limits, BotName::off())
+}
+
+/// [`app_with`], with the profile's Telegram routes knowing the bot.
+pub fn app_with_telegram(sign_in: SignIn, limits: Limits, bot: BotName) -> Router {
 	let auth = Router::new()
 		.route("/auth/login", get(signin::login))
 		.route("/auth/callback", get(signin::callback))
@@ -96,7 +102,14 @@ pub fn app_with(sign_in: SignIn, limits: Limits) -> Router {
 	// Minting and revoking source keys asks concierge afresh: a grant revoked a moment ago
 	// must not still mint a key from the cache.
 	let key_changes = api::key_changes().route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate_fresh));
-	let api = bounded(reads_and_edits.merge(key_changes), limits.api_concurrent, limits.api_timeout).with_state(sign_in.panel.clone());
+	let telegram = telegram::routes()
+		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate))
+		.with_state(TelegramState { panel: sign_in.panel.clone(), bot });
+	let api = bounded(
+		reads_and_edits.merge(key_changes).with_state(sign_in.panel.clone()).merge(telegram),
+		limits.api_concurrent,
+		limits.api_timeout,
+	);
 	router_with(sign_in.panel, limits).merge(auth).nest("/api/v1", api).layer(middleware::map_response(nosniff))
 }
 
