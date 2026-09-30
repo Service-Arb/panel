@@ -9,11 +9,14 @@ use panel::{
 	seal::DataKey,
 	session::{RefreshError, Refresher, SessionKey, Tokens},
 	store::Store,
+	telegram::{Bot, Chat, Directory, DirectoryError, Identity, InlineButton, Notifier, Update},
 	testing::{TestDb, event, sign},
 };
 use panel_core::{
 	event::SourceKind,
 	ids::{BrandId, LocationId},
+	notify::{Failure, Locale, Rule},
+	role::Role,
 };
 use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection};
@@ -40,6 +43,40 @@ impl Refresher for Rotates {
 			refresh: Zeroizing::new("r2".into()),
 			refresh_expires_at: now + SignedDuration::from_hours(24 * 400),
 		})
+	}
+}
+
+/// A bot that delivers everything, or refuses every send as blocked.
+struct FakeBot {
+	blocked: bool,
+}
+
+impl Bot for FakeBot {
+	async fn send(&self, _: i64, _: &str, _: &[InlineButton]) -> Result<i64, Failure> {
+		if self.blocked { Err(Failure::Blocked) } else { Ok(1) }
+	}
+
+	async fn edit(&self, _: i64, _: i64, _: &str, _: &[InlineButton]) -> Result<(), Failure> {
+		Ok(())
+	}
+
+	async fn answer(&self, _: &str, _: &str) -> Result<(), Failure> {
+		Ok(())
+	}
+}
+
+/// Refreshes nothing; says every token is an operator's.
+struct Operators;
+
+impl Refresher for Operators {
+	async fn refresh(&self, _: &str) -> Result<Tokens, RefreshError> {
+		Err(RefreshError::Rejected)
+	}
+}
+
+impl Directory for Operators {
+	async fn me(&self, _: &str) -> Result<Identity, DirectoryError> {
+		Err(DirectoryError::Refused)
 	}
 }
 
@@ -128,13 +165,13 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		let opened = panel.open_session(user, &tokens, now).await.unwrap();
 		assert_eq!(panel.session(&opened.cookie, now, &Never).await.unwrap().user_id, user);
 		let by = Actor(user);
-		let new = NewLead {
+		let new_lead = || NewLead {
 			brand: BrandId::parse("aquafix").unwrap(),
 			location: LocationId::parse("paris-11").unwrap(),
 			need: "a boiler".into(),
 			phone: None,
 		};
-		let (lead, _) = panel.create_lead(by, new, now).await.unwrap();
+		let (lead, _) = panel.create_lead(by, new_lead(), now).await.unwrap();
 		let brand = BrandId::parse("aquafix").unwrap();
 		panel.attempt_call(by, &brand, &lead, now).await.unwrap();
 		assert_eq!(panel.leads(&LeadQuery { limit: 10, ..LeadQuery::default() }, Pii::Reveal, now).await.unwrap().leads.len(), 2);
@@ -152,6 +189,46 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		assert!(panel.consume_state("state", now + SignedDuration::from_hours(1)).await.unwrap(), "expired marks are dropped");
 		assert_eq!(panel.close_all_sessions(&SessionKey::of_cookie(&opened.cookie).unwrap()).await.unwrap(), Some(user));
 
+		// Telegram: a link, rules, a fan-out, a delivery, a dead chat, the access checks with
+		// their pruning, the poller.
+		let notifier = |blocked| Notifier {
+			panel: panel.clone(),
+			bot: FakeBot { blocked },
+			concierge: Operators,
+			locale: Locale::Ru,
+		};
+		let token = panel.telegram_link_token(user, Role::Operator, "Olga", now).await.unwrap();
+		let start = |chat| Update::Start {
+			chat: Chat { id: chat, private: true },
+			payload: Some(token.to_string()),
+		};
+		notifier(false).handle(start(7), now).await.unwrap();
+		panel.telegram_set_rules(user, Role::Operator, &[(Rule::NewLead, true)]).await.unwrap();
+		panel.telegram_access_seen(user, Some(Role::Operator), "Olga", now).await.unwrap();
+		panel.create_lead(by, NewLead { need: "a tap".into(), ..new_lead() }, now).await.unwrap();
+		assert_eq!(panel.telegram_fan_out(now, Locale::Ru).await.unwrap(), 2, "the two leads taken by phone");
+		assert_eq!(notifier(false).deliver(now).await.unwrap().sent, 1);
+		assert_eq!(notifier(true).deliver(now + SignedDuration::from_secs(2)).await.unwrap().dead, 1);
+		assert_eq!(
+			notifier(false).recheck_access(now + SignedDuration::from_hours(24 * 8)).await.unwrap(),
+			0,
+			"a dead chat is not rechecked"
+		);
+		let holder = uuid::Uuid::now_v7();
+		assert_eq!(panel.telegram_poll_lease(holder, now, now + SignedDuration::from_mins(1)).await.unwrap(), Some(0));
+		assert!(panel.telegram_poll_advance(holder, 5).await.unwrap());
+		panel.telegram_poll_release(holder).await.unwrap();
+		notifier(false)
+			.handle(
+				Update::Stop {
+					chat: Chat { id: 7, private: true },
+				},
+				now,
+			)
+			.await
+			.unwrap();
+		assert!(!panel.telegram_settings(user, Role::Operator).await.unwrap().linked);
+
 		let pool = panel.store().pool();
 		for sql in [
 			"DELETE FROM events",
@@ -160,12 +237,14 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 			"UPDATE sources SET brand_ids = '{x}'",
 			"CREATE TABLE t (x int)",
 			"DROP VIEW reporting.leads",
+			"DELETE FROM telegram_poller",
+			"UPDATE telegram_link_tokens SET role = 'admin'",
 		] {
 			let err = sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await.unwrap_err().to_string();
 			assert!(err.contains("permission denied") || err.contains("must be owner"), "{sql}: {err}");
 		}
 		let n: i64 = sqlx::query_scalar("SELECT count(*) FROM reporting.leads").fetch_one(pool).await.unwrap();
-		assert_eq!(n, 2, "the ingested lead and the one taken by phone");
+		assert_eq!(n, 3, "the ingested lead and the two taken by phone");
 		pool.close().await;
 	}
 }
