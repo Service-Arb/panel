@@ -427,6 +427,91 @@ async fn an_operator_signs_in_works_leads_and_signs_out() {
 }
 
 #[tokio::test]
+async fn the_screens_read_places_counts_slices_and_payments() {
+	let Some(db) = TestDb::create().await else { return };
+	let (app, fake, _) = setup(&db).await;
+	fake.with(|f| {
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
+	});
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+	let mut ids = Vec::new();
+	for location in ["paris-11", "paris-11", "lyon-2"] {
+		let created = b.post(&app, "/api/v1/leads", json!({"brand": "aquafix", "location": location, "need": "a tap"})).await;
+		assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+		ids.push(created.body["lead_id"].as_str().unwrap().to_owned());
+	}
+	for (billed, commission, currency) in [(12_000, 1_800, "EUR"), (3_000, 450, "EUR"), (500, 50, "GBP")] {
+		let paid = b
+			.post(
+				&app,
+				&format!("/api/v1/leads/aquafix/{}/payments", ids[0]),
+				json!({"billed": billed, "commission": commission, "currency": currency}),
+			)
+			.await;
+		assert_eq!(paid.status, StatusCode::CREATED, "{}", paid.body);
+	}
+	let list = b.get(&app, "/api/v1/leads").await;
+	let created_at: Timestamp = list.body["leads"][2]["created_at"].as_str().unwrap().parse().unwrap();
+	let today = created_at.to_zoned(jiff::tz::TimeZone::UTC).date();
+	let tomorrow = today.tomorrow().unwrap();
+
+	let places = b.get(&app, "/api/v1/places").await;
+	assert_eq!(places.status, StatusCode::OK, "{}", places.body);
+	let got: Vec<(&str, &str)> = places.body["places"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|p| (p["brand"].as_str().unwrap(), p["location"].as_str().unwrap()))
+		.collect();
+	assert_eq!(got, [("aquafix", "lyon-2"), ("aquafix", "paris-11")]);
+	assert!(places.body["places"][0]["last_lead_at"].is_string());
+
+	let counts = b.get(&app, "/api/v1/leads/counts?brand=aquafix&location=paris-11").await;
+	assert_eq!(counts.status, StatusCode::OK, "{}", counts.body);
+	assert_eq!(counts.body["stages"]["created"], 1);
+	assert_eq!(counts.body["stages"]["paid"], 1);
+	assert_eq!(counts.body["stages"]["lost"], 0, "every stage, zero included");
+	assert_eq!((counts.body["total"].clone(), counts.body["overdue"].clone()), (json!(2), json!(0)));
+	assert_eq!(b.get(&app, "/api/v1/leads/counts?stage=paid").await.status, StatusCode::BAD_REQUEST);
+
+	let whole = b.get(&app, "/api/v1/funnel").await;
+	assert_eq!(whole.status, StatusCode::OK, "{}", whole.body);
+	assert_eq!(whole.body["stages"][0]["reached"], 3);
+	assert_eq!(
+		whole.body["payments"],
+		json!([
+			{"currency": "EUR", "billed": 15_000, "commission": 2_250, "count": 2},
+			{"currency": "GBP", "billed": 500, "commission": 50, "count": 1}
+		]),
+		"summed per currency, never converted"
+	);
+	assert!(whole.body.get("locations").is_none());
+
+	let sliced = b.get(&app, &format!("/api/v1/funnel?by=location&from={today}&to={today}&brand=aquafix")).await;
+	assert_eq!(sliced.status, StatusCode::OK, "{}", sliced.body);
+	assert_eq!(sliced.body["by"], "location");
+	let rows = sliced.body["locations"].as_array().unwrap();
+	assert_eq!(rows.len(), 2);
+	assert_eq!((rows[0]["location"].as_str(), rows[1]["location"].as_str()), (Some("lyon-2"), Some("paris-11")));
+	assert_eq!(rows[1]["stages"][0]["reached"], 2);
+	assert_eq!(rows[1]["stages"][5]["of_leads"], json!({"n": 1, "of": 2, "percent": null, "small_sample": true}));
+	assert_eq!(rows[1]["payments"][0]["billed"], 15_000);
+	assert_eq!(rows[0]["payments"], json!([]));
+	assert_eq!(sliced.body["min_sample"], 30);
+	assert_eq!(b.get(&app, "/api/v1/funnel?by=brand").await.status, StatusCode::BAD_REQUEST);
+
+	let window = |from: &str, to: &str| format!("/api/v1/leads?created_from={from}&created_to={to}");
+	assert_eq!(b.get(&app, &window(&today.to_string(), &today.to_string())).await.body["leads"].as_array().unwrap().len(), 3);
+	assert_eq!(b.get(&app, &window(&tomorrow.to_string(), &tomorrow.to_string())).await.body["leads"], json!([]));
+	let backwards = b.get(&app, &window(&tomorrow.to_string(), &today.to_string())).await;
+	assert_eq!(backwards.status, StatusCode::BAD_REQUEST);
+	assert_eq!(backwards.body["error"], "created_from is after created_to");
+	assert_eq!(b.get(&app, "/api/v1/leads?created_from=yesterday").await.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn a_forged_callback_never_presents_the_code() {
 	let Some(db) = TestDb::create().await else { return };
 	let (app, fake, _) = setup(&db).await;

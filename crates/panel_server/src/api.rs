@@ -17,7 +17,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jiff::{SignedDuration, Timestamp, civil::Date, tz::TimeZone};
 use panel::{
 	Panel,
-	operator::{ActionError, Actor, CallOutcome, EventView, LeadQuery, LeadView, NewLead, Payment, Pii, StageMove},
+	operator::{ActionError, Actor, CallOutcome, EventView, FunnelBy, FunnelSlice, LeadQuery, LeadView, NewLead, Payment, Pii, StageMove},
 };
 use panel_core::{
 	Invalid,
@@ -78,12 +78,14 @@ pub fn routes() -> Router<Panel> {
 	Router::new()
 		.route("/me", get(me))
 		.route("/leads", get(leads).post(create_lead))
+		.route("/leads/counts", get(lead_counts))
 		.route("/leads/{brand}/{lead}", get(lead))
 		.route("/leads/{brand}/{lead}/stage", post(stage))
 		.route("/leads/{brand}/{lead}/calls/attempt", post(attempt_call))
 		.route("/leads/{brand}/{lead}/calls/{attempt}/outcome", post(call_outcome))
 		.route("/leads/{brand}/{lead}/payments", post(payment))
 		.route("/funnel", get(funnel))
+		.route("/places", get(places))
 		.route("/sources", get(sources))
 }
 
@@ -163,6 +165,28 @@ fn ids(brand: &str, lead: &str) -> ApiResult<(BrandId, LeadId)> {
 
 fn ts(t: Option<Timestamp>) -> Option<String> {
 	t.map(|t| t.to_string())
+}
+
+/// A UTC day, `2026-09-30`.
+fn day(raw: &str, what: &str) -> ApiResult<Date> {
+	raw.parse::<Date>().map_err(|_| ApiError::BadRequest(format!("{what} is not a date like 2026-09-30")))
+}
+
+/// `from` and `to`, UTC days, both included — `to` not before `from`.
+fn days(from: Option<&str>, to: Option<&str>, names: [&str; 2]) -> ApiResult<(Option<Date>, Option<Date>)> {
+	let from = from.map(|d| day(d, names[0])).transpose()?;
+	let to = to.map(|d| day(d, names[1])).transpose()?;
+	if let (Some(f), Some(t)) = (from, to)
+		&& f > t
+	{
+		return Err(ApiError::BadRequest(format!("{} is after {}", names[0], names[1])));
+	}
+	Ok((from, to))
+}
+
+/// The first instant of a UTC day.
+fn day_start(d: Date) -> ApiResult<Timestamp> {
+	Ok(d.to_zoned(TimeZone::UTC).map_err(|e| ApiError::Internal(e.into()))?.timestamp())
 }
 
 // ── /me ─────────────────────────────────────────────────────────────────────────────────
@@ -254,6 +278,9 @@ struct LeadsQuery {
 	brand: Option<String>,
 	location: Option<String>,
 	overdue: Option<bool>,
+	/// UTC days, both included.
+	created_from: Option<String>,
+	created_to: Option<String>,
 	cursor: Option<String>,
 	limit: Option<u32>,
 }
@@ -274,13 +301,15 @@ fn cursor_decode(raw: &str) -> ApiResult<(Timestamp, String, String)> {
 
 async fn leads(State(panel): State<Panel>, Extension(caller): Extension<Caller>, q: Result<Query<LeadsQuery>, axum::extract::rejection::QueryRejection>) -> ApiResult<Json<Value>> {
 	let Query(q) = q.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+	let (created_from, created_to) = days(q.created_from.as_deref(), q.created_to.as_deref(), ["created_from", "created_to"])?;
+	let next_day = |d: Date| d.tomorrow().map_err(|e| ApiError::Internal(e.into())).and_then(day_start);
 	let query = LeadQuery {
 		stage: q.stage.as_deref().map(str::parse::<Stage>).transpose()?,
 		brand: q.brand.as_deref().map(BrandId::parse).transpose()?,
 		location: q.location.as_deref().map(LocationId::parse).transpose()?,
 		overdue: q.overdue.unwrap_or(false),
-		created_from: None,
-		created_before: None,
+		created_from: created_from.map(day_start).transpose()?,
+		created_before: created_to.map(next_day).transpose()?,
 		after: q.cursor.as_deref().map(cursor_decode).transpose()?,
 		limit: q.limit.unwrap_or(50),
 	};
@@ -467,6 +496,8 @@ struct FunnelQuery {
 	from: Option<String>,
 	to: Option<String>,
 	brand: Option<String>,
+	/// `location`: one slice per location. Absent: the whole funnel.
+	by: Option<String>,
 }
 
 /// A share as the front end may show it: `percent` only when `of` is large enough, and
@@ -498,23 +529,18 @@ struct StepDto {
 	of_leads: ShareDto,
 }
 
-async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::extract::rejection::QueryRejection>) -> ApiResult<Json<Value>> {
-	let Query(q) = q.map_err(|e| ApiError::BadRequest(e.body_text()))?;
-	let day = |raw: &str, what: &str| raw.parse::<Date>().map_err(|_| ApiError::BadRequest(format!("{what} is not a date like 2026-09-30")));
-	let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
-	let to = q.to.as_deref().map(|d| day(d, "to")).transpose()?.unwrap_or(today);
-	let from = match q.from.as_deref() {
-		Some(d) => day(d, "from")?,
-		None => to.checked_sub(SignedDuration::from_hours(24 * 29)).map_err(|e| ApiError::Internal(e.into()))?,
-	};
-	if from > to {
-		return Err(ApiError::BadRequest("from is after to".into()));
-	}
-	if (to - from).get_days() >= MAX_FUNNEL_DAYS {
-		return Err(ApiError::BadRequest(format!("at most {MAX_FUNNEL_DAYS} days at once")));
-	}
-	let brand = q.brand.as_deref().map(BrandId::parse).transpose()?;
-	let totals = panel.funnel(from, to, brand.as_ref()).await?;
+/// What a slice's leads were paid in one currency, in its minor units.
+#[derive(Serialize)]
+struct PaidDto {
+	currency: String,
+	billed: i64,
+	commission: i64,
+	count: u64,
+}
+
+/// A slice's funnel: its steps, the lost and manual shares, and its payments.
+fn slice_body(s: FunnelSlice) -> serde_json::Map<String, Value> {
+	let totals = s.totals;
 	let stages: Vec<StepDto> = totals
 		.steps()
 		.into_iter()
@@ -525,15 +551,103 @@ async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::
 			of_leads: s.of_leads.into(),
 		})
 		.collect();
-	Ok(Json(json!({
+	let payments: Vec<PaidDto> = s
+		.payments
+		.into_iter()
+		.map(|p| PaidDto {
+			currency: p.currency,
+			billed: p.billed,
+			commission: p.commission,
+			count: p.payments,
+		})
+		.collect();
+	let mut body = serde_json::Map::new();
+	body.insert("stages".into(), json!(stages));
+	body.insert("lost".into(), json!(ShareDto::from(Share::new(totals.lost, totals.leads))));
+	body.insert("manual".into(), json!(ShareDto::from(Share::new(totals.manual, totals.leads))));
+	body.insert("payments".into(), json!(payments));
+	body
+}
+
+async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::extract::rejection::QueryRejection>) -> ApiResult<Json<Value>> {
+	let Query(q) = q.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+	let (from, to) = days(q.from.as_deref(), q.to.as_deref(), ["from", "to"])?;
+	let to = to.unwrap_or_else(|| Timestamp::now().to_zoned(TimeZone::UTC).date());
+	let from = match from {
+		Some(d) => d,
+		None => to.checked_sub(SignedDuration::from_hours(24 * 29)).map_err(|e| ApiError::Internal(e.into()))?,
+	};
+	if from > to {
+		return Err(ApiError::BadRequest("from is after to".into()));
+	}
+	if (to - from).get_days() >= MAX_FUNNEL_DAYS {
+		return Err(ApiError::BadRequest(format!("at most {MAX_FUNNEL_DAYS} days at once")));
+	}
+	let by = match q.by.as_deref() {
+		None => FunnelBy::All,
+		Some("location") => FunnelBy::Location,
+		Some(_) => return Err(ApiError::BadRequest("by is location, or absent".into())),
+	};
+	let brand = q.brand.as_deref().map(BrandId::parse).transpose()?;
+	let slices = panel.funnel_slices(from, to, brand.as_ref(), by).await?;
+	let mut body = json!({
 		"from": from.to_string(),
 		"to": to.to_string(),
 		"brand": brand.as_ref().map(BrandId::as_str),
 		"min_sample": MIN_SAMPLE,
-		"stages": stages,
-		"lost": ShareDto::from(Share::new(totals.lost, totals.leads)),
-		"manual": ShareDto::from(Share::new(totals.manual, totals.leads)),
-	})))
+	});
+	match by {
+		FunnelBy::All => {
+			let whole = slices.into_iter().next().ok_or_else(|| ApiError::Internal(eyre::eyre!("the whole funnel came back empty")))?;
+			for (k, v) in slice_body(whole) {
+				body[k] = v;
+			}
+		}
+		FunnelBy::Location => {
+			let locations: Vec<Value> = slices
+				.into_iter()
+				.map(|s| {
+					let mut row = serde_json::Map::new();
+					row.insert("brand".into(), json!(s.brand));
+					row.insert("location".into(), json!(s.location));
+					row.extend(slice_body(s));
+					Value::Object(row)
+				})
+				.collect();
+			body["by"] = json!("location");
+			body["locations"] = json!(locations);
+		}
+	}
+	Ok(Json(body))
+}
+
+// ── places, counts ──────────────────────────────────────────────────────────────────────
+
+async fn places(State(panel): State<Panel>) -> ApiResult<Json<Value>> {
+	let places: Vec<Value> = panel
+		.places()
+		.await?
+		.into_iter()
+		.map(|p| json!({ "brand": p.brand_id, "location": p.location_id, "last_lead_at": ts(p.last_lead_at) }))
+		.collect();
+	Ok(Json(json!({ "places": places })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CountsQuery {
+	brand: Option<String>,
+	location: Option<String>,
+}
+
+async fn lead_counts(State(panel): State<Panel>, q: Result<Query<CountsQuery>, axum::extract::rejection::QueryRejection>) -> ApiResult<Json<Value>> {
+	let Query(q) = q.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+	let brand = q.brand.as_deref().map(BrandId::parse).transpose()?;
+	let location = q.location.as_deref().map(LocationId::parse).transpose()?;
+	let counts = panel.lead_counts(brand.as_ref(), location.as_ref(), Timestamp::now()).await?;
+	let total: u64 = counts.stages.iter().map(|(_, n)| n).sum();
+	let stages: serde_json::Map<String, Value> = counts.stages.into_iter().map(|(stage, n)| (stage.as_str().to_owned(), json!(n))).collect();
+	Ok(Json(json!({ "stages": stages, "overdue": counts.overdue, "total": total })))
 }
 
 // ── sources (admin) ─────────────────────────────────────────────────────────────────────
