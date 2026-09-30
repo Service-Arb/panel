@@ -6,6 +6,7 @@ import { useState } from "react";
 import { type Lead, type StageMove, moveLead, refOf } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
+import { TOUCH_TARGET } from "@/shared/ui/touch";
 
 import { MOVES, type MoveKind } from "../model/moves";
 import { LostForm } from "./lost-form";
@@ -47,7 +48,7 @@ export function StageActions({ lead, onMoved }: { lead: Lead; onMoved: () => voi
   return (
     <div className="flex flex-wrap gap-2">
       {moves.map((kind) => (
-        <Button key={kind} variant={kind === "lost" ? "ghost" : "outline"} disabled={busy} onClick={() => tap(kind)}>
+        <Button key={kind} className={TOUCH_TARGET} variant={kind === "lost" ? "ghost" : "outline"} disabled={busy} onClick={() => tap(kind)}>
           {t(`move.${kind}`)}
         </Button>
       ))}

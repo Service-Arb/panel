@@ -6,6 +6,7 @@ import { Phone } from "lucide-react";
 import { type LeadRef, dialable, encodeRef } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
+import { TOUCH_TARGET } from "@/shared/ui/touch";
 
 import { useCallFlow } from "../model/provider";
 
@@ -22,14 +23,14 @@ export function CallButton({ leadRef, phone }: { leadRef: LeadRef; phone: string
 
   return (
     <div className="flex flex-wrap gap-2">
-      <Button asChild size="lg">
+      <Button asChild size="lg" className={TOUCH_TARGET}>
         <a href={`tel:${tel}`} onClick={() => start(leadRef).catch((e: unknown) => notifyFailure(e, t))}>
           <Phone aria-hidden />
           {t("call.call")}
         </a>
       </Button>
       {pending && (
-        <Button variant="outline" size="lg" onClick={ask}>
+        <Button variant="outline" size="lg" className={TOUCH_TARGET} onClick={ask}>
           {t("call.logOutcome")}
         </Button>
       )}

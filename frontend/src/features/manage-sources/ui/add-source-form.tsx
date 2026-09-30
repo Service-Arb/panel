@@ -7,6 +7,7 @@ import { type AddedSource, SOURCE_KINDS, type SourceKind, addSource } from "@/en
 import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
+import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
 
 import { brandsFrom } from "../model/brands";
 
@@ -18,6 +19,7 @@ export function AddSourceForm({ onAdded }: { onAdded: (added: AddedSource) => vo
   const [kind, setKind] = useState<SourceKind>("site");
   const [brandsText, setBrandsText] = useState("");
   const [busy, setBusy] = useState(false);
+  const size = useControlSize();
   const brands = brandsFrom(brandsText);
   const ready = isSlug(keyId) && brands !== null;
 
@@ -45,12 +47,12 @@ export function AddSourceForm({ onAdded }: { onAdded: (added: AddedSource) => vo
     >
       <Field className="flex flex-col gap-1">
         <FieldLabel htmlFor={`${id}-key`}>{t("sources.keyId")}</FieldLabel>
-        <Input id={`${id}-key`} autoCapitalize="none" value={keyId} onChange={(e) => setKeyId(e.target.value.toLowerCase())} />
+        <Input id={`${id}-key`} size={size} autoCapitalize="none" value={keyId} onChange={(e) => setKeyId(e.target.value.toLowerCase())} />
       </Field>
       <Field className="flex flex-col gap-1">
-        <FieldLabel>{t("sources.kind")}</FieldLabel>
+        <FieldLabel htmlFor={`${id}-kind`}>{t("sources.kind")}</FieldLabel>
         <Select value={kind} onValueChange={(v) => setKind(SOURCE_KINDS.find((k) => k === v) ?? "site")}>
-          <SelectTrigger aria-label={t("sources.kind")}>
+          <SelectTrigger id={`${id}-kind`} size={size} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -64,10 +66,10 @@ export function AddSourceForm({ onAdded }: { onAdded: (added: AddedSource) => vo
       </Field>
       <Field className="flex flex-col gap-1">
         <FieldLabel htmlFor={`${id}-brands`}>{t("sources.brands")}</FieldLabel>
-        <Input id={`${id}-brands`} autoCapitalize="none" value={brandsText} onChange={(e) => setBrandsText(e.target.value)} />
+        <Input id={`${id}-brands`} size={size} autoCapitalize="none" value={brandsText} onChange={(e) => setBrandsText(e.target.value)} />
         <FieldDescription>{t("sources.brands.hint")}</FieldDescription>
       </Field>
-      <Button type="submit" disabled={busy || !ready} className="md:mb-6">
+      <Button type="submit" disabled={busy || !ready} className={`md:mb-6 ${TOUCH_TARGET}`}>
         {t("sources.add")}
       </Button>
     </form>

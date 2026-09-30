@@ -17,6 +17,7 @@ import {
 import { revokeSource } from "@/entities/source";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
+import { TOUCH_TARGET } from "@/shared/ui/touch";
 
 export function RevokeButton({ keyId, onRevoked }: { keyId: string; onRevoked: () => void }) {
   const t = useT();
@@ -32,7 +33,7 @@ export function RevokeButton({ keyId, onRevoked }: { keyId: string; onRevoked: (
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="sm">
+        <Button variant="ghost" size="sm" className={TOUCH_TARGET}>
           {t("sources.revoke")}
         </Button>
       </AlertDialogTrigger>
@@ -42,7 +43,7 @@ export function RevokeButton({ keyId, onRevoked }: { keyId: string; onRevoked: (
           <AlertDialogDescription>{t("sources.revoke.body")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>{t("move.cancel")}</AlertDialogCancel>
+          <AlertDialogCancel className={TOUCH_TARGET}>{t("move.cancel")}</AlertDialogCancel>
           <AlertDialogAction className="bg-accent-error text-on-accent-error hover:bg-accent-error/90" onClick={() => void revoke()}>
             {t("sources.revoke.confirm")}
           </AlertDialogAction>

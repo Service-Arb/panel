@@ -4,6 +4,7 @@ import { Button, Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle 
 
 import { SIGN_IN_PATH } from "@/shared/api";
 import { useT } from "@/shared/i18n";
+import { TOUCH_TARGET } from "@/shared/ui/touch";
 
 /** After "Sign out": a page outside the shell, so it does not bounce straight back to sign-in. */
 export function SignedOutView() {
@@ -15,7 +16,7 @@ export function SignedOutView() {
         <EmptyDescription>{t("state.signedOut.body")}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
-        <Button asChild>
+        <Button asChild className={TOUCH_TARGET}>
           <a href={SIGN_IN_PATH}>{t("state.signedOut.again")}</a>
         </Button>
       </EmptyContent>

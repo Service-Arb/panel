@@ -24,7 +24,7 @@ export function LeadFilters({ filter, brands, locations, onChange }: { filter: L
       />
       <FilterSelect label={t("filter.brand")} allLabel={t("filter.brand.all")} value={filter.brand} options={brands.map((b) => ({ value: b, label: b }))} onChange={(brand) => onChange({ brand, location: null })} />
       <FilterSelect label={t("filter.location")} allLabel={t("filter.location.all")} value={filter.location} options={locations.map((l) => ({ value: l, label: l }))} onChange={(location) => onChange({ location })} />
-      <div className="flex items-center gap-2 px-1">
+      <div className="flex items-center gap-2 px-1 max-md:min-h-11">
         <Switch id={`${id}-overdue`} checked={filter.overdue} onCheckedChange={(overdue) => onChange({ overdue })} />
         <Label htmlFor={`${id}-overdue`}>{t("filter.overdue")}</Label>
       </div>

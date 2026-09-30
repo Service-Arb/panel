@@ -8,6 +8,7 @@ import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
+import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
 
 import { type Place, readLastPlace, writeLastPlace } from "../model/last-place";
 import { PlaceFields, type PlaceValue } from "./place-fields";
@@ -26,6 +27,7 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
   const [need, setNeed] = useState("");
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
+  const size = useControlSize();
 
   const locations = [...new Set(places.filter((p) => p.brand === place.brand).map((p) => p.location))].sort();
   const location = place.location ?? place.custom.trim();
@@ -56,7 +58,7 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
 
   return (
     <>
-      <Button onClick={openForm}>{t("leads.newCall")}</Button>
+      <Button className={TOUCH_TARGET} onClick={openForm}>{t("leads.newCall")}</Button>
       <PanelOverlay open={open} onOpenChange={setOpen} title={t("create.title")} description={t("create.description")} desktop="dialog">
         <form
           className="flex flex-col gap-3"
@@ -68,13 +70,13 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
           <PlaceFields brands={brands} locations={locations} value={place} onChange={setPlace} />
           <Field className="flex flex-col gap-1">
             <FieldLabel htmlFor={`${id}-need`}>{t("create.need")}</FieldLabel>
-            <Textarea id={`${id}-need`} rows={2} maxLength={1000} value={need} onChange={(e) => setNeed(e.target.value)} />
+            <Textarea id={`${id}-need`} size={size} rows={2} maxLength={1000} value={need} onChange={(e) => setNeed(e.target.value)} />
           </Field>
           <Field className="flex flex-col gap-1">
             <FieldLabel htmlFor={`${id}-phone`}>{t("create.phone")}</FieldLabel>
-            <Input id={`${id}-phone`} type="tel" inputMode="tel" autoComplete="off" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            <Input id={`${id}-phone`} size={size} type="tel" inputMode="tel" autoComplete="off" value={phone} onChange={(e) => setPhone(e.target.value)} />
           </Field>
-          <Button type="submit" size="lg" disabled={busy || !ready}>
+          <Button type="submit" size="lg" className={TOUCH_TARGET} disabled={busy || !ready}>
             {t("create.submit")}
           </Button>
         </form>

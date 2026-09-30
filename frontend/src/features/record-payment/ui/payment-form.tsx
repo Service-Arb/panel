@@ -7,6 +7,7 @@ import { type Lead, recordPayment, refOf } from "@/entities/lead";
 import { CURRENCIES, DEFAULT_CURRENCY } from "@/shared/config/money";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
+import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
 
 import { paymentFrom } from "../model/payment";
 
@@ -18,6 +19,7 @@ export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void
   const [commission, setCommission] = useState("");
   const [currency, setCurrency] = useState<string>(DEFAULT_CURRENCY);
   const [busy, setBusy] = useState(false);
+  const size = useControlSize();
   const payment = paymentFrom(billed, commission, currency);
   const touched = billed !== "" && commission !== "";
 
@@ -48,16 +50,16 @@ export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void
       <div className="grid grid-cols-(--grid-payment) gap-2">
         <Field className="flex flex-col gap-1">
           <FieldLabel htmlFor={`${id}-billed`}>{t("payment.billed")}</FieldLabel>
-          <Input id={`${id}-billed`} inputMode="decimal" value={billed} onChange={(e) => setBilled(e.target.value)} />
+          <Input id={`${id}-billed`} size={size} inputMode="decimal" aria-invalid={touched && !payment} value={billed} onChange={(e) => setBilled(e.target.value)} />
         </Field>
         <Field className="flex flex-col gap-1">
           <FieldLabel htmlFor={`${id}-commission`}>{t("payment.commission")}</FieldLabel>
-          <Input id={`${id}-commission`} inputMode="decimal" value={commission} onChange={(e) => setCommission(e.target.value)} />
+          <Input id={`${id}-commission`} size={size} inputMode="decimal" aria-invalid={touched && !payment} value={commission} onChange={(e) => setCommission(e.target.value)} />
         </Field>
         <Field className="flex flex-col gap-1">
-          <FieldLabel>{t("payment.currency")}</FieldLabel>
+          <FieldLabel htmlFor={`${id}-currency`}>{t("payment.currency")}</FieldLabel>
           <Select value={currency} onValueChange={setCurrency}>
-            <SelectTrigger aria-label={t("payment.currency")}>
+            <SelectTrigger id={`${id}-currency`} size={size} className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -71,7 +73,7 @@ export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void
         </Field>
       </div>
       {touched && !payment && <FieldError>{t("payment.invalid")}</FieldError>}
-      <Button type="submit" className="self-start" disabled={busy || !payment}>
+      <Button type="submit" className={`self-start ${TOUCH_TARGET}`} disabled={busy || !payment}>
         {t("payment.submit")}
       </Button>
     </form>

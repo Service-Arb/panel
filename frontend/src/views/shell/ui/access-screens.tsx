@@ -3,6 +3,7 @@
 import { Button, Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle, Skeleton } from "@evinvest/uikit";
 
 import { useT } from "@/shared/i18n";
+import { TOUCH_TARGET } from "@/shared/ui/touch";
 
 /** 403 from the gate: signed in to EV, but no grant on `allocation:service_arb`. */
 export function NoAccessScreen() {
@@ -27,7 +28,7 @@ export function UnavailableScreen({ onRetry }: { onRetry: () => void }) {
         <EmptyDescription>{t("state.unavailable.body")}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
-        <Button onClick={onRetry}>{t("state.retry")}</Button>
+        <Button className={TOUCH_TARGET} onClick={onRetry}>{t("state.retry")}</Button>
       </EmptyContent>
     </Empty>
   );

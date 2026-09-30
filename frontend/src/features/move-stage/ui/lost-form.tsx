@@ -5,6 +5,7 @@ import { useId, useState } from "react";
 
 import type { StageMove } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
+import { useControlSize } from "@/shared/ui/touch";
 
 import { LOST_REASONS, type LostReason } from "../model/moves";
 import { FormButtons } from "./quote-form";
@@ -14,6 +15,7 @@ export function LostForm({ busy, onSubmit, onCancel }: { busy: boolean; onSubmit
   const id = useId();
   const [reason, setReason] = useState<LostReason | "">("");
   const [note, setNote] = useState("");
+  const size = useControlSize();
 
   return (
     <form
@@ -25,9 +27,9 @@ export function LostForm({ busy, onSubmit, onCancel }: { busy: boolean; onSubmit
       }}
     >
       <Field className="flex flex-col gap-1">
-        <FieldLabel>{t("move.reason")}</FieldLabel>
+        <FieldLabel htmlFor={`${id}-reason`}>{t("move.reason")}</FieldLabel>
         <Select value={reason} onValueChange={(v) => setReason(LOST_REASONS.find((r) => r === v) ?? "")}>
-          <SelectTrigger aria-label={t("move.reason")}>
+          <SelectTrigger id={`${id}-reason`} size={size} className="w-full">
             <SelectValue placeholder={t("move.reason")} />
           </SelectTrigger>
           <SelectContent>
@@ -41,7 +43,7 @@ export function LostForm({ busy, onSubmit, onCancel }: { busy: boolean; onSubmit
       </Field>
       <Field className="flex flex-col gap-1">
         <FieldLabel htmlFor={`${id}-note`}>{t("move.note")}</FieldLabel>
-        <Textarea id={`${id}-note`} rows={2} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} />
+        <Textarea id={`${id}-note`} size={size} rows={2} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} />
       </Field>
       <FormButtons busy={busy || !reason} onCancel={onCancel} />
     </form>

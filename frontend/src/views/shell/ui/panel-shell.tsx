@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MeProvider, fetchMe } from "@/entities/session";
 import { useResource } from "@/shared/lib/use-resource";
 import { ErrorState } from "@/shared/ui/error-state";
+import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
 
 import { NoAccessScreen, ShellSkeleton, UnavailableScreen } from "./access-screens";
 import { AppSidebar } from "./app-sidebar";
@@ -18,6 +19,7 @@ import { TabBar } from "./tab-bar";
  */
 export function PanelShell({ children }: { children: ReactNode }) {
   const me = useResource("me", fetchMe);
+  const isDesktop = useMediaQuery(DESKTOP_QUERY);
 
   if (me.status === "loading") return <ShellSkeleton />;
   if (me.status === "error") {
@@ -44,7 +46,8 @@ export function PanelShell({ children }: { children: ReactNode }) {
         <SidebarInset className="min-w-0 pb-[calc(var(--panel-tabbar-h)+env(safe-area-inset-bottom,0px))] md:pb-0">{children}</SidebarInset>
         <TabBar />
       </SidebarProvider>
-      <Toaster />
+      {/* On a phone the bottom is the tab bar and the sheets; toasts come from the top. */}
+      <Toaster position={isDesktop ? "bottom-right" : "top-center"} />
     </MeProvider>
   );
 }
