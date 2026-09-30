@@ -8,8 +8,10 @@
 //!
 //! [`Panel`] is the facade the server talks to; [`wire`] turns protojson into the domain of
 //! `panel_core`; [`store`] is Postgres; [`seal`] encrypts what must not sit in the clear.
+//! [`session`] is signing in through concierge and the sessions that follow.
 
 pub mod seal;
+pub mod session;
 pub mod store;
 #[cfg(feature = "testing")]
 pub mod testing;

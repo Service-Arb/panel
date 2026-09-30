@@ -21,3 +21,6 @@ GRANT SELECT, INSERT ON sources TO panel_app;
 GRANT UPDATE (revoked_at) ON sources TO panel_app;
 
 GRANT SELECT ON ALL TABLES IN SCHEMA reporting TO panel_app;
+
+-- Sign-in sessions: opened at the callback, their tokens rotated, closed at sign-out or expiry.
+GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO panel_app;

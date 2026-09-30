@@ -2321,6 +2321,7 @@ checksum = "13c45bb4a6ae1280ec0803b1ef9d3455eb50f01efbbe1447ab020f1d54fba9d8"
 name = "panel"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
  "eyre",
@@ -2335,6 +2336,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "sqlx",
+ "subtle",
  "thiserror",
  "tokio",
  "tracing",

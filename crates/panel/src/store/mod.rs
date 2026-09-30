@@ -4,6 +4,7 @@
 
 pub mod events;
 pub mod projections;
+pub mod sessions;
 pub mod sources;
 
 use chrono::{DateTime, Utc};
