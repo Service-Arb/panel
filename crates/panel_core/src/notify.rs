@@ -214,12 +214,16 @@ pub enum Note {
 		kind: String,
 		last: Option<Timestamp>,
 	},
+	/// Too many leads queued for one chat to send each: how many, and nothing about them.
+	Backlog {
+		count: i64,
+	},
 }
 
 impl Note {
 	pub fn rule(&self) -> Rule {
 		match self {
-			Self::NewLead(_) => Rule::NewLead,
+			Self::NewLead(_) | Self::Backlog { .. } => Rule::NewLead,
 			Self::ContactOverdue { .. } => Rule::ContactOverdue,
 			Self::PaymentReceived { .. } => Rule::PaymentReceived,
 			Self::SourceSilent { .. } => Rule::SourceSilent,
@@ -230,15 +234,23 @@ impl Note {
 	pub fn buttons(&self) -> &'static [Button] {
 		match self {
 			Self::NewLead(_) | Self::ContactOverdue { .. } => &[Button::Take, Button::NoAnswer],
-			Self::PaymentReceived { .. } | Self::SourceSilent { .. } => &[],
+			Self::PaymentReceived { .. } | Self::SourceSilent { .. } | Self::Backlog { .. } => &[],
 		}
 	}
 
 	/// Plain text (sent without a parse mode, so nothing a customer typed is markup).
 	pub fn text(&self, locale: Locale) -> String {
+		self.render(locale).text
+	}
+
+	/// The text and its `code` entities: what a customer typed goes on one line of its own
+	/// field, cleaned ([`one_line`]) and bounded, inside a `code` entity, so it can neither
+	/// fake a line of ours ("Взял: …") nor turn into a link.
+	pub fn render(&self, locale: Locale) -> Rendered {
 		let ru = locale == Locale::Ru;
+		let mut out = Rendered::default();
 		match self {
-			Self::NewLead(lead) => lead_text(if ru { "Новая заявка" } else { "New lead" }, lead, locale),
+			Self::NewLead(lead) => lead_text(&mut out, if ru { "Новая заявка" } else { "New lead" }, lead, locale),
 			Self::ContactOverdue { lead, waiting } => {
 				let mins = waiting.as_mins().max(0);
 				let head = if ru {
@@ -246,7 +258,7 @@ impl Note {
 				} else {
 					format!("Lead waiting for a call for {mins} min")
 				};
-				lead_text(&head, lead, locale)
+				lead_text(&mut out, &head, lead, locale);
 			}
 			Self::PaymentReceived {
 				brand,
@@ -256,10 +268,13 @@ impl Note {
 				currency,
 			} => {
 				let (billed, commission) = (money(*billed), money(*commission));
+				out.push(if ru { "Оплата получена\n" } else { "Payment received\n" });
+				out.push(&format!("{brand} · "));
+				out.code(lead);
 				if ru {
-					format!("Оплата получена\n{brand} · {lead}\nСумма: {billed} {currency}\nКомиссия: {commission} {currency}")
+					out.push(&format!("\nСумма: {billed} {currency}\nКомиссия: {commission} {currency}"));
 				} else {
-					format!("Payment received\n{brand} · {lead}\nBilled: {billed} {currency}\nCommission: {commission} {currency}")
+					out.push(&format!("\nBilled: {billed} {currency}\nCommission: {commission} {currency}"));
 				}
 			}
 			Self::SourceSilent { key_id, kind, last } => {
@@ -269,33 +284,126 @@ impl Note {
 					(None, true) => "событий не было".to_owned(),
 					(None, false) => "no events yet".to_owned(),
 				};
-				if ru {
-					format!("Источник молчит больше суток\n{key_id} ({kind}): {since}")
+				out.push(if ru {
+					"Источник молчит больше суток\n"
 				} else {
-					format!("Source silent for over a day\n{key_id} ({kind}): {since}")
-				}
+					"Source silent for over a day\n"
+				});
+				out.code(key_id);
+				out.push(&format!(" ({kind}): {since}"));
 			}
+			Self::Backlog { count } => out.push(&if ru {
+				format!("{count} новых заявок ждут звонка. Откройте панель.")
+			} else {
+				format!("{count} new leads are waiting for a call. Open the panel.")
+			}),
 		}
+		out.clamp(MAX_MESSAGE);
+		out
 	}
 }
 
-fn lead_text(head: &str, lead: &LeadNote, locale: Locale) -> String {
-	let ru = locale == Locale::Ru;
-	let mut out = match &lead.location {
-		Some(location) => format!("{head}\n{} · {location}", lead.brand),
-		None => format!("{head}\n{}", lead.brand),
-	};
-	let fields = [
-		(if ru { "Имя" } else { "Name" }, &lead.name),
-		(if ru { "Нужно" } else { "Needs" }, &lead.need),
-		(if ru { "Телефон" } else { "Phone" }, &lead.phone),
-	];
-	for (label, value) in fields {
-		if let Some(v) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-			out.push_str(&format!("\n{label}: {v}"));
-		}
+/// A message's length, in characters, whatever went into it: well under Telegram's 4096.
+pub const MAX_MESSAGE: usize = 3500;
+
+/// Longest a customer's field may run in a message, in characters.
+pub const MAX_NAME: usize = 80;
+pub const MAX_PHONE: usize = 40;
+pub const MAX_NEED: usize = 500;
+
+/// A span of a message shown as `code`, in UTF-16 code units (what the Bot API counts).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Entity {
+	pub offset: usize,
+	pub length: usize,
+}
+
+/// A message: its text and the spans of it that are `code`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Rendered {
+	pub text: String,
+	pub code: Vec<Entity>,
+}
+
+impl Rendered {
+	fn units(&self) -> usize {
+		self.text.encode_utf16().count()
 	}
-	out
+
+	pub fn push(&mut self, s: &str) {
+		self.text.push_str(s);
+	}
+
+	/// `s` as `code`; nothing when it is empty.
+	pub fn code(&mut self, s: &str) {
+		let length = s.encode_utf16().count();
+		if length > 0 {
+			self.code.push(Entity { offset: self.units(), length });
+		}
+		self.text.push_str(s);
+	}
+
+	/// At most `max` characters, the entities cut to what is left.
+	fn clamp(&mut self, max: usize) {
+		let Some((cut, _)) = self.text.char_indices().nth(max) else { return };
+		self.text.truncate(cut);
+		let units = self.units();
+		self.code.retain_mut(|e| {
+			e.length = e.length.min(units.saturating_sub(e.offset));
+			e.offset < units && e.length > 0
+		});
+	}
+}
+
+/// Whether a character is one a customer's text may not carry into a message as it is: any
+/// control character (a line break could start a line that reads as ours), the line and
+/// paragraph separators, and the marks that reorder text (bidi overrides and isolates).
+fn hidden(c: char) -> bool {
+	c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// A customer's text on one line: the [`hidden`] characters made spaces, runs of spaces one,
+/// at most `max` characters (the last one "…" when cut).
+pub fn one_line(s: &str, max: usize) -> String {
+	let spaced: String = s.chars().map(|c| if hidden(c) { ' ' } else { c }).collect();
+	let joined = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+	match joined.char_indices().nth(max.saturating_sub(1)) {
+		Some((i, _)) if joined.chars().count() > max => format!("{}…", &joined[..i]),
+		_ => joined,
+	}
+}
+
+/// A phone number as a message shows it: digits, `+`, `(`, `)`, `-` and spaces only.
+pub fn phone(s: &str) -> String {
+	let kept: String = s
+		.chars()
+		.map(|c| if hidden(c) { ' ' } else { c })
+		.filter(|c| c.is_ascii_digit() || matches!(c, '+' | '(' | ')' | '-' | ' '))
+		.collect();
+	one_line(&kept, MAX_PHONE)
+}
+
+fn lead_text(out: &mut Rendered, head: &str, lead: &LeadNote, locale: Locale) {
+	let ru = locale == Locale::Ru;
+	out.push(head);
+	out.push("\n");
+	out.push(&lead.brand);
+	if let Some(location) = &lead.location {
+		out.push(&format!(" · {location}"));
+	}
+	let clean = |v: &Option<String>, max| v.as_deref().map(|v| one_line(v, max)).filter(|v| !v.is_empty());
+	if let Some(name) = clean(&lead.name, MAX_NAME) {
+		out.push(if ru { "\nИмя: " } else { "\nName: " });
+		out.code(&name);
+	}
+	if let Some(need) = clean(&lead.need, MAX_NEED) {
+		out.push(if ru { "\nНужно: " } else { "\nNeeds: " });
+		out.code(&need);
+	}
+	if let Some(p) = lead.phone.as_deref().map(phone).filter(|p| !p.is_empty()) {
+		out.push(if ru { "\nТелефон: " } else { "\nPhone: " });
+		out.push(&p);
+	}
 }
 
 /// Minor units as the amount a person reads: whole when it is whole, else with its cents.
@@ -318,6 +426,7 @@ fn minute(at: Timestamp) -> String {
 /// The line added to a lead's message once a button was pressed; the buttons left under it
 /// are [`after_press`].
 pub fn pressed_line(button: Button, who: &str, locale: Locale) -> String {
+	let who = one_line(who, MAX_NAME);
 	match (button, locale) {
 		(Button::Take, Locale::Ru) => format!("Взял: {who}"),
 		(Button::Take, Locale::En) => format!("Taken by: {who}"),
@@ -335,11 +444,22 @@ pub fn after_press(button: Button) -> &'static [Button] {
 	}
 }
 
+/// What the bot says once a chat is linked: to which panel account, so a link opened from
+/// someone else's hands is seen at once.
+pub fn linked_text(locale: Locale, account: &str) -> String {
+	let account = one_line(account, MAX_NAME);
+	match locale {
+		Locale::Ru => format!("Telegram подключён к панели Service-Arb, аккаунт: {account}. Уведомления настраиваются в профиле панели. Не вы? Отправьте /stop."),
+		Locale::En => format!("Telegram is linked to the Service-Arb panel, account: {account}. Choose notifications in your panel profile. Not you? Send /stop."),
+	}
+}
+
 /// What the bot says back, by occasion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Reply {
-	Linked,
 	LinkInvalid,
+	/// The chat is linked to another panel account already.
+	ChatTaken,
 	Help,
 	Unlinked,
 	NotLinked,
@@ -362,8 +482,8 @@ impl Reply {
 	pub fn text(self, locale: Locale) -> &'static str {
 		let ru = locale == Locale::Ru;
 		match self {
-			Self::Linked if ru => "Telegram подключён к панели Service-Arb. Уведомления настраиваются в профиле панели.",
-			Self::Linked => "Telegram is linked to the Service-Arb panel. Choose notifications in your panel profile.",
+			Self::ChatTaken if ru => "Этот чат привязан к другому аккаунту панели. Сначала отправьте /stop.",
+			Self::ChatTaken => "This chat is linked to another panel account. Send /stop first.",
 			Self::LinkInvalid if ru => "Ссылка недействительна или устарела. Откройте профиль в панели и подключите Telegram заново.",
 			Self::LinkInvalid => "This link is invalid or has expired. Open your panel profile and link Telegram again.",
 			Self::Help if ru => "Это бот панели Service-Arb. Подключение — кнопкой «Подключить Telegram» в профиле панели. /stop отключает уведомления.",
@@ -530,6 +650,37 @@ mod tests {
 			"Источник молчит больше суток\naquafix-site (site): последнее событие 2026-09-29 08:15 UTC"
 		);
 		assert_eq!(money(-5), "-0.05");
+	}
+
+	#[test]
+	fn a_customer_cannot_forge_our_lines_or_links() {
+		let lead = LeadNote {
+			brand: "aquafix".into(),
+			location: None,
+			name: Some("Eve\u{202e}\t".into()),
+			need: Some(format!("tap\nВзял: Mallory\r\n\u{2028}see https://evil.example {}", "x".repeat(10 * 1024))),
+			phone: Some("+33 6 <a>00\n00 https://x".into()),
+		};
+		let r = Note::NewLead(lead).render(Locale::Ru);
+		let lines: Vec<&str> = r.text.lines().collect();
+		assert_eq!(lines.len(), 5, "{lines:?}");
+		assert!(!lines.iter().any(|l| l.starts_with("Взял")), "no line of ours from the customer");
+		assert_eq!(lines[2], "Имя: Eve");
+		assert_eq!(lines[4], "Телефон: +33 6 00 00", "digits and phone punctuation only");
+		let need = lines[3].strip_prefix("Нужно: ").unwrap();
+		assert_eq!(need.chars().count(), MAX_NEED);
+		assert!(need.starts_with("tap Взял: Mallory see https://evil.example x") && need.ends_with('…'));
+		let units: Vec<u16> = r.text.encode_utf16().collect();
+		let spans: Vec<String> = r.code.iter().map(|e| String::from_utf16(&units[e.offset..e.offset + e.length]).unwrap()).collect();
+		assert_eq!(spans, ["Eve", need], "the typed fields, exactly, are code");
+		assert!(r.text.chars().count() <= MAX_MESSAGE);
+		assert_eq!(one_line("  a \u{2066}b\u{2069}  c ", 80), "a b c");
+		assert_eq!(one_line("abcdef", 4), "abc…");
+		let mut long = Rendered::default();
+		long.push("ab");
+		long.code("cdef");
+		long.clamp(4);
+		assert_eq!((long.text.as_str(), long.code.as_slice()), ("abcd", [Entity { offset: 2, length: 2 }].as_slice()));
 	}
 
 	#[test]

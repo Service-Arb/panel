@@ -14,11 +14,15 @@
 //! the user's own access token. A link keeps the role concierge last confirmed and when:
 //! the `/api/v1` gate records every answer it gets, and [`Notifier::recheck_access`] asks
 //! again through the user's newest panel session for a link not confirmed in
-//! [`RECHECK_AFTER`]. A message goes only to a link confirmed within [`ACCESS_TTL`], so a
-//! grant revoked at concierge stops them within about [`RECHECK_AFTER`], and concierge being
-//! unreachable stops them after [`ACCESS_TTL`] — PII does not flow on a stale answer. A
-//! button asks concierge at the moment it is pressed, and without a live panel session to
-//! ask with, the user is told to open the panel: nothing is written on a cached answer.
+//! [`RECHECK_AFTER`] — through a session the user used within [`SESSION_IDLE`], so the bot
+//! never keeps an abandoned one alive. A message is queued, and again sent, only to a link
+//! confirmed within [`ACCESS_TTL`]. So: a grant revoked at concierge, or a session concierge
+//! refuses to rotate, stops messages at the next check (within about [`RECHECK_AFTER`]),
+//! and what was queued for the user is dropped; a user with no session used within
+//! [`SESSION_IDLE`], or concierge unreachable, stops them after [`ACCESS_TTL`] — PII does not
+//! flow on a stale answer. A button asks concierge at the moment it is pressed, and without
+//! such a session to ask with, the user is told to open the panel: nothing is written on a
+//! cached answer.
 //!
 //! The Bot API is the server's; this sees it through [`Bot`], and concierge through
 //! [`Directory`] and [`Refresher`].
@@ -32,7 +36,7 @@ use jiff::{SignedDuration, Timestamp};
 use panel_core::{
 	funnel::CONTACT_SLA,
 	ids::{BrandId, LeadId},
-	notify::{self, Button, Failure, LeadNote, Locale, Next, Note, Reply, Rule},
+	notify::{self, Button, Entity, Failure, LeadNote, Locale, Next, Note, Rendered, Reply, Rule},
 	role::Role,
 };
 use serde_json::Value;
@@ -40,6 +44,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+pub use crate::store::telegram::Account;
 use crate::{
 	Panel,
 	operator::{ActionError, Actor, StageMove},
@@ -56,6 +61,15 @@ pub const ACCESS_TTL: SignedDuration = SignedDuration::from_hours(1);
 
 /// A link not confirmed for this long is asked about again.
 pub const RECHECK_AFTER: SignedDuration = SignedDuration::from_mins(15);
+
+/// The bot asks concierge only with a session its user used within this long.
+pub const SESSION_IDLE: SignedDuration = SignedDuration::from_hours(24 * 7);
+
+/// At most one unsolicited reply (help, "not linked", …) per chat this often.
+pub const REPLY_EVERY: SignedDuration = SignedDuration::from_mins(10);
+
+/// Past this many lead messages waiting for one chat, they are folded into one summary.
+pub const BACKLOG: i64 = 20;
 
 /// How long a replica sending a message holds it: past the Bot API's timeout, so it lapses
 /// only when the replica is gone.
@@ -93,10 +107,10 @@ pub struct InlineButton {
 /// The Bot API, as the notifier needs it. Every call answers the failure as
 /// [`notify::Failure`], so the outbox can decide what becomes of the message.
 pub trait Bot: Sync {
-	/// Sends a plain-text message to a chat; the id Telegram gave it.
-	fn send(&self, chat_id: i64, text: &str, buttons: &[InlineButton]) -> impl Future<Output = Result<i64, Failure>> + Send;
+	/// Sends a plain-text message (its `code` spans marked) to a chat; the id Telegram gave it.
+	fn send(&self, chat_id: i64, message: &Rendered, buttons: &[InlineButton]) -> impl Future<Output = Result<i64, Failure>> + Send;
 	/// Replaces a message's text and buttons (none: the keyboard is removed).
-	fn edit(&self, chat_id: i64, message_id: i64, text: &str, buttons: &[InlineButton]) -> impl Future<Output = Result<(), Failure>> + Send;
+	fn edit(&self, chat_id: i64, message_id: i64, message: &Rendered, buttons: &[InlineButton]) -> impl Future<Output = Result<(), Failure>> + Send;
 	/// Answers a button press, with a short notice the user sees.
 	fn answer(&self, callback_id: &str, text: &str) -> impl Future<Output = Result<(), Failure>> + Send;
 }
@@ -138,10 +152,12 @@ pub struct Chat {
 /// What the bot received, as far as the panel cares.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Update {
-	/// `/start`, with the payload of a `t.me/<bot>?start=<payload>` link when there is one.
+	/// `/start`, with the payload of a `t.me/<bot>?start=<payload>` link when there is one,
+	/// typed (not forwarded) by `from`.
 	Start {
 		chat: Chat,
 		payload: Option<String>,
+		from: Account,
 	},
 	Stop {
 		chat: Chat,
@@ -156,8 +172,8 @@ pub enum Update {
 		chat_id: i64,
 		message_id: i64,
 		data: String,
-		/// The message's text as the user sees it, to extend with who pressed.
-		text: String,
+		/// The message as the user sees it, to extend with who pressed.
+		message: Rendered,
 	},
 }
 
@@ -178,6 +194,8 @@ pub struct Settings {
 	pub linked: bool,
 	/// Linked, but the bot was blocked: nothing arrives until they link again.
 	pub blocked: bool,
+	/// The linked Telegram account: `@username`, else its first name.
+	pub account: Option<String>,
 	/// Every rule open to the user's role, with whether it is on.
 	pub rules: Vec<(Rule, bool)>,
 }
@@ -246,7 +264,8 @@ impl Panel {
 			.collect();
 		Ok(Settings {
 			linked: link.is_some(),
-			blocked: link.is_some_and(|l| l.dead),
+			blocked: link.as_ref().is_some_and(|l| l.dead),
+			account: link.and_then(|l| l.account),
 			rules,
 		})
 	}
@@ -269,7 +288,11 @@ impl Panel {
 	/// (`None`: none) and name. Kept on their link, if they have one.
 	pub async fn telegram_access_seen(&self, user: Uuid, role: Option<Role>, display: &str, now: Timestamp) -> eyre::Result<()> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection to record access")?;
-		db::access_seen(&mut conn, user, role, display, now).await
+		match role {
+			Some(_) => db::access_seen(&mut conn, user, role, display, now).await,
+			// No role: whatever waits for them in the outbox goes nowhere.
+			None => db::access_lost(&mut conn, user, now).await,
+		}
 	}
 
 	/// Queues what the rules say is due at `now`: new leads, overdue leads, payments and
@@ -358,8 +381,7 @@ impl Panel {
 				continue;
 			}
 			let note = note(r.role)?;
-			let text = Zeroizing::new(note.text(locale));
-			let sealed = self.key.seal(&telegram_text_aad(rule.as_str(), event, r.chat_id), text.as_bytes())?;
+			let sealed = self.seal_message(rule, event, r.chat_id, &note.render(locale))?;
 			let message = NewMessage {
 				user_id: r.user_id,
 				chat_id: r.chat_id,
@@ -379,6 +401,28 @@ impl Panel {
 			tracing::info!(%rule, %event, queued, "telegram: queued");
 		}
 		Ok(queued)
+	}
+
+	/// A queued message, sealed: its text is PII.
+	fn seal_message(&self, rule: Rule, event: Uuid, chat: i64, m: &Rendered) -> eyre::Result<Vec<u8>> {
+		let code: Vec<[usize; 2]> = m.code.iter().map(|e| [e.offset, e.length]).collect();
+		let plain = Zeroizing::new(serde_json::to_vec(&serde_json::json!({"text": m.text, "code": code})).wrap_err("serializing a message")?);
+		Ok(self.key.seal(&telegram_text_aad(rule.as_str(), event, chat), &plain)?)
+	}
+
+	fn open_message(&self, d: &db::Due) -> eyre::Result<Rendered> {
+		#[derive(serde::Deserialize)]
+		struct Plain {
+			text: String,
+			code: Vec<[usize; 2]>,
+		}
+		eyre::ensure!(d.data_key_fp.as_slice() == self.key.fingerprint(), "sealed under another PANEL_DATA_KEY");
+		let plain = self.key.open(&telegram_text_aad(&d.rule, d.event_id, d.chat_id), &d.text_sealed).wrap_err("does not open")?;
+		let p: Plain = serde_json::from_slice(&plain).wrap_err("is not a message")?;
+		Ok(Rendered {
+			text: p.text,
+			code: p.code.into_iter().map(|[offset, length]| Entity { offset, length }).collect(),
+		})
 	}
 
 	/// A lead as a message to `role` shows it: the PII of its creation only for a role that
@@ -426,10 +470,16 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 			.collect()
 	}
 
-	/// Sends what is due at `now`, within the pace (see `store::telegram::claim_due`).
+	/// Sends what is due at `now`, within the pace (see `store::telegram::claim_due`). First,
+	/// lead messages queued past [`NEW_LEAD_WINDOW`] are given up, and a chat with more than
+	/// [`BACKLOG`] of them waiting gets one summary, without PII, in their place.
 	pub async fn deliver(&self, now: Timestamp) -> eyre::Result<Delivered> {
 		let due = {
 			let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to claim messages")?;
+			db::expire_stale(&mut conn, now - NEW_LEAD_WINDOW).await?;
+			for (chat, user, _) in db::crowded(&mut conn, BACKLOG, now).await? {
+				self.summarize(&mut conn, chat, user, now).await?;
+			}
 			db::claim_due(&mut conn, now, now + SEND_LEASE).await?
 		};
 		futures::stream::iter(due)
@@ -446,22 +496,59 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 			.await
 	}
 
+	async fn summarize(&self, conn: &mut sqlx::PgConnection, chat: i64, user: Uuid, now: Timestamp) -> eyre::Result<()> {
+		let mut tx = sqlx::Connection::begin(&mut *conn).await.wrap_err("beginning a summary")?;
+		let count = db::fold_into_summary(&mut tx, chat, now).await?;
+		let event = derived_event_id(&["backlog", &chat.to_string(), &now.to_string()]);
+		let note = Note::Backlog {
+			count: i64::try_from(count).unwrap_or(i64::MAX),
+		};
+		let sealed = self.panel.seal_message(Rule::NewLead, event, chat, &note.render(self.locale))?;
+		let message = NewMessage {
+			user_id: user,
+			chat_id: chat,
+			rule: Rule::NewLead,
+			event_id: event,
+			lead: None,
+			buttons: Vec::new(),
+			text_sealed: &sealed,
+			data_key_fp: self.panel.key.fingerprint(),
+		};
+		db::enqueue(&mut tx, &message, now).await?;
+		tx.commit().await.wrap_err("committing a summary")?;
+		tracing::info!(user_id = %user, count, "telegram: lead messages folded into a summary");
+		Ok(())
+	}
+
+	/// Whether the message's user may still get it: the same chat, alive, a role the rule is
+	/// open to, confirmed within [`ACCESS_TTL`] — asked again at the send, not only when it was
+	/// queued, since PII waits in the outbox.
+	async fn still_allowed(&self, conn: &mut sqlx::PgConnection, d: &db::Due, now: Timestamp) -> eyre::Result<bool> {
+		let Ok(rule) = d.rule.parse::<Rule>() else { return Ok(false) };
+		let link = db::link_of_user(conn, d.user_id).await?;
+		Ok(link.is_some_and(|l| l.chat_id == d.chat_id && !l.dead && l.role.is_some_and(|r| rule.open_to(r)) && l.role_checked_at >= now - ACCESS_TTL))
+	}
+
 	async fn deliver_one(&self, d: db::Due, now: Timestamp) -> eyre::Result<Outcome> {
-		let key = &self.panel.key;
 		let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to deliver")?;
-		if d.data_key_fp.as_slice() != key.fingerprint() {
-			db::dead(&mut conn, d.id, "sealed under another PANEL_DATA_KEY").await?;
+		if !self.still_allowed(&mut conn, &d, now).await? {
+			db::dead(&mut conn, d.id, "access not confirmed").await?;
 			return Ok(Outcome::Dead);
 		}
-		let text = key
-			.open(&telegram_text_aad(&d.rule, d.event_id, d.chat_id), &d.text_sealed)
-			.wrap_err_with(|| format!("opening queued message {}", d.id))?;
-		let text = String::from_utf8(text.to_vec()).wrap_err("a queued text is not UTF-8")?;
-		let text = Zeroizing::new(text);
+		let message = match self.panel.open_message(&d) {
+			Ok(m) => m,
+			Err(e) => {
+				// A message that cannot be read now never will be: it is given up, not retried.
+				tracing::warn!(message = d.id, error = format!("{e:#}"), "telegram: a queued message is unreadable");
+				db::dead(&mut conn, d.id, &format!("unreadable: {e:#}")).await?;
+				return Ok(Outcome::Dead);
+			}
+		};
 		let buttons = self.buttons(d.chat_id, d.id, d.buttons.iter().filter_map(|b| Button::from_name(b)));
 		// No pool connection is held while Telegram is asked.
 		drop(conn);
-		let answer = self.bot.send(d.chat_id, &text, &buttons).await;
+		let answer = self.bot.send(d.chat_id, &message, &buttons).await;
+		drop(message);
 		let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to deliver")?;
 		let failure = match answer {
 			Ok(message_id) => {
@@ -473,12 +560,18 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		let error = match &failure {
 			Failure::RetryAfter(wait) => format!("429, retry after {}s", wait.as_secs()),
 			Failure::Transient(why) | Failure::Refused(why) => why.clone(),
-			Failure::Blocked => "403: the bot is blocked".to_owned(),
+			Failure::Blocked => "the chat is gone: blocked, not found or deactivated".to_owned(),
 		};
-		tracing::warn!(message = d.id, chat = d.chat_id, attempts = d.attempts, error, "telegram: a send failed");
+		tracing::warn!(message = d.id, attempts = d.attempts, error, "telegram: a send failed");
+		if let Failure::RetryAfter(wait) = failure {
+			// The Bot API's limits are the bot's: the whole outbox waits, and the message keeps
+			// its tries.
+			db::pause(&mut conn, d.id, now.saturating_add(wait.max(notify::PER_CHAT_GAP)).unwrap_or(Timestamp::MAX), &error).await?;
+			return Ok(Outcome::Retrying);
+		}
 		Ok(match notify::after_failure(d.attempts, &failure, now) {
 			Next::Retry { at } => {
-				db::retry(&mut conn, d.id, d.chat_id, at, &error, matches!(failure, Failure::RetryAfter(_))).await?;
+				db::retry(&mut conn, d.id, d.chat_id, at, &error, false).await?;
 				Outcome::Retrying
 			}
 			Next::Dead => {
@@ -488,7 +581,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 			Next::ChatDead => {
 				db::chat_dead(&mut conn, d.chat_id, now).await?;
 				db::dead(&mut conn, d.id, &error).await?;
-				tracing::info!(chat = d.chat_id, user_id = %d.user_id, "telegram: the bot is blocked; chat marked dead");
+				tracing::info!(user_id = %d.user_id, "telegram: the chat is gone; marked dead");
 				Outcome::Dead
 			}
 		})
@@ -509,25 +602,36 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		Ok(users.len())
 	}
 
-	/// Asks concierge, now, what the user may do — with their newest live panel session,
-	/// rotated when due — and records the answer on their link.
+	/// Asks concierge, now, what the user may do — with their newest panel session used within
+	/// [`SESSION_IDLE`], rotated when due — and records the answer on their link. A session
+	/// concierge refuses (to rotate, or `GetMe` twice running) ends the user's notifications
+	/// and drops what was queued for them.
 	pub async fn confirm_access(&self, user: Uuid, now: Timestamp) -> eyre::Result<Access> {
 		let panel = &self.panel;
-		let session = match panel.session_of_user(user, now, &self.concierge).await {
-			Ok(s) => Some(s),
-			Err(SessionError::Missing | SessionError::Rejected) => None,
+		let conn = || async { panel.store.pool().acquire().await.wrap_err("a connection to record access") };
+		let session = match panel.session_of_user(user, now, now - SESSION_IDLE, &self.concierge).await {
+			Ok(s) => s,
+			Err(SessionError::Missing) => {
+				self.tried(user, now).await?;
+				return Ok(Access::NoSession);
+			}
+			Err(SessionError::Rejected) => {
+				db::access_lost(&mut *conn().await?, user, now).await?;
+				return Ok(Access::NoSession);
+			}
 			Err(SessionError::Unavailable) => {
 				self.tried(user, now).await?;
 				return Ok(Access::Unavailable);
 			}
 			Err(SessionError::Internal(e)) => return Err(e),
 		};
-		let Some(session) = session else {
-			self.tried(user, now).await?;
-			return Ok(Access::NoSession);
+		let answer = match self.concierge.me(&session.access).await {
+			// One refusal may be a hiccup on concierge's side; the session is closed only on a
+			// second.
+			Err(DirectoryError::Refused) => self.concierge.me(&session.access).await,
+			other => other,
 		};
-		let conn = || async { panel.store.pool().acquire().await.wrap_err("a connection to record access") };
-		match self.concierge.me(&session.access).await {
+		match answer {
 			Ok(id) if id.user_id != user => Err(eyre::eyre!("GetMe answered another user than the session's")),
 			Ok(Identity { role: Some(role), display_name, .. }) => {
 				db::access_seen(&mut *conn().await?, user, Some(role), &display_name, now).await?;
@@ -557,57 +661,63 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		db::access_tried(&mut conn, user, now).await
 	}
 
-	async fn reply(&self, chat: i64, reply: Reply) {
-		if let Err(f) = self.bot.send(chat, reply.text(self.locale), &[]).await {
-			tracing::warn!(chat, failure = ?f, "telegram: a reply was not delivered");
+	async fn say(&self, chat: i64, text: String) {
+		let message = Rendered { text, code: Vec::new() };
+		if let Err(f) = self.bot.send(chat, &message, &[]).await {
+			tracing::warn!(failure = ?f, "telegram: a reply was not delivered");
 		}
 	}
 
-	/// Handles one update. Groups and channels are ignored whatever they say: the panel only
-	/// ever talks to a person, one to one.
+	async fn reply(&self, chat: i64, reply: Reply) {
+		self.say(chat, reply.text(self.locale).to_owned()).await;
+	}
+
+	/// A reply nobody asked a linked chat for (help, "not linked", …): at most one per chat per
+	/// [`REPLY_EVERY`], so a stranger cannot make the bot spend its rate on them.
+	async fn reply_unsolicited(&self, chat: i64, reply: Reply, now: Timestamp) -> eyre::Result<()> {
+		let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to throttle a reply")?;
+		if db::may_reply(&mut conn, chat, now, REPLY_EVERY).await? {
+			drop(conn);
+			self.reply(chat, reply).await;
+		}
+		Ok(())
+	}
+
+	/// Handles one update. Groups and channels are ignored whatever they say, and so is any
+	/// message that is not a command: the panel only ever talks to a person, one to one, and
+	/// only when asked.
 	pub async fn handle(&self, update: Update, now: Timestamp) -> eyre::Result<()> {
 		match update {
 			Update::Start { chat, .. } | Update::Stop { chat } | Update::Other { chat } if !chat.private => Ok(()),
-			Update::Start { chat, payload: Some(token) } => {
-				let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to link")?;
-				let reply = match db::redeem_link_token(&mut conn, &link_token_hash(token.trim()), now).await? {
-					Some((user, role, display)) => {
-						let mut tx = sqlx::Connection::begin(&mut *conn).await.wrap_err("beginning a link")?;
-						db::link(&mut tx, user, chat.id, role, &display, now).await?;
-						tx.commit().await.wrap_err("committing a link")?;
-						tracing::info!(user_id = %user, "telegram: chat linked");
-						Reply::Linked
-					}
-					None => Reply::LinkInvalid,
-				};
-				drop(conn);
-				self.reply(chat.id, reply).await;
-				Ok(())
-			}
-			Update::Start { chat, payload: None } | Update::Other { chat } => {
-				self.reply(chat.id, Reply::Help).await;
-				Ok(())
-			}
+			Update::Other { .. } => Ok(()),
+			Update::Start { chat, payload: Some(token), from } => self.start(chat.id, token.trim(), &from, now).await,
+			Update::Start { chat, payload: None, .. } => self.reply_unsolicited(chat.id, Reply::Help, now).await,
 			Update::Stop { chat } => {
 				let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to unlink")?;
 				let gone = db::unlink_chat(&mut conn, chat.id).await?;
 				drop(conn);
-				self.reply(chat.id, if gone { Reply::Unlinked } else { Reply::NotLinked }).await;
-				Ok(())
+				if gone {
+					self.reply(chat.id, Reply::Unlinked).await;
+					Ok(())
+				} else {
+					self.reply_unsolicited(chat.id, Reply::NotLinked, now).await
+				}
 			}
 			Update::Callback {
 				id,
 				chat_id,
 				message_id,
 				data,
-				text,
+				message,
 			} => {
 				let (reply, edit) = self.press(chat_id, &data, now).await?;
 				if let Some((outbox, button, who)) = edit {
-					let text = format!("{text}\n\n{}", notify::pressed_line(button, &who, self.locale));
+					let mut edited = message;
+					edited.push("\n\n");
+					edited.push(&notify::pressed_line(button, &who, self.locale));
 					let buttons = self.buttons(chat_id, outbox, notify::after_press(button).iter().copied());
-					if let Err(f) = self.bot.edit(chat_id, message_id, &text, &buttons).await {
-						tracing::warn!(chat = chat_id, failure = ?f, "telegram: a pressed message was not updated");
+					if let Err(f) = self.bot.edit(chat_id, message_id, &edited, &buttons).await {
+						tracing::warn!(failure = ?f, "telegram: a pressed message was not updated");
 					}
 				}
 				if let Err(f) = self.bot.answer(&id, reply.text(self.locale)).await {
@@ -618,13 +728,38 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		}
 	}
 
+	/// `/start <token>`: the token redeemed and the chat linked in one transaction — rolled
+	/// back, the token kept, when the chat is another panel account's.
+	async fn start(&self, chat: i64, token: &str, from: &Account, now: Timestamp) -> eyre::Result<()> {
+		let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to link")?;
+		let mut tx = sqlx::Connection::begin(&mut *conn).await.wrap_err("beginning a link")?;
+		let Some(redeemed) = db::redeem_link_token(&mut tx, &link_token_hash(token), now).await? else {
+			tx.commit().await.wrap_err("committing a spent token")?;
+			drop(conn);
+			return self.reply_unsolicited(chat, Reply::LinkInvalid, now).await;
+		};
+		if db::link_of_chat(&mut tx, chat).await?.is_some_and(|l| l.user_id != redeemed.user_id) {
+			drop(tx);
+			drop(conn);
+			tracing::info!(user_id = %redeemed.user_id, "telegram: a link refused, the chat is another account's");
+			self.reply(chat, Reply::ChatTaken).await;
+			return Ok(());
+		}
+		db::link(&mut tx, &redeemed, chat, from, now).await?;
+		tx.commit().await.wrap_err("committing a link")?;
+		drop(conn);
+		tracing::info!(user_id = %redeemed.user_id, "telegram: chat linked");
+		self.say(chat, notify::linked_text(self.locale, &redeemed.display_name)).await;
+		Ok(())
+	}
+
 	/// A button pressed in `chat_id`: what to answer, and — when something was recorded now —
-	/// the message, the button and who pressed it, for the message's new text. Nothing in the button is trusted
-	/// but its signature: the message it names must be this chat's, the chat must be linked to
-	/// the message's user, and that user's access is asked of concierge now.
+	/// the message, the button and who pressed it, for the message's new text. Nothing in the
+	/// button is trusted but its signature: the message it names must be this chat's, the chat
+	/// must be linked to the message's user, and that user's access is asked of concierge now.
 	async fn press(&self, chat_id: i64, data: &str, now: Timestamp) -> eyre::Result<(Reply, Option<(i64, Button, String)>)> {
 		let Some((outbox, button)) = notify::parse_callback(&self.panel.key.telegram_callback_key(), chat_id, data) else {
-			tracing::warn!(chat = chat_id, "telegram: a button with data the panel did not sign");
+			tracing::warn!("telegram: a button with data the panel did not sign");
 			return Ok((Reply::BadButton, None));
 		};
 		let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection for a button")?;

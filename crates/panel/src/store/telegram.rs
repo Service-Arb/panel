@@ -24,38 +24,58 @@ fn role_of(raw: Option<String>) -> eyre::Result<Option<Role>> {
 
 // ── link tokens ─────────────────────────────────────────────────────────────────────────
 
-/// Stores a link token's hash; expired ones are dropped on the way.
+/// Stores a link token's hash, in place of any the user had before; expired ones are
+/// dropped on the way.
 pub async fn insert_link_token(conn: &mut PgConnection, hash: &[u8], user: Uuid, role: Role, display: &str, now: Timestamp, expires_at: Timestamp) -> eyre::Result<()> {
-	sqlx::query("DELETE FROM telegram_link_tokens WHERE expires_at <= $1")
+	sqlx::query("DELETE FROM telegram_link_tokens WHERE expires_at <= $1 OR user_id = $2")
 		.bind(to_pg(now)?)
+		.bind(user)
 		.execute(&mut *conn)
 		.await
 		.wrap_err("pruning link tokens")?;
-	sqlx::query("INSERT INTO telegram_link_tokens (token_hash, user_id, role, display_name, expires_at) VALUES ($1, $2, $3, $4, $5)")
+	sqlx::query("INSERT INTO telegram_link_tokens (token_hash, user_id, role, display_name, expires_at, issued_at) VALUES ($1, $2, $3, $4, $5, $6)")
 		.bind(hash)
 		.bind(user)
 		.bind(role.as_str())
 		.bind(display)
 		.bind(to_pg(expires_at)?)
+		.bind(to_pg(now)?)
 		.execute(&mut *conn)
 		.await
 		.wrap_err("storing a link token")?;
 	Ok(())
 }
 
+/// A redeemed link token: whose, their role and name, and when it was issued.
+#[derive(Clone, Debug)]
+pub struct Redeemed {
+	pub user_id: Uuid,
+	pub role: Role,
+	pub display_name: String,
+	pub issued_at: Timestamp,
+}
+
 /// Redeems a link token: whose it was, if it existed and had not expired. Gone either way,
-/// so a token opens at most one link.
-pub async fn redeem_link_token(conn: &mut PgConnection, hash: &[u8], now: Timestamp) -> eyre::Result<Option<(Uuid, Role, String)>> {
-	let row: Option<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as("DELETE FROM telegram_link_tokens WHERE token_hash = $1 RETURNING user_id, role, display_name, expires_at")
+/// so a token opens at most one link — unless the caller rolls its transaction back.
+pub async fn redeem_link_token(conn: &mut PgConnection, hash: &[u8], now: Timestamp) -> eyre::Result<Option<Redeemed>> {
+	type Row = (Uuid, String, String, DateTime<Utc>, Option<DateTime<Utc>>);
+	let row: Option<Row> = sqlx::query_as("DELETE FROM telegram_link_tokens WHERE token_hash = $1 RETURNING user_id, role, display_name, expires_at, issued_at")
 		.bind(hash)
 		.fetch_optional(&mut *conn)
 		.await
 		.wrap_err("redeeming a link token")?;
-	let Some((user, role, display, expires_at)) = row else { return Ok(None) };
-	if from_pg(expires_at)? <= now {
+	let Some((user_id, role, display_name, expires_at, issued_at)) = row else { return Ok(None) };
+	let expires_at = from_pg(expires_at)?;
+	if expires_at <= now {
 		return Ok(None);
 	}
-	Ok(Some((user, role.parse().wrap_err("a stored role")?, display)))
+	Ok(Some(Redeemed {
+		user_id,
+		role: role.parse().wrap_err("a stored role")?,
+		display_name,
+		// A token from before `issued_at` was stored: the earliest it could have been issued.
+		issued_at: issued_at.map(from_pg).transpose()?.unwrap_or(expires_at - crate::telegram::LINK_TTL),
+	}))
 }
 
 // ── links ───────────────────────────────────────────────────────────────────────────────
@@ -69,11 +89,13 @@ pub struct LinkRow {
 	pub role_checked_at: Timestamp,
 	pub display_name: String,
 	pub dead: bool,
+	/// The Telegram account: `@username`, else its first name.
+	pub account: Option<String>,
 }
 
-type LinkDb = (Uuid, i64, Option<String>, DateTime<Utc>, String, Option<DateTime<Utc>>);
+type LinkDb = (Uuid, i64, Option<String>, DateTime<Utc>, String, Option<DateTime<Utc>>, Option<String>, Option<String>);
 
-fn link_row((user_id, chat_id, role, checked, display_name, dead_at): LinkDb) -> eyre::Result<LinkRow> {
+fn link_row((user_id, chat_id, role, checked, display_name, dead_at, username, first_name): LinkDb) -> eyre::Result<LinkRow> {
 	Ok(LinkRow {
 		user_id,
 		chat_id,
@@ -81,7 +103,15 @@ fn link_row((user_id, chat_id, role, checked, display_name, dead_at): LinkDb) ->
 		role_checked_at: from_pg(checked)?,
 		display_name,
 		dead: dead_at.is_some(),
+		account: username.map(|u| format!("@{u}")).or(first_name),
 	})
+}
+
+// A macro, not a const, so every query stays a literal (`concat!`) that sqlx takes as audited.
+macro_rules! link_select {
+	() => {
+		"SELECT user_id, chat_id, role, role_checked_at, display_name, dead_at, tg_username, tg_first_name FROM telegram_links "
+	};
 }
 
 // A macro, not a const, so every query stays a literal (`concat!`) that sqlx takes as audited.
@@ -92,31 +122,38 @@ macro_rules! drop_pending {
 	};
 }
 
-/// Links `chat` to `user`: the user's previous chat and the chat's previous user are let go,
-/// with what the outbox still owed them.
-pub async fn link(conn: &mut PgConnection, user: Uuid, chat: i64, role: Role, display: &str, now: Timestamp) -> eyre::Result<()> {
-	sqlx::query(concat!(drop_pending!(), "((user_id = $2 AND chat_id <> $3) OR (chat_id = $3 AND user_id <> $2))"))
+/// The Telegram account behind a chat, as its `/start` said.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Account {
+	pub username: Option<String>,
+	pub first_name: Option<String>,
+}
+
+/// Links `chat` to the token's user, their role confirmed as of the token's issue. The user's
+/// previous chat is let go, with what the outbox still owed it. The caller has made sure the
+/// chat is no one else's.
+pub async fn link(conn: &mut PgConnection, t: &Redeemed, chat: i64, account: &Account, now: Timestamp) -> eyre::Result<()> {
+	sqlx::query(concat!(drop_pending!(), "user_id = $2 AND chat_id <> $3"))
 		.bind("relinked")
-		.bind(user)
+		.bind(t.user_id)
 		.bind(chat)
 		.execute(&mut *conn)
 		.await
 		.wrap_err("dropping what a relinked chat was owed")?;
-	sqlx::query("DELETE FROM telegram_links WHERE chat_id = $1 AND user_id <> $2")
-		.bind(chat)
-		.bind(user)
-		.execute(&mut *conn)
-		.await
-		.wrap_err("moving a chat to another user")?;
 	sqlx::query(
-		"INSERT INTO telegram_links (user_id, chat_id, linked_at, role, role_checked_at, display_name) VALUES ($1, $2, $3, $4, $3, $5) \
-		 ON CONFLICT (user_id) DO UPDATE SET chat_id = $2, linked_at = $3, role = $4, role_checked_at = $3, access_tried_at = NULL, display_name = $5, dead_at = NULL",
+		"INSERT INTO telegram_links (user_id, chat_id, linked_at, role, role_checked_at, display_name, tg_username, tg_first_name) \
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+		 ON CONFLICT (user_id) DO UPDATE SET chat_id = $2, linked_at = $3, role = $4, role_checked_at = $5, access_tried_at = NULL, \
+		 display_name = $6, dead_at = NULL, tg_username = $7, tg_first_name = $8",
 	)
-	.bind(user)
+	.bind(t.user_id)
 	.bind(chat)
 	.bind(to_pg(now)?)
-	.bind(role.as_str())
-	.bind(display)
+	.bind(t.role.as_str())
+	.bind(to_pg(t.issued_at)?)
+	.bind(&t.display_name)
+	.bind(&account.username)
+	.bind(&account.first_name)
 	.execute(&mut *conn)
 	.await
 	.wrap_err("linking a chat")?;
@@ -175,7 +212,7 @@ pub async fn chat_dead(conn: &mut PgConnection, chat: i64, now: Timestamp) -> ey
 }
 
 pub async fn link_of_user(conn: &mut PgConnection, user: Uuid) -> eyre::Result<Option<LinkRow>> {
-	let row: Option<LinkDb> = sqlx::query_as("SELECT user_id, chat_id, role, role_checked_at, display_name, dead_at FROM telegram_links WHERE user_id = $1")
+	let row: Option<LinkDb> = sqlx::query_as(concat!(link_select!(), "WHERE user_id = $1"))
 		.bind(user)
 		.fetch_optional(&mut *conn)
 		.await
@@ -184,7 +221,7 @@ pub async fn link_of_user(conn: &mut PgConnection, user: Uuid) -> eyre::Result<O
 }
 
 pub async fn link_of_chat(conn: &mut PgConnection, chat: i64) -> eyre::Result<Option<LinkRow>> {
-	let row: Option<LinkDb> = sqlx::query_as("SELECT user_id, chat_id, role, role_checked_at, display_name, dead_at FROM telegram_links WHERE chat_id = $1")
+	let row: Option<LinkDb> = sqlx::query_as(concat!(link_select!(), "WHERE chat_id = $1"))
 		.bind(chat)
 		.fetch_optional(&mut *conn)
 		.await
@@ -216,8 +253,14 @@ pub async fn access_tried(conn: &mut PgConnection, user: Uuid, now: Timestamp) -
 	Ok(())
 }
 
-/// A user's access is known to be gone: nothing more is sent to them.
+/// A user's access is known to be gone: nothing more is sent to them, queued or not.
 pub async fn access_lost(conn: &mut PgConnection, user: Uuid, now: Timestamp) -> eyre::Result<()> {
+	sqlx::query(concat!(drop_pending!(), "user_id = $2"))
+		.bind("access lost")
+		.bind(user)
+		.execute(&mut *conn)
+		.await
+		.wrap_err("dropping what a user without access was owed")?;
 	sqlx::query("UPDATE telegram_links SET role = NULL, role_checked_at = $2, access_tried_at = $2 WHERE user_id = $1")
 		.bind(user)
 		.bind(to_pg(now)?)
@@ -535,6 +578,14 @@ pub async fn claim_due(conn: &mut PgConnection, now: Timestamp, lease_until: Tim
 		.await
 		.wrap_err("taking the pacing lock")?;
 	let now_pg = to_pg(now)?;
+	let paused: Option<DateTime<Utc>> = sqlx::query_scalar("SELECT outbox_paused_until FROM telegram_poller")
+		.fetch_one(&mut *tx)
+		.await
+		.wrap_err("reading the outbox pause")?;
+	if paused.is_some_and(|p| p > now_pg) {
+		tx.commit().await.wrap_err("ending a claim")?;
+		return Ok(Vec::new());
+	}
 	let second_ago = to_pg(now - SignedDuration::from_secs(1))?;
 	let gap_ago = to_pg(now - PER_CHAT_GAP)?;
 	let started: i64 = sqlx::query_scalar("SELECT count(*) FROM telegram_outbox WHERE attempted_at > $1 AND attempted_at <= $2")
@@ -623,6 +674,81 @@ pub async fn retry(conn: &mut PgConnection, id: i64, chat: i64, at: Timestamp, e
 			.wrap_err("holding a chat back")?;
 	}
 	Ok(())
+}
+
+/// Telegram asked the bot to wait (429): nothing leaves the outbox before `until`, and the
+/// try is not counted against the message — the wait was the bot's, not the chat's.
+pub async fn pause(conn: &mut PgConnection, id: i64, until: Timestamp, error: &str) -> eyre::Result<()> {
+	let until = to_pg(until)?;
+	sqlx::query("UPDATE telegram_poller SET outbox_paused_until = GREATEST(COALESCE(outbox_paused_until, $1), $1)")
+		.bind(until)
+		.execute(&mut *conn)
+		.await
+		.wrap_err("pausing the outbox")?;
+	sqlx::query("UPDATE telegram_outbox SET attempts = attempts - 1, next_attempt_at = $2, leased_until = NULL, last_error = $3 WHERE id = $1")
+		.bind(id)
+		.bind(until)
+		.bind(error)
+		.execute(&mut *conn)
+		.await
+		.wrap_err("putting a message back")?;
+	Ok(())
+}
+
+/// Gives up on lead messages queued before `before`: past it they are news nobody needs.
+pub async fn expire_stale(conn: &mut PgConnection, before: Timestamp) -> eyre::Result<u64> {
+	Ok(sqlx::query(concat!(drop_pending!(), "rule IN ('new_lead', 'contact_overdue') AND created_at < $2"))
+		.bind("stale")
+		.bind(to_pg(before)?)
+		.execute(&mut *conn)
+		.await
+		.wrap_err("expiring stale messages")?
+		.rows_affected())
+}
+
+/// Chats with more than `over` lead messages waiting (none of them in flight): `(chat, user,
+/// how many)`.
+pub async fn crowded(conn: &mut PgConnection, over: i64, now: Timestamp) -> eyre::Result<Vec<(i64, Uuid, i64)>> {
+	sqlx::query_as(
+		"SELECT chat_id, min(user_id::text)::uuid, count(*) FROM telegram_outbox \
+		 WHERE state = 'pending' AND rule IN ('new_lead', 'contact_overdue') AND (leased_until IS NULL OR leased_until <= $2) \
+		 GROUP BY chat_id HAVING count(*) > $1",
+	)
+	.bind(over)
+	.bind(to_pg(now)?)
+	.fetch_all(&mut *conn)
+	.await
+	.wrap_err("finding crowded chats")
+}
+
+/// Gives up on a chat's waiting lead messages, a summary taking their place; how many.
+pub async fn fold_into_summary(conn: &mut PgConnection, chat: i64, now: Timestamp) -> eyre::Result<u64> {
+	Ok(sqlx::query(concat!(
+		drop_pending!(),
+		"chat_id = $2 AND rule IN ('new_lead', 'contact_overdue') AND (leased_until IS NULL OR leased_until <= $3)"
+	))
+	.bind("summarized")
+	.bind(chat)
+	.bind(to_pg(now)?)
+	.execute(&mut *conn)
+	.await
+	.wrap_err("folding messages into a summary")?
+	.rows_affected())
+}
+
+/// Whether the bot may send an unsolicited reply to `chat` now: at most one per `every`.
+pub async fn may_reply(conn: &mut PgConnection, chat: i64, now: Timestamp, every: SignedDuration) -> eyre::Result<bool> {
+	let taken: Option<i64> = sqlx::query_scalar(
+		"INSERT INTO telegram_replies (chat_id, last_at) VALUES ($1, $2) \
+		 ON CONFLICT (chat_id) DO UPDATE SET last_at = $2 WHERE telegram_replies.last_at <= $3 RETURNING chat_id",
+	)
+	.bind(chat)
+	.bind(to_pg(now)?)
+	.bind(to_pg(now - every)?)
+	.fetch_optional(&mut *conn)
+	.await
+	.wrap_err("throttling a reply")?;
+	Ok(taken.is_some())
 }
 
 /// Given up on.

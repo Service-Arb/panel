@@ -259,7 +259,7 @@ impl Panel {
 		if pruned > 0 {
 			tracing::debug!(pruned, "dropped expired sessions");
 		}
-		sessions::insert(&mut conn, key.as_bytes(), user_id, &self.sealed(&access, &refresh, tokens)).await?;
+		sessions::insert(&mut conn, key.as_bytes(), user_id, &self.sealed(&access, &refresh, tokens), now).await?;
 		Ok(Opened {
 			cookie,
 			expires_at: tokens.refresh_expires_at,
@@ -287,12 +287,13 @@ impl Panel {
 		self.session_of_key(key, now, refresher).await
 	}
 
-	/// The user's newest live session, rotated like [`Self::session`]: what the panel asks
-	/// concierge with on the user's behalf when there is no request of theirs to carry a
-	/// cookie (a Telegram button). `Missing` when they have none.
-	pub async fn session_of_user(&self, user_id: Uuid, now: Timestamp, refresher: &impl Refresher) -> Result<Session, SessionError> {
+	/// The user's newest live session used at or after `seen_since`, rotated like
+	/// [`Self::session`]: what the panel asks concierge with on the user's behalf when there
+	/// is no request of theirs to carry a cookie (a Telegram button). `Missing` when they have
+	/// none — so a session the user abandoned is not kept alive on their behalf.
+	pub async fn session_of_user(&self, user_id: Uuid, now: Timestamp, seen_since: Timestamp, refresher: &impl Refresher) -> Result<Session, SessionError> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
-		let id_hash = sessions::newest_of_user(&mut conn, user_id, now).await?.ok_or(SessionError::Missing)?;
+		let id_hash = sessions::newest_of_user(&mut conn, user_id, now, seen_since).await?.ok_or(SessionError::Missing)?;
 		drop(conn);
 		let key = SessionKey(id_hash.as_slice().try_into().wrap_err("a stored session key")?);
 		self.session_of_key(key, now, refresher).await
@@ -393,6 +394,12 @@ impl Panel {
 		let hash: [u8; 32] = h.finalize().into();
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a sign-in state")?;
 		sessions::consume_state(&mut conn, &hash, now, now + PRELOGIN_TTL).await
+	}
+
+	/// Marks a session used by its user (a request of theirs), at most once a minute.
+	pub async fn touch_session(&self, key: &SessionKey, now: Timestamp) -> eyre::Result<()> {
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
+		sessions::touch(&mut conn, key.as_bytes(), now).await
 	}
 
 	/// Closes a session; `false` when there was none.

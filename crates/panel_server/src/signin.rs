@@ -386,6 +386,10 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> 
 			return Err(Box::new(json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")));
 		}
 	};
+	// The user is here: the bot may ask concierge with this session for another week.
+	if let Err(e) = s.panel.touch_session(&session.key, Timestamp::now()).await {
+		crate::report(&e, "marking a session used");
+	}
 	let cached = if freshness == Freshness::Cached { s.cached_me(&session.key) } else { None };
 	let fresh = cached.is_none();
 	let me = match cached {

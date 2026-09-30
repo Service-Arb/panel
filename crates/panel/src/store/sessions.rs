@@ -54,10 +54,10 @@ pub struct SealedTokens<'a> {
 	pub expires_at: Timestamp,
 }
 
-pub async fn insert(conn: &mut PgConnection, id_hash: &[u8], user_id: Uuid, t: &SealedTokens<'_>) -> eyre::Result<()> {
+pub async fn insert(conn: &mut PgConnection, id_hash: &[u8], user_id: Uuid, t: &SealedTokens<'_>, now: Timestamp) -> eyre::Result<()> {
 	sqlx::query(
-		"INSERT INTO sessions (id_hash, user_id, access_sealed, access_expires_at, refresh_sealed, data_key_fp, expires_at) \
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+		"INSERT INTO sessions (id_hash, user_id, access_sealed, access_expires_at, refresh_sealed, data_key_fp, expires_at, last_seen_at) \
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
 	)
 	.bind(id_hash)
 	.bind(user_id)
@@ -66,6 +66,7 @@ pub async fn insert(conn: &mut PgConnection, id_hash: &[u8], user_id: Uuid, t: &
 	.bind(t.refresh)
 	.bind(t.data_key_fp.as_slice())
 	.bind(to_pg(t.expires_at)?)
+	.bind(to_pg(now)?)
 	.execute(&mut *conn)
 	.await
 	.wrap_err("opening a session")?;
@@ -195,14 +196,31 @@ pub async fn delete(conn: &mut PgConnection, id_hash: &[u8]) -> eyre::Result<boo
 	Ok(deleted == 1)
 }
 
-/// The id hash of the user's newest session still within its deadline.
-pub async fn newest_of_user(conn: &mut PgConnection, user_id: Uuid, now: Timestamp) -> eyre::Result<Option<Vec<u8>>> {
-	sqlx::query_scalar("SELECT id_hash FROM sessions WHERE user_id = $1 AND expires_at > $2 ORDER BY created_at DESC LIMIT 1")
-		.bind(user_id)
+/// The id hash of the user's newest session still within its deadline and used at or after
+/// `seen_since`.
+pub async fn newest_of_user(conn: &mut PgConnection, user_id: Uuid, now: Timestamp, seen_since: Timestamp) -> eyre::Result<Option<Vec<u8>>> {
+	sqlx::query_scalar(
+		"SELECT id_hash FROM sessions WHERE user_id = $1 AND expires_at > $2 AND COALESCE(last_seen_at, created_at) >= $3 \
+		 ORDER BY created_at DESC LIMIT 1",
+	)
+	.bind(user_id)
+	.bind(to_pg(now)?)
+	.bind(to_pg(seen_since)?)
+	.fetch_optional(&mut *conn)
+	.await
+	.wrap_err("finding a user's session")
+}
+
+/// Marks a session used at `now`; written at most once a minute.
+pub async fn touch(conn: &mut PgConnection, id_hash: &[u8], now: Timestamp) -> eyre::Result<()> {
+	sqlx::query("UPDATE sessions SET last_seen_at = $2 WHERE id_hash = $1 AND (last_seen_at IS NULL OR last_seen_at < $3)")
+		.bind(id_hash)
 		.bind(to_pg(now)?)
-		.fetch_optional(&mut *conn)
+		.bind(to_pg(now - jiff::SignedDuration::from_mins(1))?)
+		.execute(&mut *conn)
 		.await
-		.wrap_err("finding a user's session")
+		.wrap_err("marking a session used")?;
+	Ok(())
 }
 
 /// Drops the sessions past their deadline.

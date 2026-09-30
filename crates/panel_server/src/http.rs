@@ -102,9 +102,11 @@ pub fn app_with_telegram(sign_in: SignIn, limits: Limits, bot: BotName) -> Route
 	// Minting and revoking source keys asks concierge afresh: a grant revoked a moment ago
 	// must not still mint a key from the cache.
 	let key_changes = api::key_changes().route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate_fresh));
+	let telegram_state = TelegramState { panel: sign_in.panel.clone(), bot };
 	let telegram = telegram::routes()
 		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate))
-		.with_state(TelegramState { panel: sign_in.panel.clone(), bot });
+		.merge(telegram::link_routes().route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate_fresh)))
+		.with_state(telegram_state);
 	let api = bounded(
 		reads_and_edits.merge(key_changes).with_state(sign_in.panel.clone()).merge(telegram),
 		limits.api_concurrent,

@@ -30,9 +30,9 @@ use jiff::{SignedDuration, Timestamp};
 use panel::{
 	Panel,
 	operator::ActionError,
-	telegram::{Bot, Chat, Directory, InlineButton, Notifier, Update},
+	telegram::{Account, Bot, Chat, Directory, InlineButton, Notifier, Update},
 };
-use panel_core::notify::{Failure, Rule};
+use panel_core::notify::{Entity, Failure, Rendered, Rule};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{sync::watch, task::JoinSet};
@@ -123,6 +123,8 @@ impl BotApi {
 				Failure::RetryAfter(SignedDuration::from_secs(secs.clamp(1, 3600)))
 			}
 			403 => Failure::Blocked,
+			// The chat is gone as surely as a blocked one: no try will reach it.
+			400 if why.contains("chat not found") || why.contains("user is deactivated") => Failure::Blocked,
 			500..=599 => Failure::Transient(format!("{method}: {status} {why}")),
 			_ => Failure::Refused(format!("{method}: {status} {why}")),
 		})
@@ -148,13 +150,18 @@ impl BotApi {
 	}
 }
 
+/// The `code` spans, as the Bot API's `entities`.
+fn entities(m: &Rendered) -> Value {
+	json!(m.code.iter().map(|e| json!({"type": "code", "offset": e.offset, "length": e.length})).collect::<Vec<_>>())
+}
+
 fn keyboard(buttons: &[InlineButton]) -> Value {
 	json!({"inline_keyboard": buttons.iter().map(|b| json!([{"text": b.label, "callback_data": b.data}])).collect::<Vec<_>>()})
 }
 
 impl Bot for BotApi {
-	async fn send(&self, chat_id: i64, text: &str, buttons: &[InlineButton]) -> Result<i64, Failure> {
-		let mut body = json!({"chat_id": chat_id, "text": text, "link_preview_options": {"is_disabled": true}});
+	async fn send(&self, chat_id: i64, message: &Rendered, buttons: &[InlineButton]) -> Result<i64, Failure> {
+		let mut body = json!({"chat_id": chat_id, "text": message.text, "entities": entities(message), "link_preview_options": {"is_disabled": true}});
 		if !buttons.is_empty() {
 			body["reply_markup"] = keyboard(buttons);
 		}
@@ -164,9 +171,16 @@ impl Bot for BotApi {
 			.ok_or_else(|| Failure::Refused("sendMessage: no message_id".into()))
 	}
 
-	async fn edit(&self, chat_id: i64, message_id: i64, text: &str, buttons: &[InlineButton]) -> Result<(), Failure> {
+	async fn edit(&self, chat_id: i64, message_id: i64, message: &Rendered, buttons: &[InlineButton]) -> Result<(), Failure> {
 		// An empty keyboard, not none: that is what removes the buttons.
-		let body = json!({"chat_id": chat_id, "message_id": message_id, "text": text, "reply_markup": keyboard(buttons)});
+		let body = json!({
+			"chat_id": chat_id,
+			"message_id": message_id,
+			"text": message.text,
+			"entities": entities(message),
+			"link_preview_options": {"is_disabled": true},
+			"reply_markup": keyboard(buttons),
+		});
 		self.call("editMessageText", &body, None).await.map(drop)
 	}
 
@@ -186,16 +200,46 @@ pub fn parse_update(raw: &Value) -> Option<Update> {
 	};
 	if let Some(q) = raw.get("callback_query") {
 		let message = q.get("message")?;
+		// Only the `code` spans are kept: they are the ones the panel set, and what keeps a
+		// customer's words from turning into a link when the message is edited.
+		let code = message
+			.get("entities")
+			.and_then(Value::as_array)
+			.map(|all| {
+				all.iter()
+					.filter(|e| e.get("type").and_then(Value::as_str) == Some("code"))
+					.filter_map(|e| {
+						Some(Entity {
+							offset: usize::try_from(e.get("offset")?.as_u64()?).ok()?,
+							length: usize::try_from(e.get("length")?.as_u64()?).ok()?,
+						})
+					})
+					.collect()
+			})
+			.unwrap_or_default();
 		return Some(Update::Callback {
 			id: q.get("id")?.as_str()?.to_owned(),
 			chat_id: chat_of(message)?.id,
 			message_id: message.get("message_id")?.as_i64()?,
 			data: q.get("data").and_then(Value::as_str).unwrap_or_default().to_owned(),
-			text: message.get("text").and_then(Value::as_str).unwrap_or_default().to_owned(),
+			message: Rendered {
+				text: message.get("text").and_then(Value::as_str).unwrap_or_default().to_owned(),
+				code,
+			},
 		});
 	}
 	let message = raw.get("message")?;
 	let chat = chat_of(message)?;
+	// A forwarded `/start <token>` is someone else's link, passed on: never a link here.
+	if message.get("forward_origin").is_some() {
+		return Some(Update::Other { chat });
+	}
+	let from = message.get("from");
+	let field = |k: &str| from.and_then(|f| f.get(k)).and_then(Value::as_str).map(str::to_owned);
+	let account = Account {
+		username: field("username"),
+		first_name: field("first_name"),
+	};
 	let text = message.get("text").and_then(Value::as_str).unwrap_or_default().trim();
 	let (command, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
 	// `/start@evinvest_sa_bot` in a group names the bot; in a private chat it is the same.
@@ -204,6 +248,7 @@ pub fn parse_update(raw: &Value) -> Option<Update> {
 		"/start" => Update::Start {
 			chat,
 			payload: Some(rest.trim()).filter(|p| !p.is_empty()).map(str::to_owned),
+			from: account,
 		},
 		"/stop" => Update::Stop { chat },
 		_ => Update::Other { chat },
@@ -263,8 +308,14 @@ pub struct TelegramState {
 pub fn routes() -> Router<TelegramState> {
 	Router::new()
 		.route("/telegram", get(settings))
-		.route("/telegram/link", axum::routing::post(link).delete(unlink))
+		.route("/telegram/link", axum::routing::delete(unlink))
 		.route("/telegram/rules", put(set_rules))
+}
+
+/// `POST /telegram/link`: served behind `gate_fresh` — the role a link token carries is
+/// concierge's answer of this moment, not the cache's.
+pub fn link_routes() -> Router<TelegramState> {
+	Router::new().route("/telegram/link", axum::routing::post(link))
 }
 
 fn display(caller: &Caller) -> String {
@@ -282,6 +333,7 @@ async fn settings(State(s): State<TelegramState>, Extension(caller): Extension<C
 		"enabled": s.bot.configured(),
 		"linked": settings.linked,
 		"blocked": settings.blocked,
+		"account": settings.account,
 		"rules": rules,
 	})))
 }
@@ -482,20 +534,37 @@ mod tests {
 			parse_update(&message("private", "/start abc_-9")),
 			Some(Update::Start {
 				chat: private,
-				payload: Some("abc_-9".into())
+				payload: Some("abc_-9".into()),
+				from: Account::default()
 			})
 		);
-		assert_eq!(parse_update(&message("private", "/start")), Some(Update::Start { chat: private, payload: None }));
+		let from = Account { username: None, first_name: None };
+		assert_eq!(
+			parse_update(&message("private", "/start")),
+			Some(Update::Start {
+				chat: private,
+				payload: None,
+				from: from.clone()
+			})
+		);
+		let mut forwarded = message("private", "/start tok");
+		forwarded["message"]["forward_origin"] = json!({"type": "user"});
+		assert_eq!(parse_update(&forwarded), Some(Update::Other { chat: private }), "a forwarded link is not one");
+		let mut named = message("private", "/start tok");
+		named["message"]["from"] = json!({"id": 5, "username": "olga", "first_name": "Olga"});
+		assert!(matches!(parse_update(&named), Some(Update::Start { from: Account { username: Some(u), .. }, .. }) if u == "olga"));
 		assert_eq!(parse_update(&message("private", "/stop")), Some(Update::Stop { chat: private }));
 		assert_eq!(
 			parse_update(&message("group", "/start@evinvest_sa_bot tok")),
 			Some(Update::Start {
 				chat: Chat { id: 42, private: false },
-				payload: Some("tok".into())
+				payload: Some("tok".into()),
+				from: Account::default()
 			})
 		);
 		assert_eq!(parse_update(&message("private", "hello")), Some(Update::Other { chat: private }));
-		let cb = json!({"update_id": 2, "callback_query": {"id": "cb1", "data": "t.1.aa", "message": {"message_id": 9, "chat": {"id": 42, "type": "private"}, "text": "New lead"}}});
+		let cb = json!({"update_id": 2, "callback_query": {"id": "cb1", "data": "t.1.aa", "message": {"message_id": 9, "chat": {"id": 42, "type": "private"}, "text": "New lead",
+			"entities": [{"type": "code", "offset": 2, "length": 3}, {"type": "url", "offset": 0, "length": 1}]}}});
 		assert_eq!(
 			parse_update(&cb),
 			Some(Update::Callback {
@@ -503,7 +572,10 @@ mod tests {
 				chat_id: 42,
 				message_id: 9,
 				data: "t.1.aa".into(),
-				text: "New lead".into()
+				message: Rendered {
+					text: "New lead".into(),
+					code: vec![Entity { offset: 2, length: 3 }]
+				}
 			})
 		);
 		assert_eq!(parse_update(&json!({"update_id": 3, "edited_message": {}})), None);

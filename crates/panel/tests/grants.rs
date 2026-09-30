@@ -9,13 +9,13 @@ use panel::{
 	seal::DataKey,
 	session::{RefreshError, Refresher, SessionKey, Tokens},
 	store::Store,
-	telegram::{Bot, Chat, Directory, DirectoryError, Identity, InlineButton, Notifier, Update},
+	telegram::{Account, Bot, Chat, Directory, DirectoryError, Identity, InlineButton, Notifier, Update},
 	testing::{TestDb, event, sign},
 };
 use panel_core::{
 	event::SourceKind,
 	ids::{BrandId, LocationId},
-	notify::{Failure, Locale, Rule},
+	notify::{Failure, Locale, Rendered, Rule},
 	role::Role,
 };
 use serde_json::json;
@@ -52,11 +52,11 @@ struct FakeBot {
 }
 
 impl Bot for FakeBot {
-	async fn send(&self, _: i64, _: &str, _: &[InlineButton]) -> Result<i64, Failure> {
+	async fn send(&self, _: i64, _: &Rendered, _: &[InlineButton]) -> Result<i64, Failure> {
 		if self.blocked { Err(Failure::Blocked) } else { Ok(1) }
 	}
 
-	async fn edit(&self, _: i64, _: i64, _: &str, _: &[InlineButton]) -> Result<(), Failure> {
+	async fn edit(&self, _: i64, _: i64, _: &Rendered, _: &[InlineButton]) -> Result<(), Failure> {
 		Ok(())
 	}
 
@@ -201,6 +201,7 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		let start = |chat| Update::Start {
 			chat: Chat { id: chat, private: true },
 			payload: Some(token.to_string()),
+			from: Account::default(),
 		};
 		notifier(false).handle(start(7), now).await.unwrap();
 		panel.telegram_set_rules(user, Role::Operator, &[(Rule::NewLead, true)]).await.unwrap();
