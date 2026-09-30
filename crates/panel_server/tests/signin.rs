@@ -25,6 +25,7 @@ use panel_server::{
 	concierge::{CLIENT_ID, Concierge},
 	http,
 	signin::{SignIn, SignInConfig},
+	telegram,
 };
 use serde_json::{Value, json};
 use tonic::{Code, Request as GrpcRequest, Response as GrpcResponse, Status, transport::server::TcpIncoming};
@@ -729,4 +730,70 @@ async fn money_is_bounded_and_writes_are_idempotent() {
 	let payments = card.body["events"].as_array().unwrap().iter().filter(|e| e["type"] == "payment.received").count();
 	assert_eq!(payments, 1, "the retry journaled nothing");
 	assert_eq!(card.headers["x-content-type-options"], "nosniff");
+}
+
+// ── Telegram in the profile ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn the_profile_links_telegram_and_chooses_rules() {
+	let Some(db) = TestDb::create().await else { return };
+	let fake = FakeConcierge::default();
+	let addr = serve_fake(fake.clone()).await;
+	let panel = panel(&db).await;
+	let sign_in = SignIn::new(
+		panel.clone(),
+		Concierge::new(&addr, SECRET).unwrap(),
+		SignInConfig {
+			panel_origin: PANEL.to_owned(),
+			concierge_origin: "http://concierge.test".to_owned(),
+		},
+	);
+	let app = http::app_with_telegram(sign_in.clone(), http::Limits::default(), telegram::BotName::on(Some("@evinvest_sa_bot".into())));
+	let off = http::app_with(sign_in, http::Limits::default());
+	user(&fake, OPERATOR, "investor", Some("operator"));
+	// A link whose access was last confirmed long ago, and denied: the gate's GetMe renews it.
+	let pool = db.pool().await;
+	sqlx::query("INSERT INTO telegram_links (user_id, chat_id, linked_at, role, role_checked_at, display_name) VALUES ($1::uuid, 7, now(), NULL, '2026-01-01', 'x')")
+		.bind(OPERATOR)
+		.execute(&pool)
+		.await
+		.unwrap();
+	let mut b = Browser::default();
+	assert_eq!(b.get(&app, "/api/v1/telegram").await.status, StatusCode::UNAUTHORIZED);
+	b.sign_in(&app, &fake, None).await;
+
+	let got = b.get(&app, "/api/v1/telegram").await;
+	assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+	assert_eq!(
+		got.body,
+		json!({"enabled": true, "linked": true, "blocked": false, "rules": {"new_lead": true, "contact_overdue": true}}),
+		"an operator's rules, at their defaults"
+	);
+	let (role, name): (Option<String>, String) = sqlx::query_as("SELECT role, display_name FROM telegram_links").fetch_one(&pool).await.unwrap();
+	assert_eq!((role.as_deref(), name.as_str()), (Some("operator"), "Ann"), "the gate's GetMe confirmed the link");
+
+	assert_eq!(b.send(&app, Method::POST, "/api/v1/telegram/link", None, false).await.status, StatusCode::FORBIDDEN, "CSRF");
+	let link = b.send(&app, Method::POST, "/api/v1/telegram/link", None, true).await;
+	assert_eq!(link.status, StatusCode::CREATED, "{}", link.body);
+	let url = link.body["url"].as_str().unwrap();
+	let token = url.strip_prefix("https://t.me/evinvest_sa_bot?start=").unwrap();
+	assert!(token.len() == 43 && token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'), "{url}");
+
+	let muted = b.send(&app, Method::PUT, "/api/v1/telegram/rules", Some(json!({"rules": {"new_lead": false}})), true).await;
+	assert_eq!(muted.status, StatusCode::OK, "{}", muted.body);
+	assert_eq!(muted.body["rules"], json!({"new_lead": false, "contact_overdue": true}));
+	let admins = b
+		.send(&app, Method::PUT, "/api/v1/telegram/rules", Some(json!({"rules": {"payment_received": true}})), true)
+		.await;
+	assert_eq!(admins.status, StatusCode::BAD_REQUEST, "payments are the admins'");
+	let unknown = b.send(&app, Method::PUT, "/api/v1/telegram/rules", Some(json!({"rules": {"review_low": true}})), true).await;
+	assert_eq!(unknown.status, StatusCode::BAD_REQUEST, "not a rule yet");
+
+	assert_eq!(b.send(&app, Method::DELETE, "/api/v1/telegram/link", None, true).await.status, StatusCode::NO_CONTENT);
+	assert_eq!(b.send(&app, Method::DELETE, "/api/v1/telegram/link", None, true).await.status, StatusCode::NOT_FOUND);
+	assert_eq!(b.get(&app, "/api/v1/telegram").await.body["linked"], false);
+
+	// Without a bot the profile says so, and there is nothing to link.
+	assert_eq!(b.get(&off, "/api/v1/telegram").await.body["enabled"], false);
+	assert_eq!(b.send(&off, Method::POST, "/api/v1/telegram/link", None, true).await.status, StatusCode::SERVICE_UNAVAILABLE);
 }
