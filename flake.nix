@@ -130,8 +130,12 @@
           # this image: applies the build's migrations, then the runtime role's grants. It
           # reads the same settings as `serve` (APP_ENV=production requires `requiredEnv`),
           # plus MIGRATE_DATABASE_URL, which the app's own env must not carry.
+          #
+          # The binary by its image path, never its store path: Flux moves the image tag on
+          # its own, and every release has a new store path, so a pinned one would name a file
+          # the next image does not have (`contents` below puts it at /bin).
           migrate = {
-            command = [ "${bin}/bin/${pname}" "migrate" "--grant-to" runtimeRole ];
+            command = [ "/bin/${pname}" "migrate" "--grant-to" runtimeRole ];
             env = [ "MIGRATE_DATABASE_URL" ];
           };
           ingress = {
@@ -156,6 +160,8 @@
             # a source that gets a 5xx retries from its outbox; nothing is lost while down
             criticality = "normal";
             entrypoint = [ "${bin}/bin/${pname}" "serve" "--bind" "0.0.0.0:${toString port}" ];
+            # /bin/panel, the path `deploy.migrate.command` names
+            contents = [ bin ];
             # the production guards (`#[required_in("production")]`) are armed wherever it runs
             env = { APP_ENV = "production"; };
             imageEnv = [ "PANEL_WEB_DIR=${frontend}" ];

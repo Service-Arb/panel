@@ -71,9 +71,11 @@ impl Store {
 
 	pub async fn connect_with(options: PgConnectOptions) -> eyre::Result<Self> {
 		// A request waits at most this long for a connection, then fails: a pool drained by a
-		// burst answers 500 quickly instead of stacking every request behind it.
+		// burst answers 500 quickly instead of stacking every request behind it. Eight per pod:
+		// the runtime role is capped at 20 connections (devops app-databases.nix), and a
+		// rolling update runs two pods.
 		let pool = PgPoolOptions::new()
-			.max_connections(16)
+			.max_connections(8)
 			.acquire_timeout(std::time::Duration::from_secs(3))
 			.connect_with(options)
 			.await
