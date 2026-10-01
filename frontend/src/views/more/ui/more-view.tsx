@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Item, ItemContent, ItemGroup, ItemTitle } from "@evinvest/uikit";
-import { ArrowUpRight, KeyRound, LayoutGrid } from "lucide-react";
+import { ArrowUpRight, FlaskConical, KeyRound, LayoutGrid } from "lucide-react";
 import Link from "next/link";
 
 import { managesSources, useMe } from "@/entities/session";
@@ -24,6 +24,14 @@ export function MoreView() {
         {me.preferred_name || me.email} · {t(`nav.role.${me.role}`)}
       </p>
       <ItemGroup className="gap-2">
+        <Item variant="outline" size="sm" asChild>
+          <Link href={ROUTES.experiments}>
+            <FlaskConical aria-hidden className="size-4" />
+            <ItemContent>
+              <ItemTitle>{t("nav.experiments")}</ItemTitle>
+            </ItemContent>
+          </Link>
+        </Item>
         {managesSources(me.role) && (
           <Item variant="outline" size="sm" asChild>
             <Link href={ROUTES.sources}>

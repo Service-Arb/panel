@@ -1,4 +1,4 @@
-import { BarChart3, Ellipsis, Inbox, KeyRound, LayoutGrid, MapPin, type LucideIcon } from "lucide-react";
+import { BarChart3, Ellipsis, FlaskConical, Inbox, KeyRound, LayoutGrid, MapPin, type LucideIcon } from "lucide-react";
 
 import type { Role } from "@/entities/session";
 import { ROUTES } from "@/shared/config/routes";
@@ -20,6 +20,7 @@ export const SIDEBAR: readonly NavItem[] = [
   { href: ROUTES.overview, key: "nav.overview", icon: BarChart3 },
   { href: ROUTES.leads, key: "nav.leads", icon: Inbox },
   { href: ROUTES.places, key: "nav.places", icon: MapPin },
+  { href: ROUTES.experiments, key: "nav.experiments", icon: FlaskConical },
   { href: ROUTES.grafana, key: "nav.grafana", icon: LayoutGrid, external: true },
   { href: ROUTES.sources, key: "nav.sources", icon: KeyRound, roles: ["admin"] },
 ];
@@ -29,7 +30,7 @@ export const TABS: readonly NavItem[] = [
   { href: ROUTES.overview, key: "nav.overview", icon: BarChart3 },
   { href: ROUTES.leads, key: "nav.leads", icon: Inbox },
   { href: ROUTES.places, key: "nav.places", icon: MapPin },
-  { href: ROUTES.more, key: "nav.more", icon: Ellipsis, also: [ROUTES.sources] },
+  { href: ROUTES.more, key: "nav.more", icon: Ellipsis, also: [ROUTES.experiments, ROUTES.sources] },
 ];
 
 export function visibleTo(role: Role) {

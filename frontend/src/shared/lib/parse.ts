@@ -51,6 +51,11 @@ export function recordOf<const K extends readonly string[], T>(keys: K, p: Parse
   };
 }
 
+/** An object of any keys, every value checked by `p`: a map keyed by data, not by the contract. */
+export function dictOf<T>(p: Parser<T>): Parser<Record<string, T>> {
+  return (v, path) => Object.fromEntries(Object.entries(record(v, path)).map(([k, x]) => [k, p(x, `${path}.${k}`)]));
+}
+
 type Shape = Record<string, Parser<unknown>>;
 export type Parsed<S extends Shape> = { [K in keyof S]: ReturnType<S[K]> };
 
