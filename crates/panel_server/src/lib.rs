@@ -7,6 +7,7 @@
 pub mod api;
 pub mod concierge;
 pub mod cookies;
+pub mod counts;
 pub mod http;
 pub mod posthog;
 pub mod signin;
