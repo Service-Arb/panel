@@ -71,7 +71,6 @@
   "funnel.channel.booking": "запись",
   "funnel.edge.estimate": "оценка",
   "funnel.edge.body": "Дни и заявки считаются по-разному; переход между ними можно только оценить.",
-  "funnel.edge.stepPercent": "намерение → заявка ≈ {percent}% ({leads} из {intents})",
   "funnel.edge.stepCounts": "намерение → заявка: {leads} заявок на {intents} намерений",
   "funnel.leads.title": "По заявкам · панель",
   "funnel.ofPrevious": "от предыдущей",

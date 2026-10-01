@@ -20,19 +20,13 @@ describe("visits by source", () => {
 });
 
 describe("intent → lead across the edge", () => {
-  it("is two counts, never a percent, on fewer intents than the minimum sample", () => {
-    expect(intentToLead(4, 17, 30)).toEqual({ kind: "counts", leads: 4, intents: 17 });
-  });
-
-  it("is a whole percent from the minimum sample on", () => {
-    expect(intentToLead(43, 96, 30)).toEqual({ kind: "percent", percent: 45, leads: 43, intents: 96 });
-  });
-
-  it("is two counts when leads outnumber intents (calls with no click)", () => {
-    expect(intentToLead(50, 40, 30)).toEqual({ kind: "counts", leads: 50, intents: 40 });
+  it("is the two counts, never a percent, however many intents", () => {
+    expect(intentToLead(4, 17)).toEqual({ leads: 4, intents: 17 });
+    expect(intentToLead(430, 960)).toEqual({ leads: 430, intents: 960 });
+    expect(intentToLead(50, 40)).toEqual({ leads: 50, intents: 40 });
   });
 
   it("is nothing when no intent was counted", () => {
-    expect(intentToLead(5, 0, 30)).toBeNull();
+    expect(intentToLead(5, 0)).toBeNull();
   });
 });

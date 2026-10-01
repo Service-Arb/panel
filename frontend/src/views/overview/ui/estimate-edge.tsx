@@ -10,19 +10,19 @@ import { intentToLead } from "../model/site";
 /**
  * The seam between per-day aggregates and per-lead counts: nothing across it is
  * exact (§10.1). With intents counted, the step across it is given as an
- * estimate — a whole percent on enough intents, the two counts otherwise.
+ * estimate, and only as the two counts — never a percent.
  */
 export function EstimateEdge({ funnel }: { funnel: Funnel }) {
   const t = useT();
   const leads = funnel.stages[0]?.reached ?? 0;
-  const step = funnel.aggregate_source.imported_at === null ? null : intentToLead(leads, funnel.aggregate.intents.total, funnel.min_sample);
+  const step = funnel.aggregate_source.imported_at === null ? null : intentToLead(leads, funnel.aggregate.intents.total);
   return (
     <div className="flex flex-col gap-1 px-1 text-sm text-ink-soft" role="note">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <Badge variant="outline">{t("funnel.edge.estimate")}</Badge>
         {step && (
           <span className="tabular-nums text-ink-mid">
-            {step.kind === "percent" ? t("funnel.edge.stepPercent", { percent: step.percent, leads: step.leads, intents: step.intents }) : t("funnel.edge.stepCounts", { leads: step.leads, intents: step.intents })}
+            {t("funnel.edge.stepCounts", { leads: step.leads, intents: step.intents })}
           </span>
         )}
       </div>

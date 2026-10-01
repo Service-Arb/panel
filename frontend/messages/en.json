@@ -71,7 +71,6 @@
   "funnel.channel.booking": "booking",
   "funnel.edge.estimate": "estimate",
   "funnel.edge.body": "Days and leads are counted differently; the step between them can only be estimated.",
-  "funnel.edge.stepPercent": "intent → lead ≈ {percent}% ({leads} of {intents})",
   "funnel.edge.stepCounts": "intent → lead: {leads} leads to {intents} intents",
   "funnel.leads.title": "By lead · panel",
   "funnel.ofPrevious": "of previous",
