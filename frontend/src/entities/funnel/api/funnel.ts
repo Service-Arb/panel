@@ -1,6 +1,6 @@
 import { http } from "@/shared/api";
 
-import { type Funnel, funnelParser } from "../model/funnel";
+import { type Funnel, type FunnelByLocation, funnelByLocationParser, funnelParser } from "../model/funnel";
 
 export interface FunnelFilter {
   from: string;
@@ -10,4 +10,8 @@ export interface FunnelFilter {
 
 export function fetchFunnel(filter: FunnelFilter): Promise<Funnel> {
   return http.get("/api/v1/funnel", funnelParser, { from: filter.from, to: filter.to, brand: filter.brand });
+}
+
+export function fetchFunnelByLocation(filter: FunnelFilter): Promise<FunnelByLocation> {
+  return http.get("/api/v1/funnel", funnelByLocationParser, { from: filter.from, to: filter.to, brand: filter.brand, by: "location" });
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { biggestLoss, type FunnelStep } from "@/entities/funnel/model/funnel";
 import { translator } from "@/shared/i18n/translate";
-import { formatShare, shareOf } from "@/shared/lib/share";
+import { type Share, formatShare } from "@/shared/lib/share";
 
 const en = translator("en");
 const ru = translator("ru");
@@ -24,26 +24,15 @@ describe("a share on screen", () => {
   });
 });
 
-describe("a share counted in the browser", () => {
-  it("follows the backend's rule: no percent under 30, whole, half up", () => {
-    expect(shareOf(10, 29, 30)).toEqual({ n: 10, of: 29, percent: null, small_sample: true });
-    expect(shareOf(10, 30, 30).percent).toBe(33);
-    expect(shareOf(1, 40, 30).percent).toBe(3);
-    expect(shareOf(0, 0, 30).small_sample).toBe(true);
-  });
-
-  it("takes the minimum sample the backend answered with, not one of its own", () => {
-    expect(shareOf(10, 20, 20).percent).toBe(50);
-    expect(shareOf(10, 20, 50).percent).toBeNull();
-  });
-});
+/** A share as the backend would answer it; the percent does not matter to the biggest loss. */
+const shareOf = (n: number, of: number): Share => ({ n, of, percent: null, small_sample: true });
 
 describe("the biggest loss", () => {
   const step = (stage: FunnelStep["stage"], reached: number, prev: number | null): FunnelStep => ({
     stage,
     reached,
-    of_previous: prev === null ? null : shareOf(reached, prev, 30),
-    of_leads: shareOf(reached, 20, 30),
+    of_previous: prev === null ? null : shareOf(reached, prev),
+    of_leads: shareOf(reached, 20),
   });
 
   it("is the step that drops the most leads, counted in leads", () => {
