@@ -126,6 +126,10 @@ pub struct LeadFilter {
 	pub location: Option<LocationId>,
 	/// Only leads created before this and still waiting for their first contact.
 	pub waiting_since_before: Option<Timestamp>,
+	/// Only leads created at or after this.
+	pub created_from: Option<Timestamp>,
+	/// Only leads created before this.
+	pub created_before: Option<Timestamp>,
 	/// The last lead of the page before: `(sort_at, brand, lead)`.
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: i64,
@@ -142,6 +146,7 @@ pub async fn leads(conn: &mut PgConnection, f: &LeadFilter) -> eyre::Result<Vec<
 		"WHERE ($1::text IS NULL OR l.stage = $1) AND ($2::text IS NULL OR l.brand_id = $2) AND ($3::text IS NULL OR l.location_id = $3) \
 		 AND ($4::timestamptz IS NULL OR (l.stage = 'created' AND l.contacted_at IS NULL AND l.created_at < $4)) \
 		 AND ($5::timestamptz IS NULL OR (COALESCE(l.created_at, l.last_event_at), l.brand_id, l.lead_id) < ($5, $6, $7)) \
+		 AND ($9::timestamptz IS NULL OR l.created_at >= $9) AND ($10::timestamptz IS NULL OR l.created_at < $10) \
 		 ORDER BY sort_at DESC, l.brand_id DESC, l.lead_id DESC LIMIT $8"
 	))
 	.bind(f.stage.map(Stage::as_str))
@@ -152,6 +157,8 @@ pub async fn leads(conn: &mut PgConnection, f: &LeadFilter) -> eyre::Result<Vec<
 	.bind(after_brand)
 	.bind(after_lead)
 	.bind(f.limit)
+	.bind(f.created_from.map(to_pg).transpose()?)
+	.bind(f.created_before.map(to_pg).transpose()?)
 	.fetch_all(&mut *conn)
 	.await
 	.wrap_err("listing leads")?
@@ -259,30 +266,154 @@ pub async fn is_call_attempt(conn: &mut PgConnection, brand: &BrandId, lead: &Le
 		.wrap_err("looking up a call attempt")
 }
 
+/// A slice of the personal funnel: one location's, or every location's when both are `None`.
+#[derive(Clone, Debug)]
+pub struct FunnelRow {
+	pub brand_id: Option<String>,
+	pub location_id: Option<String>,
+	pub totals: Totals,
+}
+
 /// The personal funnel's totals over the leads that came in from `from` to `to`, UTC days,
 /// both included; for one brand or all.
 pub async fn funnel(conn: &mut PgConnection, from: NaiveDate, to: NaiveDate, brand: Option<&BrandId>) -> eyre::Result<Totals> {
-	type Sums = (i64, i64, i64, i64, i64, i64, i64, i64);
-	let s: Sums = sqlx::query_as(
-		"SELECT COALESCE(sum(leads), 0)::bigint, COALESCE(sum(contacted), 0)::bigint, COALESCE(sum(quoted), 0)::bigint, COALESCE(sum(won), 0)::bigint, \
-		 COALESCE(sum(completed), 0)::bigint, COALESCE(sum(paid), 0)::bigint, COALESCE(sum(lost_now), 0)::bigint, COALESCE(sum(manual), 0)::bigint \
-		 FROM reporting.funnel_daily WHERE day BETWEEN $1 AND $2 AND ($3::text IS NULL OR brand_id = $3)",
+	Ok(funnel_rows(conn, from, to, brand, false).await?.pop().map(|r| r.totals).unwrap_or_default())
+}
+
+/// [`funnel`], one row per location (a lead without one is under `None`) when `by_location`,
+/// else a single row, or none when no lead came in.
+pub async fn funnel_rows(conn: &mut PgConnection, from: NaiveDate, to: NaiveDate, brand: Option<&BrandId>, by_location: bool) -> eyre::Result<Vec<FunnelRow>> {
+	type Sums = (Option<String>, Option<String>, i64, i64, i64, i64, i64, i64, i64, i64);
+	let rows: Vec<Sums> = sqlx::query_as(
+		"SELECT CASE WHEN $4 THEN brand_id END, CASE WHEN $4 THEN location_id END, \
+		 sum(leads)::bigint, sum(contacted)::bigint, sum(quoted)::bigint, sum(won)::bigint, \
+		 sum(completed)::bigint, sum(paid)::bigint, sum(lost_now)::bigint, sum(manual)::bigint \
+		 FROM reporting.funnel_daily WHERE day BETWEEN $1 AND $2 AND ($3::text IS NULL OR brand_id = $3) \
+		 GROUP BY 1, 2 ORDER BY 1, 2 NULLS LAST",
 	)
 	.bind(from)
 	.bind(to)
 	.bind(brand.map(BrandId::as_str))
-	.fetch_one(&mut *conn)
+	.bind(by_location)
+	.fetch_all(&mut *conn)
 	.await
 	.wrap_err("summing the funnel")?;
-	let n = |v: i64| u64::try_from(v).wrap_err("a negative count");
-	Ok(Totals {
-		leads: n(s.0)?,
-		contacted: n(s.1)?,
-		quoted: n(s.2)?,
-		won: n(s.3)?,
-		completed: n(s.4)?,
-		paid: n(s.5)?,
-		lost: n(s.6)?,
-		manual: n(s.7)?,
-	})
+	rows.into_iter()
+		.map(|s| {
+			Ok(FunnelRow {
+				brand_id: s.0,
+				location_id: s.1,
+				totals: Totals {
+					leads: count(s.2)?,
+					contacted: count(s.3)?,
+					quoted: count(s.4)?,
+					won: count(s.5)?,
+					completed: count(s.6)?,
+					paid: count(s.7)?,
+					lost: count(s.8)?,
+					manual: count(s.9)?,
+				},
+			})
+		})
+		.collect()
+}
+
+fn count(v: i64) -> eyre::Result<u64> {
+	u64::try_from(v).wrap_err("a negative count")
+}
+
+/// What the leads a funnel counts were paid, in one currency: summed as they are, never
+/// converted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentSum {
+	pub brand_id: Option<String>,
+	pub location_id: Option<String>,
+	pub currency: String,
+	/// Minor units.
+	pub billed: i64,
+	/// Minor units.
+	pub commission: i64,
+	pub payments: u64,
+}
+
+/// The payments of the leads that came in from `from` to `to` — the funnel's cohort, whenever
+/// they were paid — per currency, and per location when `by_location` (keyed as
+/// [`funnel_rows`] keys its rows).
+pub async fn funnel_payments(conn: &mut PgConnection, from: NaiveDate, to: NaiveDate, brand: Option<&BrandId>, by_location: bool) -> eyre::Result<Vec<PaymentSum>> {
+	type Sums = (Option<String>, Option<String>, String, i64, i64, i64);
+	let rows: Vec<Sums> = sqlx::query_as(
+		"SELECT CASE WHEN $4 THEN l.brand_id END, CASE WHEN $4 THEN l.location_id END, p.currency, \
+		 sum(p.billed)::bigint, sum(p.commission)::bigint, count(*) \
+		 FROM payments p JOIN leads l ON l.brand_id = p.brand_id AND l.lead_id = p.lead_id \
+		 WHERE (l.created_at AT TIME ZONE 'UTC')::date BETWEEN $1 AND $2 AND ($3::text IS NULL OR l.brand_id = $3) \
+		 GROUP BY 1, 2, 3 ORDER BY 1, 2 NULLS LAST, 3",
+	)
+	.bind(from)
+	.bind(to)
+	.bind(brand.map(BrandId::as_str))
+	.bind(by_location)
+	.fetch_all(&mut *conn)
+	.await
+	.wrap_err("summing the payments")?;
+	rows.into_iter()
+		.map(|r| {
+			Ok(PaymentSum {
+				brand_id: r.0,
+				location_id: r.1,
+				currency: r.2,
+				billed: r.3,
+				commission: r.4,
+				payments: count(r.5)?,
+			})
+		})
+		.collect()
+}
+
+/// A brand's location that leads have come from, and when the newest came in.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlaceRow {
+	pub brand_id: String,
+	pub location_id: String,
+	/// `None` while its leads have only been seen before their creation.
+	pub last_lead_at: Option<Timestamp>,
+}
+
+/// Every location a lead names, by brand.
+pub async fn places(conn: &mut PgConnection) -> eyre::Result<Vec<PlaceRow>> {
+	let rows: Vec<(String, String, Option<DateTime<Utc>>)> =
+		sqlx::query_as("SELECT brand_id, location_id, max(created_at) FROM leads WHERE location_id IS NOT NULL GROUP BY brand_id, location_id ORDER BY brand_id, location_id")
+			.fetch_all(&mut *conn)
+			.await
+			.wrap_err("listing the places")?;
+	rows.into_iter()
+		.map(|(brand_id, location_id, at)| {
+			Ok(PlaceRow {
+				brand_id,
+				location_id,
+				last_lead_at: at.map(from_pg).transpose()?,
+			})
+		})
+		.collect()
+}
+
+/// How many leads are at each stage (the stages none is at are absent), and how many of
+/// them wait for their first contact since before `waiting_since_before`.
+pub async fn stage_counts(conn: &mut PgConnection, brand: Option<&BrandId>, location: Option<&LocationId>, waiting_since_before: Timestamp) -> eyre::Result<(Vec<(Stage, u64)>, u64)> {
+	let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+		"SELECT stage, count(*), count(*) FILTER (WHERE stage = 'created' AND contacted_at IS NULL AND created_at < $3) \
+		 FROM leads WHERE ($1::text IS NULL OR brand_id = $1) AND ($2::text IS NULL OR location_id = $2) GROUP BY stage",
+	)
+	.bind(brand.map(BrandId::as_str))
+	.bind(location.map(LocationId::as_str))
+	.bind(to_pg(waiting_since_before)?)
+	.fetch_all(&mut *conn)
+	.await
+	.wrap_err("counting the leads by stage")?;
+	let mut overdue = 0;
+	let mut stages = Vec::with_capacity(rows.len());
+	for (stage, n, late) in rows {
+		stages.push((stage.parse().wrap_err_with(|| format!("stored stage {stage}"))?, count(n)?));
+		overdue += count(late)?;
+	}
+	Ok((stages, overdue))
 }

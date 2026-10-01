@@ -48,6 +48,10 @@ ev_lib::settings! {
 		telegram_bot_username: Option<String>,
 		/// The language of the bot's messages: `ru` or `en`.
 		telegram_locale: String = "ru",
+		/// The front end's static export (`frontend/` built, its `out/`), served on the same
+		/// origin behind the API's routes; the image sets it. Unset: `serve` answers the API
+		/// alone, and says so.
+		panel_web_dir: Option<String>,
 		app_env: String = "development",
 	}
 }
@@ -84,6 +88,14 @@ impl std::fmt::Debug for TelegramSettings {
 }
 
 impl Settings {
+	/// The front end's files, when `PANEL_WEB_DIR` names them.
+	pub fn web(&self) -> eyre::Result<Option<panel_server::web::Files>> {
+		let Some(dir) = self.panel_web_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) else {
+			return Ok(None);
+		};
+		Ok(Some(panel_server::web::Files::new(std::path::Path::new(dir))?))
+	}
+
 	/// `None` without `TELEGRAM_BOT_TOKEN`: the bot is off.
 	pub fn telegram(&self) -> eyre::Result<Option<TelegramSettings>> {
 		let Some(token) = self.telegram_bot_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
@@ -198,6 +210,7 @@ mod tests {
 				"TELEGRAM_BOT_TOKEN",
 				"TELEGRAM_BOT_USERNAME",
 				"TELEGRAM_LOCALE",
+				"PANEL_WEB_DIR",
 				"APP_ENV"
 			]
 		);

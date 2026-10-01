@@ -44,6 +44,8 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
   src/api.rs                         the operator API: JSON over the engine's `operator` module
   src/telegram.rs                    the Bot API (reqwest), the bot's background work in
                                      `serve`, and /api/v1/telegram
+  src/web.rs                         the front end's static export (PANEL_WEB_DIR), behind
+                                     every other route
   src/settings.rs                    the environment (ev_lib `settings!`)
 contracts/proto/concierge/v1/        concierge's auth and directory protos, vendored at the
                                      commit in REV (`sync.sh` refreshes them)
@@ -135,9 +137,12 @@ every request is a new event (`201`).
 
 ```text
 GET    /me                                        {user_id, role, email, preferred_name}
-GET    /leads?stage&brand&location&overdue&cursor&limit
+GET    /leads?stage&brand&location&overdue&created_from&created_to&cursor&limit
                                                   {leads: [Lead], next_cursor}; newest created
-                                                  first, limit ≤ 200 (default 50)
+                                                  first, limit ≤ 200 (default 50); created_*
+                                                  UTC days, both included
+GET    /leads/counts?brand&location               {stages: {created: n, …, lost: n} (every
+                                                  stage, 0 included), overdue, total}
 POST   /leads                                     {brand, location, need, phone?} → 201
                                                   {brand, lead_id: "p-<uuidv7>", event_id}
 GET    /leads/{brand}/{lead}                      {lead: Lead, events: [Event]}
@@ -149,9 +154,17 @@ POST   /leads/{brand}/{lead}/calls/attempt        → 201 {attempt_id}
 POST   /leads/{brand}/{lead}/calls/{attempt}/outcome
                                                   {outcome: answered|no_answer|wrong_number|later}
 POST   /leads/{brand}/{lead}/payments             {billed, commission, currency}
-GET    /funnel?from&to&brand                      days, UTC, default the last 30, ≤ 366
-                                                  {stages: [{stage, reached, of_previous, of_leads}],
-                                                   lost, manual, min_sample}
+GET    /funnel?from&to&brand&by                   days, UTC, default the last 30, ≤ 366
+                                                  {from, to, brand, min_sample, stages: [{stage,
+                                                   reached, of_previous, of_leads}], lost, manual,
+                                                   payments: [Paid]}
+                                                  by=location: {from, to, brand, min_sample,
+                                                   by, locations: [{brand, location, stages, lost,
+                                                   manual, payments}]}, one per brand's location
+                                                   (location null for the leads naming none);
+                                                   an empty window has no rows
+GET    /places                                    {places: [{brand, location, last_lead_at}]}:
+                                                  every location a lead names
 GET    /sources                     admin         {sources: [{key_id, kind, brands, created_at,
                                                   revoked_at}]}
 POST   /sources                     admin, fresh  {key_id, kind, brands} → 201 {key_id, secret}
@@ -169,6 +182,11 @@ DELETE /telegram/link                             204, 404
 PUT    /telegram/rules      {rules: {new_lead: false, …}}
                                                   → 200 as GET; 400 for a rule not the role's
 ```
+
+The funnel counts the leads that came in (were created) within the window, and `Paid` —
+`{currency, billed, commission, count}` in minor units, one per currency, never converted —
+sums the payments of those same leads, whenever they were paid; so a slice's money and its
+`paid` step are about the same leads.
 
 `Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`, …)
 plus `sla` while it waits for its first contact — `{waiting_since, waiting_seconds,
@@ -303,12 +321,29 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
   and re-judge its status, derive the projections, add and revoke sources, read `reporting` —
   and refuses to start on a database that lacks a migration of its build. No command migrates
   on its own, not even in development: run `panel migrate` there too, with both URLs the same.
+  `panel migrate --grant-to panel_app` then applies that file too, as the owner, in one
+  transaction — what the deploy runs, so the image needs no `psql`.
 - **Secrets come from the environment only** (`DATABASE_URL`, `MIGRATE_DATABASE_URL`,
   `PANEL_DATA_KEY`, `SENTRY_DSN`, `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`),
   through `ev_lib::settings`; with `APP_ENV=production`, `DATABASE_URL`, `PANEL_DATA_KEY` and the
   four sign-in variables are required at boot (`panel --print-required-vars` lists them).
 
 ## Deploy requirements
+
+- **One image, one origin.** The image carries the binary and the front end's static
+  export, and sets `PANEL_WEB_DIR` to it; `serve` answers `/api`, `/auth` and `/health`
+  first, then the files (a directory by its `index.html`, anything else `404.html` with a
+  404). `/grafana` is held: a JSON 404 until the dashboards move there. `/_next/static/*`
+  is `immutable` for a year, everything else `no-cache` (the store's 1970 mtimes make
+  date revalidation meaningless, so the panel answers none); every page carries a CSP of
+  `default-src 'self'` with `'unsafe-inline'` for scripts and styles (Next's inline
+  bootstrap), `frame-ancestors 'none'`, `Referrer-Policy: same-origin`. Without
+  `PANEL_WEB_DIR`, `serve` answers the API alone and says so.
+- **The contract** (`nix eval .#containers.<system>.panel.contract`) names the port
+  (59120), `/health`, `APP_ENV=production`, the variables required, secret and optional,
+  the two Postgres roles, the migrate command, what the ingress must not publish or must
+  rate-limit, and the egress the pods need. `checks.contract-env` fails the flake when its
+  list of required variables and the binary's `--print-required-vars` disagree.
 
 - **Ingest stays inside the cluster.** Its sources (the landings, review_archive) reach it
   by service DNS (§3.3); the IngressRoute that publishes `sa.evinvest.ltd` must not route
@@ -325,8 +360,10 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
 - **Rate-limit `/auth` per client IP at Traefik** (a `RateLimit` middleware on the
   IngressRoute's `/auth` prefix, e.g. 10/min with a burst of 20). The panel bounds how many
   sign-ins run at once, not who starts them; per-IP limits are the edge's.
-- **Migrate, grant, then roll out.** A release that carries a migration runs `panel migrate`
-  (as a Job or an init container with `MIGRATE_DATABASE_URL`) before the new pods start, then
-  `deploy/panel_app.sql` as the owner, so a new table is granted too. Both roles, `panel_app`
+- **Migrate, grant, then roll out.** Before the new pods start, every release runs
+  `panel migrate --grant-to panel_app` (the contract's `migrate.command`; an init container
+  or a Job the rollout waits on) with `MIGRATE_DATABASE_URL` and the app's own settings
+  (`APP_ENV=production` asks for them at boot), so a new table is granted in the same step.
+  The app's pods must not carry `MIGRATE_DATABASE_URL`. Both roles, `panel_app`
   included, are the deploy's to create (devops); `sa_grafana` gets `USAGE` on `reporting` and
   `SELECT` on its views, nothing else.

@@ -13,13 +13,16 @@ use chrono::{DateTime, Utc};
 use eyre::WrapErr;
 use jiff::Timestamp;
 use sqlx::{
-	PgPool,
+	Connection, Executor, PgConnection, PgPool,
 	migrate::Migrator,
 	postgres::{PgConnectOptions, PgPoolOptions},
 };
 
 /// The schema, embedded from `migrations/`.
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// The runtime role's grants, written for a role named `panel_app`.
+const GRANTS: &str = include_str!("../../../../deploy/panel_app.sql");
 
 /// The panel's database.
 #[derive(Clone, Debug)]
@@ -40,6 +43,24 @@ impl Store {
 		MIGRATOR.run(&pool).await.wrap_err("applying migrations")?;
 		pool.close().await;
 		Ok(())
+	}
+
+	/// Grants `role` what the runtime needs (`deploy/panel_app.sql`), as the schema's owner,
+	/// in one transaction. Every grant is idempotent, so it runs after every migration: a
+	/// new table is granted in the same step that made it. The role itself is the deploy's.
+	pub async fn grant_runtime(options: PgConnectOptions, role: &str) -> eyre::Result<()> {
+		// A role name cannot be a bind parameter: it is spliced, so only a plain one is taken.
+		let plain = (1..=63).contains(&role.len())
+			&& role.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+			&& role.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+		eyre::ensure!(plain, "the runtime role is a plain lowercase name, like panel_app: {role:?}");
+		let mut conn = PgConnection::connect_with(&options).await.wrap_err("connecting to Postgres to grant")?;
+		let mut tx = conn.begin().await.wrap_err("beginning the grants")?;
+		tx.execute(sqlx::AssertSqlSafe(GRANTS.replace("panel_app", role)))
+			.await
+			.wrap_err_with(|| format!("granting {role} the runtime's rights (does the role exist?)"))?;
+		tx.commit().await.wrap_err("committing the grants")?;
+		conn.close().await.wrap_err("closing the grants' connection")
 	}
 
 	/// Connects as the runtime role, and refuses a database that lacks any of this build's

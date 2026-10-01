@@ -80,6 +80,74 @@
           auditable = false; # cargo-auditable doesn't support edition 2024
         };
 
+        # The front end's static export (`next build` → out/), served by `panel serve` from
+        # PANEL_WEB_DIR on the same origin as /api and /auth.
+        frontend = pkgs.buildNpmPackage {
+          pname = "${pname}-frontend";
+          version = manifest.version;
+          src = lib.cleanSourceWith {
+            src = lib.cleanSource ./frontend;
+            filter = path: _type: !(builtins.elem (baseNameOf path) [ "node_modules" ".next" "out" ]);
+          };
+          npmDepsHash = "sha256-JLhh6YjnFpUDTa2XJQ2HTQuAyO88pdVljKlJO2HVXjg=";
+          env = {
+            NEXT_TELEMETRY_DISABLED = "1";
+          };
+          # Turbopack talks to its node workers over a loopback socket, which the Darwin
+          # sandbox refuses unless asked.
+          __darwinAllowLocalNetworking = true;
+          # Turbopack's build stalls in the sandbox after "Compiled successfully" (its
+          # PostCSS worker never hands back); webpack makes the same export.
+          npmBuildFlags = [ "--" "--webpack" ];
+          # next writes its cache under HOME, which the sandbox does not have
+          preBuild = ''
+            export HOME="$TMPDIR"
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp -r out "$out"
+            runHook postInstall
+          '';
+        };
+
+        # What the deploy must provide, beyond what `container.implement` records. Plain
+        # data on the contract, read by the devops generator; `checks.contract-env` holds
+        # `requiredEnv` to the binary's own `--print-required-vars`.
+        runtimeRole = "panel_app";
+        deploy = {
+          # Settings::required_var_names("production"): the pod exits 78 without any of them
+          requiredEnv = [ "DATABASE_URL" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
+          # from the sops-backed Secret, never literal env
+          secretEnv = [ "DATABASE_URL" "MIGRATE_DATABASE_URL" "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" ];
+          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" ];
+          postgres = {
+            # the app's pods: the runtime role, holding deploy/panel_app.sql's grants only
+            runtime = { env = "DATABASE_URL"; role = runtimeRole; };
+            # the schema's owner: the migrate step alone carries it
+            owner = { env = "MIGRATE_DATABASE_URL"; };
+          };
+          # Before the new pods start (an initContainer, or a Job the rollout waits on), in
+          # this image: applies the build's migrations, then the runtime role's grants. It
+          # reads the same settings as `serve` (APP_ENV=production requires `requiredEnv`),
+          # plus MIGRATE_DATABASE_URL, which the app's own env must not carry.
+          migrate = {
+            command = [ "${bin}/bin/${pname}" "migrate" "--grant-to" runtimeRole ];
+            env = [ "MIGRATE_DATABASE_URL" ];
+          };
+          ingress = {
+            # in-cluster only, by service DNS (docs/ARCHITECTURE.md, Deploy requirements)
+            excludePathPrefixes = [ "/api/ingest" ];
+            # per client IP at the edge; the panel bounds concurrency, not who calls
+            rateLimitPathPrefixes = [ "/auth" ];
+          };
+          egress = {
+            postgres = true;
+            # concierge's gRPC, at the address CONCIERGE_GRPC_ADDR names
+            grpcEnv = [ "CONCIERGE_GRPC_ADDR" ];
+            hosts = [ "api.telegram.org:443" ];
+          };
+        };
+
         containerStd = v_flakes.container.implement {
           inherit pkgs pname;
           containers."" = {
@@ -88,8 +156,20 @@
             # a source that gets a 5xx retries from its outbox; nothing is lost while down
             criticality = "normal";
             entrypoint = [ "${bin}/bin/${pname}" "serve" "--bind" "0.0.0.0:${toString port}" ];
+            # the production guards (`#[required_in("production")]`) are armed wherever it runs
+            env = { APP_ENV = "production"; };
+            imageEnv = [ "PANEL_WEB_DIR=${frontend}" ];
           };
         };
+        # `implement` knows no key for the above, and throws on one it does not know.
+        containers = lib.mapAttrs (_: c: c // { contract = c.contract // deploy; }) containerStd.containers;
+
+        contractEnv = pkgs.runCommand "${pname}-contract-env" { } ''
+          ${bin}/bin/${pname} --print-required-vars production | sort > got
+          printf '%s\n' ${lib.escapeShellArgs deploy.requiredEnv} | sort > want
+          diff -u want got || { echo "flake.nix deploy.requiredEnv disagrees with the binary" >&2; exit 1; }
+          touch "$out"
+        '';
 
         help = pkgs.writeShellApplication {
           name = "help";
@@ -97,7 +177,8 @@
             cat <<'EOF'
             nix develop                       toolchain, postgresql
             nix build                         the panel binary
-            nix build .#${pname}-container    OCI image (Linux only)
+            nix build .#${pname}-container    OCI image, the front end in it (Linux only)
+            nix build .#frontend              the front end's static export
             nix run .#help                    this
             cargo test                        unit tests; the database ones need DATABASE_URL
                                               (a server the tests may CREATE DATABASE on)
@@ -113,10 +194,12 @@
 
         packages = {
           default = bin;
-          inherit bin;
+          inherit bin frontend;
         } // lib.optionalAttrs pkgs.stdenv.isLinux containerStd.packages;
 
-        containers = lib.optionalAttrs pkgs.stdenv.isLinux containerStd.containers;
+        containers = lib.optionalAttrs pkgs.stdenv.isLinux containers;
+
+        checks.contract-env = contractEnv;
 
         devShells.default =
           with pkgs;
