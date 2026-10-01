@@ -9,11 +9,12 @@ import { useSignOut } from "@/features/sign-out";
 import { ROUTES } from "@/shared/config/routes";
 import { useT } from "@/shared/i18n";
 import { PageHeader } from "@/shared/ui/page-header";
-import { TOUCH_TARGET } from "@/shared/ui/touch";
+import { useButtonSize } from "@/shared/ui/touch";
 
 /** The phone's fourth tab: what the sidebar holds beyond the three screens. */
 export function MoreView() {
   const t = useT();
+  const button = useButtonSize();
   const me = useMe();
   const signOut = useSignOut();
   return (
@@ -43,7 +44,7 @@ export function MoreView() {
           </a>
         </Item>
       </ItemGroup>
-      <Button variant="outline" className={`self-start ${TOUCH_TARGET}`} onClick={signOut}>
+      <Button variant="outline" size={button()} className="self-start" onClick={signOut}>
         {t("nav.signOut")}
       </Button>
     </div>

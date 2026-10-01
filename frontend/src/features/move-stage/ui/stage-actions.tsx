@@ -6,7 +6,7 @@ import { useState } from "react";
 import { type Lead, type StageMove, moveLead, refOf } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
-import { TOUCH_TARGET } from "@/shared/ui/touch";
+import { useButtonSize } from "@/shared/ui/touch";
 
 import { MOVES, type MoveKind } from "../model/moves";
 import { LostForm } from "./lost-form";
@@ -18,6 +18,7 @@ import { QuoteForm } from "./quote-form";
  */
 export function StageActions({ lead, onMoved }: { lead: Lead; onMoved: () => void }) {
   const t = useT();
+  const button = useButtonSize();
   const [open, setOpen] = useState<"quoted" | "lost" | null>(null);
   const [busy, setBusy] = useState(false);
   const moves = MOVES[lead.stage];
@@ -48,7 +49,7 @@ export function StageActions({ lead, onMoved }: { lead: Lead; onMoved: () => voi
   return (
     <div className="flex flex-wrap gap-2">
       {moves.map((kind) => (
-        <Button key={kind} className={TOUCH_TARGET} variant={kind === "lost" ? "ghost" : "outline"} disabled={busy} onClick={() => tap(kind)}>
+        <Button key={kind} size={button()} variant={kind === "lost" ? "ghost" : "outline"} disabled={busy} onClick={() => tap(kind)}>
           {t(`move.${kind}`)}
         </Button>
       ))}

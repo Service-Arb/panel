@@ -7,13 +7,14 @@ import { type AddedSource, SOURCE_KINDS, type SourceKind, addSource } from "@/en
 import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
-import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
+import { useButtonSize, useControlSize } from "@/shared/ui/touch";
 
 import { brandsFrom } from "../model/brands";
 
 /** A new signing key: its id, the one kind it writes as, and the brands it may write for. */
 export function AddSourceForm({ onAdded }: { onAdded: (added: AddedSource) => void }) {
   const t = useT();
+  const button = useButtonSize();
   const id = useId();
   const [keyId, setKeyId] = useState("");
   const [kind, setKind] = useState<SourceKind>("site");
@@ -69,7 +70,7 @@ export function AddSourceForm({ onAdded }: { onAdded: (added: AddedSource) => vo
         <Input id={`${id}-brands`} size={size} autoCapitalize="none" value={brandsText} onChange={(e) => setBrandsText(e.target.value)} />
         <FieldDescription>{t("sources.brands.hint")}</FieldDescription>
       </Field>
-      <Button type="submit" disabled={busy || !ready} className={`md:mb-6 ${TOUCH_TARGET}`}>
+      <Button type="submit" disabled={busy || !ready} size={button()} className="md:mb-6">
         {t("sources.add")}
       </Button>
     </form>

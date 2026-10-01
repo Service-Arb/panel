@@ -4,13 +4,14 @@ import { Button, Field, FieldLabel, Input, Textarea, toast } from "@evinvest/uik
 import { useId, useState } from "react";
 
 import { type LeadRef, createLead } from "@/entities/lead";
+import { type Place, locationsOf } from "@/entities/place";
 import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
-import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
+import { useButtonSize, useControlSize } from "@/shared/ui/touch";
 
-import { type Place, readLastPlace, writeLastPlace } from "../model/last-place";
+import { readLastPlace, writeLastPlace } from "../model/last-place";
 import { PlaceFields, type PlaceValue } from "./place-fields";
 
 const EMPTY: PlaceValue = { brand: "", location: null, custom: "" };
@@ -19,8 +20,9 @@ const EMPTY: PlaceValue = { brand: "", location: null, custom: "" };
  * "+ Call": a call that bypassed the form becomes a lead in three fields —
  * location (the last one by default), what they need, and the phone if given.
  */
-export function CreateLeadButton({ brands, places, onCreated }: { brands: string[]; places: Place[]; onCreated: (ref: LeadRef) => void }) {
+export function CreateLeadButton({ brands, places, onCreated }: { brands: string[]; places: readonly Pick<Place, "brand" | "location">[]; onCreated: (ref: LeadRef) => void }) {
   const t = useT();
+  const button = useButtonSize();
   const id = useId();
   const [open, setOpen] = useState(false);
   const [place, setPlace] = useState<PlaceValue>(EMPTY);
@@ -29,7 +31,7 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
   const [busy, setBusy] = useState(false);
   const size = useControlSize();
 
-  const locations = [...new Set(places.filter((p) => p.brand === place.brand).map((p) => p.location))].sort();
+  const locations = place.brand ? locationsOf(places, place.brand) : [];
   const location = place.location ?? place.custom.trim();
   const ready = place.brand !== "" && isSlug(location) && need.trim() !== "";
 
@@ -58,7 +60,7 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
 
   return (
     <>
-      <Button className={TOUCH_TARGET} onClick={openForm}>{t("leads.newCall")}</Button>
+      <Button size={button()} onClick={openForm}>{t("leads.newCall")}</Button>
       <PanelOverlay open={open} onOpenChange={setOpen} title={t("create.title")} description={t("create.description")} desktop="dialog">
         <form
           className="flex flex-col gap-3"
@@ -76,7 +78,7 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
             <FieldLabel htmlFor={`${id}-phone`}>{t("create.phone")}</FieldLabel>
             <Input id={`${id}-phone`} size={size} type="tel" inputMode="tel" autoComplete="off" value={phone} onChange={(e) => setPhone(e.target.value)} />
           </Field>
-          <Button type="submit" size="lg" className={TOUCH_TARGET} disabled={busy || !ready}>
+          <Button type="submit" size={button("lg")} disabled={busy || !ready}>
             {t("create.submit")}
           </Button>
         </form>

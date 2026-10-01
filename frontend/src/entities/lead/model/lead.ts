@@ -1,4 +1,4 @@
-import { type Infer, arrayOf, bool, nullable, num, object, oneOf, record, str } from "@/shared/lib/parse";
+import { type Infer, arrayOf, bool, nullable, num, object, oneOf, record, recordOf, str } from "@/shared/lib/parse";
 
 /** `panel_core::lead::Stage`, in its order; `lost` can be reached from any of them. */
 export const STAGES = ["created", "contacted", "quoted", "won", "completed", "paid", "lost"] as const;
@@ -52,6 +52,10 @@ export type LeadPage = Infer<typeof leadPageParser>;
 
 export const leadCardParser = object({ lead: leadParser, events: arrayOf(leadEventParser) });
 export type LeadCard = Infer<typeof leadCardParser>;
+
+/** `GET /leads/counts`: leads by their current stage (every stage, 0 included), and how many are overdue. */
+export const leadCountsParser = object({ stages: recordOf(STAGES, num), overdue: num, total: num });
+export type LeadCounts = Infer<typeof leadCountsParser>;
 
 /** `panel_core::funnel::CONTACT_SLA`: a new lead is overdue after this long without contact. */
 export const CONTACT_SLA_SECONDS = 30 * 60;

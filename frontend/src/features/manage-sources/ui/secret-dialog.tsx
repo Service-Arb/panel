@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import type { AddedSource } from "@/entities/source";
 import { useT } from "@/shared/i18n";
-import { TOUCH_TARGET } from "@/shared/ui/touch";
+import { useButtonSize } from "@/shared/ui/touch";
 
 /**
  * The new key's secret, once: the backend keeps it sealed and never returns it
@@ -13,6 +13,7 @@ import { TOUCH_TARGET } from "@/shared/ui/touch";
  */
 export function SecretDialog({ added, onClose }: { added: AddedSource | null; onClose: () => void }) {
   const t = useT();
+  const button = useButtonSize();
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -39,10 +40,10 @@ export function SecretDialog({ added, onClose }: { added: AddedSource | null; on
         </DialogHeader>
         <code className="block break-all rounded-md border border-border bg-muted p-3 font-mono text-sm text-ink select-all">{added?.secret}</code>
         <DialogFooter>
-          <Button variant="outline" className={TOUCH_TARGET} onClick={copy}>
+          <Button variant="outline" size={button()} onClick={copy}>
             {copied ? t("sources.secret.copied") : t("sources.secret.copy")}
           </Button>
-          <Button className={TOUCH_TARGET} onClick={close}>{t("sources.secret.done")}</Button>
+          <Button size={button()} onClick={close}>{t("sources.secret.done")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

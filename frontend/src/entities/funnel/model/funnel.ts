@@ -15,16 +15,38 @@ const stepParser = object({
 });
 export type FunnelStep = Infer<typeof stepParser>;
 
-export const funnelParser = object({
+/**
+ * What a slice's leads were paid in one currency, in its minor units. One row per
+ * currency and never converted: a sum across currencies would be a number of ours.
+ */
+const paidParser = object({ currency: str, billed: num, commission: num, count: num });
+export type Paid = Infer<typeof paidParser>;
+
+/** A slice's own numbers — the whole funnel's, or one location's. */
+const slice = {
+  stages: arrayOf(stepParser),
+  lost: shareParser,
+  manual: shareParser,
+  payments: arrayOf(paidParser),
+};
+
+export const funnelParser = object({ from: str, to: str, brand: nullable(str), min_sample: num, ...slice });
+export type Funnel = Infer<typeof funnelParser>;
+
+/** One location's slice; `location` is null for the leads that name none. */
+const locationSliceParser = object({ brand: str, location: nullable(str), ...slice });
+export type LocationSlice = Infer<typeof locationSliceParser>;
+
+/** `GET /funnel?by=location`: a row per location that had leads in the window, none for an empty one. */
+export const funnelByLocationParser = object({
   from: str,
   to: str,
   brand: nullable(str),
   min_sample: num,
-  stages: arrayOf(stepParser),
-  lost: shareParser,
-  manual: shareParser,
+  by: oneOf(["location"]),
+  locations: arrayOf(locationSliceParser),
 });
-export type Funnel = Infer<typeof funnelParser>;
+export type FunnelByLocation = Infer<typeof funnelByLocationParser>;
 
 /**
  * The step that loses the most leads, counted in leads (a percent may be

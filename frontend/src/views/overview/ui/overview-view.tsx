@@ -5,8 +5,8 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { fetchFunnel } from "@/entities/funnel";
+import { brandsOf, usePlaces } from "@/entities/place";
 import { FunnelFilters, type Period, periodFrom, rangeOf } from "@/features/funnel-filters";
-import { KNOWN_BRANDS } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { useResource } from "@/shared/lib/use-resource";
 import { ErrorState } from "@/shared/ui/error-state";
@@ -25,6 +25,7 @@ export function OverviewView() {
   // Fixed when the screen opens: a range that moved mid-render would refetch in a loop.
   const [now] = useState(() => new Date());
   const range = rangeOf(period, now);
+  const places = usePlaces();
   const funnel = useResource(`funnel:${range.from}:${range.to}:${brand ?? ""}`, () => fetchFunnel({ ...range, brand }));
 
   const update = (patch: { period?: Period; brand?: string | null }) => {
@@ -38,7 +39,7 @@ export function OverviewView() {
   return (
     <div className="flex flex-col gap-4 p-4 md:p-6">
       <PageHeader title={t("nav.overview")}>
-        <FunnelFilters period={period} brand={brand} brands={[...new Set([...KNOWN_BRANDS, ...(brand ? [brand] : [])])]} onChange={update} />
+        <FunnelFilters period={period} brand={brand} brands={brandsOf(places, brand)} onChange={update} />
       </PageHeader>
       <div className="flex max-w-3xl flex-col gap-3">
         <DailyBlock />

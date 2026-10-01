@@ -1,64 +1,108 @@
 import { describe, expect, it } from "vitest";
 
-import type { Lead, LeadPage } from "@/entities/lead/model/lead";
-import { aggregatePlaces, loadWindow } from "@/views/places/model/aggregate";
+import { funnelByLocationParser, funnelParser } from "@/entities/funnel/model/funnel";
+import { brandsOf, locationsOf, placesParser } from "@/entities/place/model/place";
+import { translator } from "@/shared/i18n/translate";
+import { parse } from "@/shared/lib/parse";
+import { formatShare } from "@/shared/lib/share";
+import { placeRows } from "@/views/places/model/rows";
 
-function lead(over: Partial<Lead>): Lead {
-  return {
-    brand: "aquafix",
-    lead_id: "L",
-    location: "lyon-3",
-    job_id: null,
-    stage: "created",
-    channel: "form",
-    manual: false,
-    created_at: "2026-09-20T10:00:00Z",
-    contacted_at: null,
-    quoted_at: null,
-    won_at: null,
-    completed_at: null,
-    paid_at: null,
-    lost_at: null,
-    lost_reason: null,
-    last_event_at: "2026-09-20T10:00:00Z",
-    sla: null,
-    pii: null,
-    ...over,
-  };
+const en = translator("en");
+
+const small = (n: number, of: number) => ({ n, of, percent: null, small_sample: true });
+const big = (n: number, of: number, percent: number) => ({ n, of, percent, small_sample: false });
+
+/** A slice's steps as the backend answers them: `reached` and the share of the slice's leads. */
+function stages(leads: number, reached: Record<string, number>, share: (n: number, of: number) => object) {
+  return ["created", "contacted", "quoted", "won", "completed", "paid"].map((stage, i) => ({
+    stage,
+    reached: stage === "created" ? leads : (reached[stage] ?? 0),
+    of_previous: i === 0 ? null : share(reached[stage] ?? 0, leads),
+    of_leads: share(stage === "created" ? leads : (reached[stage] ?? 0), leads),
+  }));
 }
 
-describe("locations counted in the browser", () => {
-  it("count a stage as reached by its time or any later one, lost leads included", () => {
-    const rows = aggregatePlaces(
-      [
-        lead({ lead_id: "a" }),
-        lead({ lead_id: "b", stage: "lost", contacted_at: "2026-09-20T11:00:00Z", lost_at: "2026-09-21T00:00:00Z" }),
-        lead({ lead_id: "c", stage: "paid", paid_at: "2026-09-25T00:00:00Z" }),
-        lead({ lead_id: "d", location: "lyon-7" }),
-        lead({ lead_id: "old", created_at: "2026-08-01T00:00:00Z" }),
-      ],
-      "2026-09-01T00:00:00.000Z",
-    );
-    expect(rows).toEqual([
-      { brand: "aquafix", location: "lyon-3", leads: 3, contacted: 2, won: 1, paid: 1 },
-      { brand: "aquafix", location: "lyon-7", leads: 1, contacted: 0, won: 0, paid: 0 },
+const lyon = { brand: "aquafix", location: "lyon-7", stages: stages(3, { contacted: 2, won: 1, paid: 1 }, small), lost: small(0, 3), manual: small(0, 3), payments: [{ currency: "EUR", billed: 23_100, commission: 2_310, count: 1 }] };
+const range = { from: "2026-09-02", to: "2026-10-01", brand: null, min_sample: 30 };
+
+const byLocation = {
+  ...range,
+  by: "location",
+  locations: [
+    lyon,
+    { brand: "aquafix", location: null, stages: stages(1, {}, small), lost: small(0, 1), manual: small(1, 1), payments: [] },
+    {
+      brand: "vifnet",
+      location: "paris-11",
+      stages: stages(40, { contacted: 30, won: 12, paid: 10 }, (n, of) => big(n, of, Math.round((n * 100) / of))),
+      lost: big(4, 40, 10),
+      manual: big(0, 40, 0),
+      payments: [],
+    },
+  ],
+};
+
+describe("the per-location funnel", () => {
+  it("parses /funnel?by=location, a location of null included", () => {
+    const funnel = parse(funnelByLocationParser, byLocation);
+    expect(funnel.min_sample).toBe(30);
+    expect(funnel.locations.map((l) => l.location)).toEqual(["lyon-7", null, "paris-11"]);
+    expect(funnel.locations[0]?.payments).toEqual([{ currency: "EUR", billed: 23_100, commission: 2_310, count: 1 }]);
+  });
+
+  it("refuses the whole funnel's answer where the slices are expected", () => {
+    const whole = { ...range, stages: lyon.stages, lost: lyon.lost, manual: lyon.manual, payments: [] };
+    expect(() => parse(funnelByLocationParser, whole)).toThrow(/\$\.by/);
+  });
+
+  it("reads payments in the whole funnel, one row per currency", () => {
+    const payments = [...lyon.payments, { currency: "GBP", billed: 9_000, commission: 900, count: 2 }];
+    const funnel = parse(funnelParser, { ...range, stages: lyon.stages, lost: lyon.lost, manual: lyon.manual, payments });
+    expect(funnel.payments.map((p) => p.currency)).toEqual(["EUR", "GBP"]);
+  });
+});
+
+describe("location cards", () => {
+  const rows = placeRows(parse(funnelByLocationParser, byLocation).locations);
+
+  it("are busiest first, the leads with no location kept as their own row", () => {
+    expect(rows.map((r) => [r.brand, r.location, r.leads])).toEqual([
+      ["vifnet", "paris-11", 40],
+      ["aquafix", "lyon-7", 3],
+      ["aquafix", null, 1],
     ]);
   });
 
-  it("stop paging at the window's edge, and give up past the limit", async () => {
-    const pages: Record<string, LeadPage> = {
-      first: { leads: [lead({ created_at: "2026-09-29T00:00:00Z" })], next_cursor: "c2" },
-      c2: { leads: [lead({ created_at: "2026-08-01T00:00:00Z" })], next_cursor: "c3" },
-    };
-    const seen: (string | null)[] = [];
-    const fetchPage = async (cursor: string | null) => {
-      seen.push(cursor);
-      return pages[cursor ?? "first"] ?? { leads: [], next_cursor: null };
-    };
-    expect((await loadWindow(fetchPage, "2026-09-01T00:00:00Z")).complete).toBe(true);
-    expect(seen).toEqual([null, "c2"]);
+  it("show a small sample as n of m and never a percent", () => {
+    const lyon = rows.find((r) => r.location === "lyon-7");
+    expect(lyon?.steps.map((s) => s.stage)).toEqual(["contacted", "won", "paid"]);
+    const shown = lyon?.steps.map((s) => formatShare(s.share, en));
+    expect(shown).toEqual(["2 of 3", "1 of 3", "1 of 3"]);
+    expect(shown?.join(" ")).not.toMatch(/%/);
+  });
 
-    const endless = async () => ({ leads: [lead({ created_at: "2026-09-29T00:00:00Z" })], next_cursor: "more" });
-    expect((await loadWindow(endless, "2026-09-01T00:00:00Z", 3)).complete).toBe(false);
+  it("show the backend's percent once the sample is large enough", () => {
+    expect(rows[0]?.steps.map((s) => formatShare(s.share, en))).toEqual(["75%", "30%", "25%"]);
+  });
+});
+
+describe("the places the filters offer", () => {
+  const places = parse(placesParser, {
+    places: [
+      { brand: "vifnet", location: "paris-11", last_lead_at: "2026-09-30T10:00:00Z" },
+      { brand: "aquafix", location: "lyon-7", last_lead_at: null },
+      { brand: "aquafix", location: "lyon-3", last_lead_at: "2026-09-29T10:00:00Z" },
+    ],
+  }).places;
+
+  it("are the brands /places names, plus the one already chosen", () => {
+    expect(brandsOf(places)).toEqual(["aquafix", "vifnet"]);
+    expect(brandsOf(places, "newbrand")).toEqual(["aquafix", "newbrand", "vifnet"]);
+  });
+
+  it("are a brand's own locations, plus the one already chosen", () => {
+    expect(locationsOf(places, "aquafix")).toEqual(["lyon-3", "lyon-7"]);
+    expect(locationsOf(places, "aquafix", "lyon-9")).toEqual(["lyon-3", "lyon-7", "lyon-9"]);
+    expect(locationsOf(places, null)).toEqual(["lyon-3", "lyon-7", "paris-11"]);
   });
 });

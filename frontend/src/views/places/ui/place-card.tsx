@@ -2,23 +2,17 @@
 
 import { Card, CardContent, CardHeader, CardTitle, Progress } from "@evinvest/uikit";
 
-import { type MessageKey, useT } from "@/shared/i18n";
-import { formatShare, shareOf } from "@/shared/lib/share";
+import { useT } from "@/shared/i18n";
+import { formatShare } from "@/shared/lib/share";
 
-import type { PlaceRow } from "../model/aggregate";
-
-const STEPS: readonly { key: MessageKey; of: "contacted" | "won" | "paid" }[] = [
-  { key: "places.contacted", of: "contacted" },
-  { key: "places.won", of: "won" },
-  { key: "places.paid", of: "paid" },
-];
+import type { PlaceRow } from "../model/rows";
 
 /**
  * One location's mini funnel against its leads. A bar is a proportion, so it is
  * drawn only where a percent could be said too (spec §10.1); a small sample is
  * "n of m" and nothing more.
  */
-export function PlaceCard({ row, minSample }: { row: PlaceRow; minSample: number }) {
+export function PlaceCard({ row }: { row: PlaceRow }) {
   const t = useT();
   return (
     <Card className="gap-3 py-4">
@@ -33,16 +27,13 @@ export function PlaceCard({ row, minSample }: { row: PlaceRow; minSample: number
           <span />
           <span className="tabular-nums text-ink">{row.leads}</span>
         </div>
-        {STEPS.map(({ key, of }) => {
-          const share = shareOf(row[of], row.leads, minSample);
-          return (
-            <div key={key} className="grid grid-cols-(--grid-place-step) items-center gap-2 text-sm">
-              <span className="text-ink-mid">{t(key)}</span>
-              {share.small_sample || share.percent === null ? <span /> : <Progress value={share.percent} aria-label={t(key)} />}
-              <span className="tabular-nums text-ink">{formatShare(share, t)}</span>
-            </div>
-          );
-        })}
+        {row.steps.map(({ stage, share }) => (
+          <div key={stage} className="grid grid-cols-(--grid-place-step) items-center gap-2 text-sm">
+            <span className="text-ink-mid">{t(`places.${stage}`)}</span>
+            {share.small_sample || share.percent === null ? <span /> : <Progress value={share.percent} aria-label={t(`places.${stage}`)} />}
+            <span className="tabular-nums text-ink">{formatShare(share, t)}</span>
+          </div>
+        ))}
       </CardContent>
     </Card>
   );
