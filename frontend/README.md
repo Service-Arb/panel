@@ -1,15 +1,15 @@
 # Panel front end
 
 Next.js (App Router), Feature-Sliced Design, `@evinvest/uikit`. The screens are the
-ones of `SA-PANEL-SPEC.md` §10 (hybrid 1+2): Overview, Leads, Locations, Sources
-(admin), and on a phone a bottom tab bar with "More" in place of the sidebar.
+ones of `SA-PANEL-SPEC.md` §10 (hybrid 1+2): Overview, Leads, Locations, Experiments,
+Sources (admin), and on a phone a bottom tab bar with "More" in place of the sidebar.
 
 ```text
 app/                 routes: (panel)/ is everything behind sign-in, signed-out/ is not
 src/views/           one slice per screen, plus shell/ (sidebar, tab bar, access states)
 src/features/        call-lead · move-stage · record-payment · create-lead ·
                      lead-filters · funnel-filters · manage-sources · sign-out
-src/entities/        session · lead · funnel · place · source — types, response checks, requests
+src/entities/        session · lead · funnel · experiment · place · source — types, response checks, requests
 src/shared/          api/ (fetch, CSRF, the gate's answers), i18n/, lib/, ui/
 messages/            en.json (the source of keys) and ru.json
 scripts/dev-stub.ts  a stand-in backend for local work
@@ -21,7 +21,7 @@ tests/               vitest, in Node: the rules the screens obey live in plain m
 ```sh
 npm ci
 npm run dev:stub     # :3121 — the operator API over made-up leads; STUB_ROLE=admin, STUB_ME=401|403|503,
-                     # STUB_MIN_SAMPLE=2 for percents on so few leads
+                     # STUB_MIN_SAMPLE=2 for percents on so few leads, STUB_POSTHOG=off for no import yet
 npm run dev          # :3120 — proxies /api and /auth to PANEL_DEV_BACKEND (default the stub)
 ```
 
@@ -52,7 +52,8 @@ aquafix has one. What that needs of the backend and the flake:
 
 ## What the API does not answer yet
 
-- **Stages 1–4** (Maps, site) arrive with the GBP and PostHog imports (phase 2);
-  until then the overview says so rather than showing zeros.
+- **Stages 1–2** (Maps) arrive with the GBP import; until then the overview says so
+  rather than showing zeros. Stages 3–4 (site) and the experiments come from the
+  PostHog import, and say "not connected" the same way while `imported_at` is null.
 - **Lost reasons** are a slug the backend takes freely; the panel offers a fixed
   list (`features/move-stage/model/moves.ts`) so the reports can group by it.
