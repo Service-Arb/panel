@@ -22,18 +22,23 @@ function stages(leads: number, reached: Record<string, number>, share: (n: numbe
   }));
 }
 
-const lyon = { brand: "aquafix", location: "lyon-7", stages: stages(3, { contacted: 2, won: 1, paid: 1 }, small), lost: small(0, 3), manual: small(0, 3), payments: [{ currency: "EUR", billed: 23_100, commission: 2_310, count: 1 }] };
-const range = { from: "2026-09-02", to: "2026-10-01", brand: null, min_sample: 30 };
+/** The day counts every slice carries now; the location cards do not read them. */
+const none = { phone: 0, whatsapp: 0, form_open: 0, booking: 0 };
+const aggregate = { stages: [{ stage: "site.visit", total: 0, by_source: {}, days: [] }, { stage: "contact.intent", total: 0, by_channel: none, days: [] }] };
+
+const lyon = { brand: "aquafix", location: "lyon-7", aggregate, stages: stages(3, { contacted: 2, won: 1, paid: 1 }, small), lost: small(0, 3), manual: small(0, 3), payments: [{ currency: "EUR", billed: 23_100, commission: 2_310, count: 1 }] };
+const range = { from: "2026-09-02", to: "2026-10-01", brand: null, min_sample: 30, aggregate_source: { source: "posthog", kind: "aggregate", imported_at: null } };
 
 const byLocation = {
   ...range,
   by: "location",
   locations: [
     lyon,
-    { brand: "aquafix", location: null, stages: stages(1, {}, small), lost: small(0, 1), manual: small(1, 1), payments: [] },
+    { brand: "aquafix", location: null, aggregate, stages: stages(1, {}, small), lost: small(0, 1), manual: small(1, 1), payments: [] },
     {
       brand: "vifnet",
       location: "paris-11",
+      aggregate,
       stages: stages(40, { contacted: 30, won: 12, paid: 10 }, (n, of) => big(n, of, Math.round((n * 100) / of))),
       lost: big(4, 40, 10),
       manual: big(0, 40, 0),
@@ -57,7 +62,7 @@ describe("the per-location funnel", () => {
 
   it("reads payments in the whole funnel, one row per currency", () => {
     const payments = [...lyon.payments, { currency: "GBP", billed: 9_000, commission: 900, count: 2 }];
-    const funnel = parse(funnelParser, { ...range, stages: lyon.stages, lost: lyon.lost, manual: lyon.manual, payments });
+    const funnel = parse(funnelParser, { ...range, aggregate, stages: lyon.stages, lost: lyon.lost, manual: lyon.manual, payments });
     expect(funnel.payments.map((p) => p.currency)).toEqual(["EUR", "GBP"]);
   });
 });
