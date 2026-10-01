@@ -37,6 +37,7 @@
   "filter.segment.new": "Новые",
   "filter.segment.inProgress": "В работе",
   "filter.segment.quotes": "Сметы",
+  "filter.segment.count": "{label} · {n}",
   "stage.created": "Новая",
   "stage.contacted": "Контакт",
   "stage.quoted": "Смета",

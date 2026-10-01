@@ -4,7 +4,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger, Label, Switch, but
 import { ChevronDown } from "lucide-react";
 import { useId } from "react";
 
-import { type LeadFilter, STAGES } from "@/entities/lead";
+import { type LeadCounts, type LeadFilter, STAGES } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
 import { FilterSelect } from "@/shared/ui/filter-select";
@@ -13,7 +13,7 @@ import { useButtonSize } from "@/shared/ui/touch";
 import { stageOrNull } from "../model/params";
 import { StageSegments } from "./stage-segments";
 
-type Props = { filter: LeadFilter; brands: string[]; locations: string[]; onChange: (patch: Partial<LeadFilter>) => void };
+type Props = { filter: LeadFilter; brands: string[]; locations: string[]; counts: LeadCounts | null; onChange: (patch: Partial<LeadFilter>) => void };
 
 /**
  * Stage, brand, location and "overdue only" — the questions the queue is sorted
@@ -44,7 +44,7 @@ export function LeadFilters(props: Props) {
   const more = filter.brand !== null || filter.location !== null || filter.overdue;
   return (
     <div className="flex flex-col gap-2">
-      <StageSegments stage={filter.stage} onChange={(stage) => onChange({ stage })} />
+      <StageSegments stage={filter.stage} counts={props.counts} onChange={(stage) => onChange({ stage })} />
       <Collapsible defaultOpen={more} className="flex flex-col gap-2">
         <CollapsibleTrigger className={buttonVariants({ variant: "ghost", size: button("sm"), className: "group self-start px-1" })}>
           {t("filter.more")}

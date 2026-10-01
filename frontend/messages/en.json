@@ -37,6 +37,7 @@
   "filter.segment.new": "New",
   "filter.segment.inProgress": "In progress",
   "filter.segment.quotes": "Quotes",
+  "filter.segment.count": "{label} · {n}",
   "stage.created": "New",
   "stage.contacted": "Contacted",
   "stage.quoted": "Quoted",
