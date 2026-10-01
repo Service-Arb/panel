@@ -6,9 +6,10 @@ import { useT } from "@/shared/i18n";
 import { FilterSelect } from "@/shared/ui/filter-select";
 
 import { PERIODS, type Period, periodFrom } from "../model/period";
+import type { FilterPatch } from "../model/use-filter-params";
 
 /** Period and brand: all the overview is cut by (spec §10.1 — nothing it cannot answer). */
-export function FunnelFilters({ period, brand, brands, onChange }: { period: Period; brand: string | null; brands: string[]; onChange: (patch: { period?: Period; brand?: string | null }) => void }) {
+export function FunnelFilters({ period, brand, brands, onChange }: { period: Period; brand: string | null; brands: string[]; onChange: (patch: FilterPatch) => void }) {
   const t = useT();
   return (
     <div className="flex flex-wrap items-center gap-2">
