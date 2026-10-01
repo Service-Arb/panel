@@ -7,10 +7,13 @@ import { useT } from "@/shared/i18n";
 import { formatShare } from "@/shared/lib/share";
 import { EmptyState } from "@/shared/ui/empty-state";
 
+import { PaidLines } from "./paid-lines";
+
 /**
  * Stages 5–10, counted per lead. Each step says how many of the step before it
  * reached it — as a percent only when the sample allows, otherwise "n of m" —
- * and the step that loses the most leads is marked.
+ * and the step that loses the most leads is marked. Under "Paid", the money
+ * those leads brought, per currency.
  */
 export function LeadsBlock({ funnel }: { funnel: Funnel }) {
   const t = useT();
@@ -42,6 +45,7 @@ export function LeadsBlock({ funnel }: { funnel: Funnel }) {
                       {t("funnel.biggestLoss")} {t("funnel.lostCount", { n: step.of_previous.of - step.reached })}
                     </Badge>
                   )}
+                  {step.stage === "paid" && <PaidLines payments={funnel.payments} />}
                 </li>
               );
             })}

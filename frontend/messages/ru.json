@@ -66,6 +66,8 @@
   "funnel.lostCount": "−{n}",
   "funnel.lost": "Отказы: {share}",
   "funnel.manual": "Введено вручную: {share}",
+  "funnel.paid.billed": "Оплачено · {amount}",
+  "funnel.paid.commission": "комиссия {amount}",
   "funnel.empty": "За этот период заявок нет",
   "funnel.empty.body": "Выберите период длиннее или другой бренд.",
   "funnel.range": "{from} – {to}, UTC",

@@ -66,6 +66,8 @@
   "funnel.lostCount": "−{n}",
   "funnel.lost": "Lost: {share}",
   "funnel.manual": "Entered by hand: {share}",
+  "funnel.paid.billed": "Paid · {amount}",
+  "funnel.paid.commission": "commission {amount}",
   "funnel.empty": "No leads in this period",
   "funnel.empty.body": "Pick a longer period or another brand.",
   "funnel.range": "{from} – {to}, UTC",
