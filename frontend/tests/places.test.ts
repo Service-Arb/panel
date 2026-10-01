@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { funnelByLocationParser, funnelParser } from "@/entities/funnel/model/funnel";
+import { brandsOf, locationsOf, placesParser } from "@/entities/place/model/place";
 import { translator } from "@/shared/i18n/translate";
 import { parse } from "@/shared/lib/parse";
 import { formatShare } from "@/shared/lib/share";
@@ -82,5 +83,26 @@ describe("location cards", () => {
 
   it("show the backend's percent once the sample is large enough", () => {
     expect(rows[0]?.steps.map((s) => formatShare(s.share, en))).toEqual(["75%", "30%", "25%"]);
+  });
+});
+
+describe("the places the filters offer", () => {
+  const places = parse(placesParser, {
+    places: [
+      { brand: "vifnet", location: "paris-11", last_lead_at: "2026-09-30T10:00:00Z" },
+      { brand: "aquafix", location: "lyon-7", last_lead_at: null },
+      { brand: "aquafix", location: "lyon-3", last_lead_at: "2026-09-29T10:00:00Z" },
+    ],
+  }).places;
+
+  it("are the brands /places names, plus the one already chosen", () => {
+    expect(brandsOf(places)).toEqual(["aquafix", "vifnet"]);
+    expect(brandsOf(places, "newbrand")).toEqual(["aquafix", "newbrand", "vifnet"]);
+  });
+
+  it("are a brand's own locations, plus the one already chosen", () => {
+    expect(locationsOf(places, "aquafix")).toEqual(["lyon-3", "lyon-7"]);
+    expect(locationsOf(places, "aquafix", "lyon-9")).toEqual(["lyon-3", "lyon-7", "lyon-9"]);
+    expect(locationsOf(places, null)).toEqual(["lyon-3", "lyon-7", "paris-11"]);
   });
 });

@@ -5,10 +5,10 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { type Lead, type LeadFilter, type LeadRef, decodeRef, encodeRef, refOf } from "@/entities/lead";
+import { brandsOf, locationsOf, usePlaces } from "@/entities/place";
 import { CallFlowProvider, OutcomeSheet } from "@/features/call-lead";
 import { CreateLeadButton } from "@/features/create-lead";
 import { LeadFilters, leadFilterFrom, paramsWith } from "@/features/lead-filters";
-import { KNOWN_BRANDS } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
 import { EmptyState } from "@/shared/ui/empty-state";
@@ -22,8 +22,6 @@ import { useLeadList } from "../model/use-lead-list";
 import { LeadCardPanel } from "./lead-card-panel";
 import { LeadList } from "./lead-list";
 import { LeadTable } from "./lead-table";
-
-const uniq = (xs: string[]) => [...new Set(xs)].sort();
 
 export function LeadsView() {
   const t = useT();
@@ -57,9 +55,9 @@ export function LeadsView() {
   const filtered = filter.stage !== null || filter.brand !== null || filter.location !== null || filter.overdue;
 
   const leads: Lead[] = list.status === "ok" ? list.leads : [];
-  const places = leads.flatMap((l) => (l.location ? [{ brand: l.brand, location: l.location }] : []));
-  const brands = uniq([...KNOWN_BRANDS, ...leads.map((l) => l.brand)]);
-  const locations = uniq(places.filter((p) => !filter.brand || p.brand === filter.brand).map((p) => p.location).concat(filter.location ?? []));
+  const places = usePlaces(version);
+  const brands = brandsOf(places, filter.brand);
+  const locations = locationsOf(places, filter.brand, filter.location);
 
   return (
     <CallFlowProvider onLogged={changed}>

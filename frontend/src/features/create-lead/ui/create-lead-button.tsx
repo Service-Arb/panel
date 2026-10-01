@@ -4,13 +4,14 @@ import { Button, Field, FieldLabel, Input, Textarea, toast } from "@evinvest/uik
 import { useId, useState } from "react";
 
 import { type LeadRef, createLead } from "@/entities/lead";
+import { type Place, locationsOf } from "@/entities/place";
 import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
 import { useButtonSize, useControlSize } from "@/shared/ui/touch";
 
-import { type Place, readLastPlace, writeLastPlace } from "../model/last-place";
+import { readLastPlace, writeLastPlace } from "../model/last-place";
 import { PlaceFields, type PlaceValue } from "./place-fields";
 
 const EMPTY: PlaceValue = { brand: "", location: null, custom: "" };
@@ -19,7 +20,7 @@ const EMPTY: PlaceValue = { brand: "", location: null, custom: "" };
  * "+ Call": a call that bypassed the form becomes a lead in three fields —
  * location (the last one by default), what they need, and the phone if given.
  */
-export function CreateLeadButton({ brands, places, onCreated }: { brands: string[]; places: Place[]; onCreated: (ref: LeadRef) => void }) {
+export function CreateLeadButton({ brands, places, onCreated }: { brands: string[]; places: readonly Pick<Place, "brand" | "location">[]; onCreated: (ref: LeadRef) => void }) {
   const t = useT();
   const button = useButtonSize();
   const id = useId();
@@ -30,7 +31,7 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
   const [busy, setBusy] = useState(false);
   const size = useControlSize();
 
-  const locations = [...new Set(places.filter((p) => p.brand === place.brand).map((p) => p.location))].sort();
+  const locations = place.brand ? locationsOf(places, place.brand) : [];
   const location = place.location ?? place.custom.trim();
   const ready = place.brand !== "" && isSlug(location) && need.trim() !== "";
 
