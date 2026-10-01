@@ -2,6 +2,7 @@ export const ROUTES = {
   overview: "/overview",
   leads: "/leads",
   places: "/places",
+  experiments: "/experiments",
   sources: "/sources",
   more: "/more",
   signedOut: "/signed-out",
