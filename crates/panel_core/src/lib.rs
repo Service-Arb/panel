@@ -6,6 +6,8 @@
 //! - [`fact`]: the registered event types, typed and checked;
 //! - [`lead`]: a lead's stage and stage times, folded from its facts;
 //! - [`funnel`]: shares no more precise than the data, and the contact SLA;
+//! - [`metrics`]: the aggregate stages and the experiments' daily counts, and how a newer
+//!   count of a day replaces an older one;
 //! - [`experiment`]: a variant against its control, no more sure than the data;
 //! - [`signature`]: how a source signs a batch, and how the panel checks it;
 //! - [`role`]: who may do what inside the panel;
@@ -17,6 +19,7 @@ pub mod fact;
 pub mod funnel;
 pub mod ids;
 pub mod lead;
+pub mod metrics;
 pub mod notify;
 pub mod role;
 pub mod signature;
