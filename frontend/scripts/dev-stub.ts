@@ -6,6 +6,7 @@
  *   npm run dev:stub                  # :3121, signed in as an operator
  *   STUB_ROLE=admin npm run dev:stub  # as an admin
  *   STUB_ME=403 npm run dev:stub      # the gate refusing: 401 | 403 | 503
+ *   STUB_MIN_SAMPLE=2 npm run dev:stub  # percents (and bars) from 2 leads, not 30
  *
  * then `npm run dev` in another shell. Data is made up and says so ("stub").
  */
@@ -16,6 +17,7 @@ const PORT = Number(process.env.STUB_PORT ?? 3121);
 const ROLE = process.env.STUB_ROLE === "admin" ? "admin" : "operator";
 const ME_FAILURE = process.env.STUB_ME;
 const CSRF = "stub-csrf";
+const MIN_SAMPLE = Number(process.env.STUB_MIN_SAMPLE ?? 30);
 
 type Json = Record<string, unknown>;
 const now = () => new Date();
@@ -25,21 +27,22 @@ const minsAgo = (m: number) => iso(new Date(now().getTime() - m * 60_000));
 interface StubLead {
   brand: string;
   lead_id: string;
-  location: string;
+  location: string | null;
   stage: string;
   manual: boolean;
   times: Record<string, string>;
   lost_reason: string | null;
   pii: Json;
   events: Json[];
+  payments: { billed: number; commission: number; currency: string }[];
 }
 
-function makeLead(i: number, stage: string, minutes: number, pii: Json, location = "lyon-3", brand = "aquafix"): StubLead {
+function makeLead(i: number, stage: string, minutes: number, pii: Json, location: string | null = "lyon-3", brand = "aquafix"): StubLead {
   const created = minsAgo(minutes);
   const order = ["created", "contacted", "quoted", "won", "completed", "paid"];
   const times: Record<string, string> = { created_at: created };
   for (const s of order.slice(1, order.indexOf(stage) + 1)) times[`${s}_at`] = minsAgo(minutes - 10);
-  return { brand, lead_id: `stub-${i}`, location, stage, manual: false, times, lost_reason: null, pii, events: [event("lead.created", { channel: "form" }, "site", created)] };
+  return { brand, lead_id: `stub-${i}`, location, stage, manual: false, times, lost_reason: null, pii, events: [event("lead.created", { channel: "form" }, "site", created)], payments: [] };
 }
 
 function event(type: string, properties: Json, kind = "panel", at = iso(now())): Json {
@@ -54,7 +57,11 @@ const leads: StubLead[] = [
   makeLead(5, "won", 60 * 80, { phone: "+33 6 00 00 00 05", need: "Drain cleaning" }),
   makeLead(6, "paid", 60 * 200, { name: "Emma (stub)", need: "Shower repair" }, "lyon-7"),
   makeLead(7, "created", 3, { need: "Office cleaning 120 m²" }, "paris-11", "vifnet"),
+  makeLead(8, "paid", 60 * 300, { name: "Jules (stub)", need: "New water heater" }),
+  makeLead(9, "contacted", 60 * 30, { need: "Called without saying where" }, null),
 ];
+leads[5]!.payments.push({ billed: 23_100, commission: 2_310, currency: "EUR" });
+leads[7]!.payments.push({ billed: 208_000, commission: 20_800, currency: "EUR" }, { billed: 9_050, commission: 0, currency: "GBP" });
 
 const sources: Json[] = [{ key_id: "aquafix-site", kind: "site", brands: ["aquafix"], created_at: minsAgo(60 * 24 * 10), revoked_at: null }];
 
@@ -74,19 +81,60 @@ function leadDto(l: StubLead): Json {
 }
 
 function share(n: number, of: number): Json {
-  const percent = of >= 30 ? Math.floor((n * 100 + Math.floor(of / 2)) / of) : null;
+  const percent = of >= MIN_SAMPLE && of > 0 ? Math.floor((n * 100 + Math.floor(of / 2)) / of) : null;
   return { n, of, percent, small_sample: percent === null };
 }
 
-function funnel(brand: string | null): Json {
-  const ls = leads.filter((l) => !brand || l.brand === brand);
+/** A slice's numbers: steps, lost and manual shares, and payments summed per currency, never converted. */
+function slice(ls: StubLead[]): Json {
   const has = (k: string) => ls.filter((l) => l.times[`${k}_at`]).length;
   const counts: [string, number][] = [["created", ls.length], ["contacted", has("contacted")], ["quoted", has("quoted")], ["won", has("won")], ["completed", has("completed")], ["paid", has("paid")]];
+  const paid = new Map<string, { currency: string; billed: number; commission: number; count: number }>();
+  for (const p of ls.flatMap((l) => l.payments)) {
+    const row = paid.get(p.currency) ?? { currency: p.currency, billed: 0, commission: 0, count: 0 };
+    row.billed += p.billed;
+    row.commission += p.commission;
+    row.count += 1;
+    paid.set(p.currency, row);
+  }
   return {
-    from: iso(new Date(now().getTime() - 29 * 86_400_000)).slice(0, 10), to: iso(now()).slice(0, 10), brand, min_sample: 30,
     stages: counts.map(([stage, n], i) => ({ stage, reached: n, of_previous: i ? share(n, counts[i - 1]![1]) : null, of_leads: share(n, ls.length) })),
     lost: share(ls.filter((l) => l.stage === "lost").length, ls.length), manual: share(ls.filter((l) => l.manual).length, ls.length),
+    payments: [...paid.values()].sort((a, b) => a.currency.localeCompare(b.currency)),
   };
+}
+
+function funnel(brand: string | null, by: string | null): Json {
+  const ls = leads.filter((l) => !brand || l.brand === brand);
+  const head = { from: iso(new Date(now().getTime() - 29 * 86_400_000)).slice(0, 10), to: iso(now()).slice(0, 10), brand, min_sample: MIN_SAMPLE };
+  if (by !== "location") return { ...head, ...slice(ls) };
+  const places = [...new Set(ls.map((l) => `${l.brand}/${l.location ?? ""}`))].sort();
+  const locations = places.map((key) => {
+    const [b, loc] = key.split("/") as [string, string];
+    return { brand: b, location: loc || null, ...slice(ls.filter((l) => l.brand === b && (l.location ?? "") === loc)) };
+  });
+  return { ...head, by: "location", locations };
+}
+
+/** Every location a lead names, with the time of its latest lead. */
+function places(): Json {
+  const latest = new Map<string, { brand: string; location: string; last_lead_at: string | null }>();
+  for (const l of leads) {
+    if (!l.location) continue;
+    const key = `${l.brand}/${l.location}`;
+    const at = l.times.created_at ?? null;
+    const prev = latest.get(key);
+    if (!prev || (at && (!prev.last_lead_at || at > prev.last_lead_at))) latest.set(key, { brand: l.brand, location: l.location, last_lead_at: at });
+  }
+  return { places: [...latest.values()] };
+}
+
+/** Leads by current stage under a place filter, every stage present. */
+function counts(brand: string | null, location: string | null): Json {
+  const ls = leads.filter((l) => (!brand || l.brand === brand) && (!location || l.location === location));
+  const stages = Object.fromEntries(["created", "contacted", "quoted", "won", "completed", "paid", "lost"].map((s) => [s, ls.filter((l) => l.stage === s).length]));
+  const overdue = ls.map(leadDto).filter((l) => (l.sla as Json | null)?.overdue === true).length;
+  return { stages, overdue, total: ls.length };
 }
 
 function send(res: ServerResponse, status: number, body?: unknown, headers: Record<string, string | string[]> = {}): void {
@@ -105,6 +153,12 @@ function signedIn(req: IncomingMessage): boolean {
   return /(?:^|;\s*)sa_session=/.test(req.headers.cookie ?? "");
 }
 
+/** `created_from`/`created_to` are UTC days, both included. */
+function inDays(at: string, from: string | null, to: string | null): boolean {
+  const day = at.slice(0, 10);
+  return (!from || day >= from) && (!to || day <= to);
+}
+
 function find(brand: string, id: string): StubLead | undefined {
   return leads.find((l) => l.brand === brand && l.lead_id === id);
 }
@@ -118,13 +172,16 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (ME_FAILURE === "401" || !signedIn(req)) return send(res, 401, { error: "sign in" }, { "set-cookie": "sa_session=; Path=/; Max-Age=0" });
 
   if (path === "/me") return send(res, 200, { user_id: "00000000-0000-7000-8000-000000000001", role: ROLE, email: "stub@example.test", preferred_name: `Stub ${ROLE}` });
-  if (path === "/funnel") return send(res, 200, funnel(url.searchParams.get("brand")));
+  if (path === "/funnel") return send(res, 200, funnel(url.searchParams.get("brand"), url.searchParams.get("by")));
+  if (path === "/places") return send(res, 200, places());
+  if (path === "/leads/counts") return send(res, 200, counts(url.searchParams.get("brand"), url.searchParams.get("location")));
   if (path === "/leads" && req.method === "GET") {
     const q = url.searchParams;
     const list = leads
       .filter((l) => (!q.get("stage") || l.stage === q.get("stage")) && (!q.get("brand") || l.brand === q.get("brand")) && (!q.get("location") || l.location === q.get("location")))
       .map(leadDto)
       .filter((l) => q.get("overdue") !== "true" || (l.sla as Json | null)?.overdue === true)
+      .filter((l) => inDays(String(l.created_at), q.get("created_from"), q.get("created_to")))
       .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     return send(res, 200, { leads: list, next_cursor: null });
   }
@@ -180,6 +237,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const b = await readJson(req);
     lead.stage = "paid";
     lead.times.paid_at = iso(now());
+    lead.payments.push({ billed: Number(b.billed), commission: Number(b.commission), currency: String(b.currency) });
     lead.events.push(event("payment.received", b));
     return send(res, 201, { event_id: randomUUID() });
   }

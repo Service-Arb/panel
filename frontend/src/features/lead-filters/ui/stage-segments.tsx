@@ -2,13 +2,16 @@
 
 import { ToggleGroup, ToggleGroupItem } from "@evinvest/uikit";
 
-import type { Stage } from "@/entities/lead";
+import type { LeadCounts, Stage } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 
-import { SEGMENTS } from "../model/params";
+import { SEGMENTS, segmentLabels } from "../model/params";
 
-/** "New · In progress · Quotes": the stages an operator clears from a phone. Tapping the lit one shows all. */
-export function StageSegments({ stage, onChange }: { stage: Stage | null; onChange: (stage: Stage | null) => void }) {
+/**
+ * "New · 3 | In progress · 1 | Quotes · 2": the stages an operator clears from a
+ * phone, with how many wait in each. Tapping the lit one shows all.
+ */
+export function StageSegments({ stage, counts, onChange }: { stage: Stage | null; counts: LeadCounts | null; onChange: (stage: Stage | null) => void }) {
   const t = useT();
   const value = SEGMENTS.some((s) => s.stage === stage) ? (stage ?? "") : "";
   return (
@@ -21,9 +24,9 @@ export function StageSegments({ stage, onChange }: { stage: Stage | null; onChan
       value={value}
       onValueChange={(v) => onChange(typeof v === "string" ? (SEGMENTS.find((s) => s.stage === v)?.stage ?? null) : null)}
     >
-      {SEGMENTS.map((s) => (
-        <ToggleGroupItem key={s.stage} value={s.stage} className="min-w-0 flex-1 truncate">
-          {t(s.key)}
+      {segmentLabels(counts, t).map((s) => (
+        <ToggleGroupItem key={s.stage} value={s.stage} className="min-w-0 flex-1 truncate tabular-nums">
+          {s.label}
         </ToggleGroupItem>
       ))}
     </ToggleGroup>

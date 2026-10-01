@@ -14,6 +14,8 @@ export default function config(phase: string): NextConfig {
   if (phase === PHASE_DEVELOPMENT_SERVER) {
     const backend = process.env.PANEL_DEV_BACKEND ?? "http://127.0.0.1:3121";
     return {
+      // Next writes AGENTS.md and CLAUDE.md into the project on `next dev` otherwise.
+      agentRules: false,
       // A trailing-slash redirect would run before the rewrite and bounce /api/v1/me.
       skipTrailingSlashRedirect: true,
       async rewrites() {

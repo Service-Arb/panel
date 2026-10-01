@@ -1,13 +1,16 @@
 import { http, ignoreBody } from "@/shared/api";
 import { object, str } from "@/shared/lib/parse";
 
-import { type LeadCard, type LeadPage, type LeadRef, type Stage, leadCardParser, leadPageParser, leadPath } from "../model/lead";
+import { type LeadCard, type LeadCounts, type LeadPage, type LeadRef, type Stage, leadCardParser, leadCountsParser, leadPageParser, leadPath } from "../model/lead";
 
 export interface LeadFilter {
   stage: Stage | null;
   brand: string | null;
   location: string | null;
   overdue: boolean;
+  /** UTC days, `YYYY-MM-DD`, both included. */
+  createdFrom: string | null;
+  createdTo: string | null;
 }
 
 export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50): Promise<LeadPage> {
@@ -16,9 +19,16 @@ export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50
     brand: filter.brand,
     location: filter.location,
     overdue: filter.overdue ? true : null,
+    created_from: filter.createdFrom,
+    created_to: filter.createdTo,
     cursor,
     limit,
   });
+}
+
+/** Counts for the stage segments: the place filter only, so a segment counts what tapping it would list. */
+export function fetchLeadCounts(filter: Pick<LeadFilter, "brand" | "location">): Promise<LeadCounts> {
+  return http.get("/api/v1/leads/counts", leadCountsParser, { brand: filter.brand, location: filter.location });
 }
 
 export function fetchLeadCard(ref: LeadRef): Promise<LeadCard> {

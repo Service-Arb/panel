@@ -1,5 +1,8 @@
-import { type LeadFilter, STAGES, type Stage } from "@/entities/lead";
-import type { MessageKey } from "@/shared/i18n";
+import { type LeadCounts, type LeadFilter, STAGES, type Stage } from "@/entities/lead";
+import type { MessageKey, T } from "@/shared/i18n";
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const day = (v: string | null) => (v && DAY.test(v) ? v : null);
 
 /** The filter lives in the URL, so a view can be linked and survives a reload. */
 export function leadFilterFrom(params: URLSearchParams): LeadFilter {
@@ -9,6 +12,8 @@ export function leadFilterFrom(params: URLSearchParams): LeadFilter {
     brand: params.get("brand") || null,
     location: params.get("location") || null,
     overdue: params.get("overdue") === "1",
+    createdFrom: day(params.get("created_from")),
+    createdTo: day(params.get("created_to")),
   };
 }
 
@@ -19,6 +24,8 @@ export function paramsWith(params: URLSearchParams, patch: Partial<LeadFilter>):
   if ("brand" in patch) set("brand", patch.brand ?? null);
   if ("location" in patch) set("location", patch.location ?? null);
   if ("overdue" in patch) set("overdue", patch.overdue ? "1" : null);
+  if ("createdFrom" in patch) set("created_from", patch.createdFrom ?? null);
+  if ("createdTo" in patch) set("created_to", patch.createdTo ?? null);
   return next;
 }
 
@@ -36,3 +43,11 @@ export const SEGMENTS: readonly { stage: Stage; key: MessageKey }[] = [
   { stage: "contacted", key: "filter.segment.inProgress" },
   { stage: "quoted", key: "filter.segment.quotes" },
 ];
+
+/** "New · 3": a segment with how many leads wait in it; the bare name until the counts arrive. */
+export function segmentLabels(counts: LeadCounts | null, t: T): { stage: Stage; label: string }[] {
+  return SEGMENTS.map(({ stage, key }) => ({
+    stage,
+    label: counts ? t("filter.segment.count", { label: t(key), n: counts.stages[stage] }) : t(key),
+  }));
+}

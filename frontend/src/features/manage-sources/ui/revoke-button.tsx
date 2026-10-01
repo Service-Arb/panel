@@ -18,10 +18,11 @@ import {
 import { revokeSource } from "@/entities/source";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
-import { TOUCH_TARGET } from "@/shared/ui/touch";
+import { useButtonSize } from "@/shared/ui/touch";
 
 export function RevokeButton({ keyId, onRevoked }: { keyId: string; onRevoked: () => void }) {
   const t = useT();
+  const button = useButtonSize();
   const revoke = async () => {
     try {
       await revokeSource(keyId);
@@ -34,7 +35,7 @@ export function RevokeButton({ keyId, onRevoked }: { keyId: string; onRevoked: (
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="sm" className={TOUCH_TARGET}>
+        <Button variant="ghost" size={button("sm")}>
           {t("sources.revoke")}
         </Button>
       </AlertDialogTrigger>
@@ -44,8 +45,8 @@ export function RevokeButton({ keyId, onRevoked }: { keyId: string; onRevoked: (
           <AlertDialogDescription>{t("sources.revoke.body")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel className={TOUCH_TARGET}>{t("move.cancel")}</AlertDialogCancel>
-          <AlertDialogAction className={buttonVariants({ variant: "destructive", className: TOUCH_TARGET })} onClick={() => void revoke()}>
+          <AlertDialogCancel className={buttonVariants({ variant: "outline", size: button() })}>{t("move.cancel")}</AlertDialogCancel>
+          <AlertDialogAction className={buttonVariants({ variant: "destructive", size: button() })} onClick={() => void revoke()}>
             {t("sources.revoke.confirm")}
           </AlertDialogAction>
         </AlertDialogFooter>

@@ -43,6 +43,14 @@ export function oneOf<const L extends readonly string[]>(values: L): Parser<L[nu
 export const record: Parser<Record<string, unknown>> = (v, path) =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : fail(path, "an object", v);
 
+/** An object with exactly these keys, each value checked by `p`: a missing key fails. */
+export function recordOf<const K extends readonly string[], T>(keys: K, p: Parser<T>): Parser<Record<K[number], T>> {
+  return (v, path) => {
+    const o = record(v, path);
+    return Object.fromEntries(keys.map((k) => [k, p(o[k], `${path}.${k}`)])) as Record<K[number], T>;
+  };
+}
+
 type Shape = Record<string, Parser<unknown>>;
 export type Parsed<S extends Shape> = { [K in keyof S]: ReturnType<S[K]> };
 
