@@ -8,13 +8,14 @@ import { DEFAULT_CURRENCY } from "@/shared/config/money";
 import { useT } from "@/shared/i18n";
 import { CurrencyField } from "@/shared/ui/currency-field";
 import { notifyFailure } from "@/shared/ui/notify";
-import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
+import { useButtonSize, useControlSize } from "@/shared/ui/touch";
 
 import { paymentFrom } from "../model/payment";
 
 /** "Payment": the bill, our commission and the currency, in one form (entered by hand in phase 1). */
 export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void }) {
   const t = useT();
+  const button = useButtonSize();
   const id = useId();
   const [billed, setBilled] = useState("");
   const [commission, setCommission] = useState("");
@@ -61,7 +62,7 @@ export function PaymentForm({ lead, onSaved }: { lead: Lead; onSaved: () => void
         <CurrencyField className="col-span-2 md:col-span-1" label={t("payment.currency")} value={currency} onChange={setCurrency} />
       </div>
       {touched && !payment && <FieldError>{t("payment.invalid")}</FieldError>}
-      <Button type="submit" className={`self-start ${TOUCH_TARGET}`} disabled={busy || !payment}>
+      <Button type="submit" size={button()} className="self-start" disabled={busy || !payment}>
         {t("payment.submit")}
       </Button>
     </form>

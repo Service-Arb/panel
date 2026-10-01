@@ -8,7 +8,7 @@ import { DEFAULT_CURRENCY } from "@/shared/config/money";
 import { useT } from "@/shared/i18n";
 import { CurrencyField } from "@/shared/ui/currency-field";
 import { parseMoney } from "@/shared/lib/format";
-import { TOUCH_TARGET, useControlSize } from "@/shared/ui/touch";
+import { useButtonSize, useControlSize } from "@/shared/ui/touch";
 
 /** A quote with an optional amount: both amount and currency, or neither. */
 export function QuoteForm({ busy, onSubmit, onCancel }: { busy: boolean; onSubmit: (m: StageMove) => void; onCancel: () => void }) {
@@ -43,12 +43,13 @@ export function QuoteForm({ busy, onSubmit, onCancel }: { busy: boolean; onSubmi
 
 export function FormButtons({ busy, onCancel, submitLabel }: { busy: boolean; onCancel: () => void; submitLabel?: string }) {
   const t = useT();
+  const button = useButtonSize();
   return (
     <div className="flex gap-2">
-      <Button type="submit" className={TOUCH_TARGET} disabled={busy}>
+      <Button type="submit" size={button()} disabled={busy}>
         {submitLabel ?? t("move.submit")}
       </Button>
-      <Button type="button" variant="ghost" className={TOUCH_TARGET} onClick={onCancel}>
+      <Button type="button" variant="ghost" size={button()} onClick={onCancel}>
         {t("move.cancel")}
       </Button>
     </div>

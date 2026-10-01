@@ -6,7 +6,7 @@ import { Phone } from "lucide-react";
 import { type LeadRef, dialable, encodeRef } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
-import { TOUCH_TARGET } from "@/shared/ui/touch";
+import { useButtonSize } from "@/shared/ui/touch";
 
 import { useCallFlow } from "../model/provider";
 
@@ -16,6 +16,7 @@ import { useCallFlow } from "../model/provider";
  */
 export function CallButton({ leadRef, phone }: { leadRef: LeadRef; phone: string }) {
   const t = useT();
+  const button = useButtonSize();
   const { state, start, ask } = useCallFlow();
   const pending = state.phase === "dialing" && encodeRef(state.ref) === encodeRef(leadRef);
   const tel = dialable(phone);
@@ -23,14 +24,14 @@ export function CallButton({ leadRef, phone }: { leadRef: LeadRef; phone: string
 
   return (
     <div className="flex flex-wrap gap-2">
-      <Button asChild size="lg" className={TOUCH_TARGET}>
+      <Button asChild size={button("lg")}>
         <a href={`tel:${tel}`} onClick={() => start(leadRef).catch((e: unknown) => notifyFailure(e, t))}>
           <Phone aria-hidden />
           {t("call.call")}
         </a>
       </Button>
       {pending && (
-        <Button variant="outline" size="lg" className={TOUCH_TARGET} onClick={ask}>
+        <Button variant="outline" size={button("lg")} onClick={ask}>
           {t("call.logOutcome")}
         </Button>
       )}

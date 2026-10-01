@@ -16,7 +16,7 @@ import { ErrorState } from "@/shared/ui/error-state";
 import { notifyFailure } from "@/shared/ui/notify";
 import { PageHeader } from "@/shared/ui/page-header";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
-import { TOUCH_TARGET } from "@/shared/ui/touch";
+import { useButtonSize } from "@/shared/ui/touch";
 
 import { useLeadList } from "../model/use-lead-list";
 import { LeadCardPanel } from "./lead-card-panel";
@@ -27,6 +27,7 @@ const uniq = (xs: string[]) => [...new Set(xs)].sort();
 
 export function LeadsView() {
   const t = useT();
+  const button = useButtonSize();
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
@@ -72,7 +73,7 @@ export function LeadsView() {
         {list.status === "ok" && leads.length === 0 && (
           <EmptyState title={t("leads.empty")} description={t(filtered ? "leads.empty.filtered" : "leads.empty.none")}>
             {filtered && (
-              <Button variant="outline" className={TOUCH_TARGET} onClick={() => go(new URLSearchParams())}>
+              <Button variant="outline" size={button()} onClick={() => go(new URLSearchParams())}>
                 {t("leads.resetFilters")}
               </Button>
             )}
@@ -81,7 +82,7 @@ export function LeadsView() {
         )}
         {leads.length > 0 && (isDesktop ? <LeadTable leads={leads} onOpen={(l) => openLead(refOf(l))} /> : <LeadList leads={leads} onOpen={(l) => openLead(refOf(l))} />)}
         {list.status === "ok" && list.cursor && (
-          <Button variant="outline" className={`self-center ${TOUCH_TARGET}`} disabled={list.more} onClick={() => loadMore().catch((e: unknown) => notifyFailure(e, t))}>
+          <Button variant="outline" size={button()} className="self-center" disabled={list.more} onClick={() => loadMore().catch((e: unknown) => notifyFailure(e, t))}>
             {t("leads.more")}
           </Button>
         )}
