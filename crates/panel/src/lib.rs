@@ -10,9 +10,12 @@
 //! `panel_core`; [`store`] is Postgres; [`seal`] encrypts what must not sit in the clear.
 //! [`operator`] is what a signed-in user does and reads, as events through the same journal;
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
-//! bot's notifications and buttons.
+//! bot's notifications and buttons; [`posthog`] the hourly import of the site's counts, and
+//! [`counts`] what the screens read of them.
 
+pub mod counts;
 pub mod operator;
+pub mod posthog;
 pub mod seal;
 pub mod session;
 pub mod store;

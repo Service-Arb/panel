@@ -6,6 +6,7 @@ use jiff::{SignedDuration, Timestamp};
 use panel::{
 	Outcome, Panel,
 	operator::{Actor, FunnelBy, LeadQuery, NewLead, Payment, Pii},
+	posthog::Hogql,
 	seal::DataKey,
 	session::{RefreshError, Refresher, SessionKey, Tokens},
 	store::Store,
@@ -18,9 +19,25 @@ use panel_core::{
 	notify::{Failure, Locale, Rendered, Rule},
 	role::Role,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::{Connection, Executor, PgConnection};
 use zeroize::Zeroizing;
+
+/// PostHog answering one visit, one intent and one exposure today.
+struct OneOfEach;
+
+impl Hogql for OneOfEach {
+	async fn query(&self, hogql: &str, _: &Value) -> eyre::Result<Vec<Vec<Value>>> {
+		let day = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date().to_string();
+		Ok(vec![if hogql.contains("'location_page_view'") {
+			vec![json!(day), json!("aquafix"), json!("paris-11"), json!("direct"), json!(1)]
+		} else if hogql.contains("'contact_intent_click'") {
+			vec![json!(day), json!("aquafix"), json!("paris-11"), json!("phone"), json!(1)]
+		} else {
+			vec![json!(day), json!("aquafix"), json!("hero"), json!("a"), json!("experiment_exposed"), Value::Null, json!(1)]
+		}])
+	}
+}
 
 /// A refresher that must not be asked: the tokens above are fresh.
 struct Never;
@@ -243,6 +260,19 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 			.unwrap();
 		assert!(!panel.telegram_settings(user, Role::Operator).await.unwrap().linked);
 
+		// The PostHog import: its lease, its counts, what the screens read of them, a rebuild.
+		let site = [BrandId::parse("aquafix").unwrap()].into();
+		assert!(panel.add_source("aquafix-site", SourceKind::Site, site).await.unwrap().is_some(), "the brand the import counts");
+		let holder = uuid::Uuid::now_v7();
+		assert!(panel.posthog_import_lease(holder, now, false).await.unwrap());
+		assert_eq!(panel.import_posthog(&OneOfEach, "posthog-1", 3, now).await.unwrap().written, 3);
+		panel.posthog_import_release(holder, now, true).await.unwrap();
+		assert!(panel.posthog_imported_at().await.unwrap().is_some());
+		assert_eq!(panel.site_slices(today, today, None, FunnelBy::All).await.unwrap()[0].sources["direct"], 1);
+		assert_eq!(panel.experiments(today, today, None).await.unwrap()[0].variants[0].tally.exposures, 1);
+		panel.rebuild_projections().await.unwrap();
+		assert_eq!(panel.import_posthog(&OneOfEach, "posthog-1", 3, now).await.unwrap().written, 0, "the rebuilt counts are the same");
+
 		let pool = panel.store().pool();
 		for sql in [
 			"DELETE FROM events",
@@ -253,6 +283,8 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 			"DROP VIEW reporting.leads",
 			"DELETE FROM telegram_poller",
 			"UPDATE telegram_link_tokens SET role = 'admin'",
+			"DELETE FROM posthog_import",
+			"DROP VIEW reporting.experiment_daily",
 		] {
 			let err = sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await.unwrap_err().to_string();
 			assert!(err.contains("permission denied") || err.contains("must be owner"), "{sql}: {err}");
