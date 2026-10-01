@@ -118,8 +118,10 @@
           # Settings::required_var_names("production"): the pod exits 78 without any of them
           requiredEnv = [ "DATABASE_URL" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
           # from the sops-backed Secret, never literal env
-          secretEnv = [ "DATABASE_URL" "MIGRATE_DATABASE_URL" "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" ];
-          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" ];
+          secretEnv = [ "DATABASE_URL" "MIGRATE_DATABASE_URL" "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" "POSTHOG_PERSONAL_API_KEY" ];
+          # without POSTHOG_PROJECT_ID and POSTHOG_PERSONAL_API_KEY the hourly import is off
+          # (serve warns); one without the other fails the boot
+          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" "POSTHOG_API_HOST" "POSTHOG_PROJECT_ID" "POSTHOG_PERSONAL_API_KEY" ];
           postgres = {
             # the app's pods: the runtime role, holding deploy/panel_app.sql's grants only
             runtime = { env = "DATABASE_URL"; role = runtimeRole; };
@@ -148,7 +150,9 @@
             postgres = true;
             # concierge's gRPC, at the address CONCIERGE_GRPC_ADDR names
             grpcEnv = [ "CONCIERGE_GRPC_ADDR" ];
-            hosts = [ "api.telegram.org:443" ];
+            # the Bot API; PostHog's query API (POSTHOG_API_HOST's default — follow it if it
+            # is pointed elsewhere; the capture host us.i.posthog.com is not this one)
+            hosts = [ "api.telegram.org:443" "us.posthog.com:443" ];
           };
         };
 

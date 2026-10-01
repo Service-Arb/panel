@@ -387,43 +387,23 @@ pub async fn run(notifier: Notifier<BotApi, Concierge>, name: BotName, shutdown:
 	let mut work = JoinSet::new();
 	work.spawn(poll(notifier.clone(), name, shutdown.clone()));
 	let n = notifier.clone();
-	work.spawn(every(FAN_OUT_EVERY, shutdown.clone(), "telegram fan-out", move || {
+	work.spawn(crate::every(FAN_OUT_EVERY, shutdown.clone(), "telegram fan-out", move || {
 		let n = n.clone();
 		async move { n.panel.telegram_fan_out(Timestamp::now(), n.locale).await.map(drop) }
 	}));
 	let n = notifier.clone();
-	work.spawn(every(DELIVER_EVERY, shutdown.clone(), "telegram delivery", move || {
+	work.spawn(crate::every(DELIVER_EVERY, shutdown.clone(), "telegram delivery", move || {
 		let n = n.clone();
 		async move { n.deliver(Timestamp::now()).await.map(drop) }
 	}));
 	let n = notifier;
-	work.spawn(every(RECHECK_EVERY, shutdown, "telegram access check", move || {
+	work.spawn(crate::every(RECHECK_EVERY, shutdown, "telegram access check", move || {
 		let n = n.clone();
 		async move { n.recheck_access(Timestamp::now()).await.map(drop) }
 	}));
 	while let Some(done) = work.join_next().await {
 		if let Err(e) = done {
 			crate::report(&eyre::eyre!(e), "a telegram task panicked");
-		}
-	}
-}
-
-async fn every<F, Fut>(period: Duration, mut shutdown: watch::Receiver<bool>, what: &'static str, pass: F)
-where
-	F: Fn() -> Fut + Send,
-	Fut: Future<Output = eyre::Result<()>> + Send, {
-	let mut tick = tokio::time::interval(period);
-	tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-	loop {
-		tokio::select! {
-			_ = tick.tick() => {}
-			_ = shutdown.changed() => return,
-		}
-		if *shutdown.borrow() {
-			return;
-		}
-		if let Err(e) = pass().await {
-			crate::report(&e, what);
 		}
 	}
 }

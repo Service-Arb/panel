@@ -7,7 +7,9 @@
 pub mod api;
 pub mod concierge;
 pub mod cookies;
+pub mod counts;
 pub mod http;
+pub mod posthog;
 pub mod signin;
 pub mod telegram;
 pub mod web;
@@ -20,4 +22,26 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:59120";
 pub fn report(e: &eyre::Report, what: &str) {
 	ev_lib::error_monitoring::report(&**e);
 	tracing::warn!(error = format!("{e:#}"), "{what}");
+}
+
+/// Runs `pass` every `period` until `shutdown` turns true. A failing pass is reported as
+/// `what` and tried again at the next tick; nothing here ends `serve`.
+pub(crate) async fn every<F, Fut>(period: std::time::Duration, mut shutdown: tokio::sync::watch::Receiver<bool>, what: &'static str, pass: F)
+where
+	F: Fn() -> Fut + Send,
+	Fut: Future<Output = eyre::Result<()>> + Send, {
+	let mut tick = tokio::time::interval(period);
+	tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+	loop {
+		tokio::select! {
+			_ = tick.tick() => {}
+			_ = shutdown.changed() => return,
+		}
+		if *shutdown.borrow() {
+			return;
+		}
+		if let Err(e) = pass().await {
+			report(&e, what);
+		}
+	}
 }

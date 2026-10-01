@@ -136,12 +136,14 @@ impl Envelope {
 /// Whether a kind of source may write a type (spec §2, the "source" column). What only an
 /// operator can know — a quote, a win, a loss, a finished job — comes from the panel alone,
 /// and payments too, which are entered by hand (owner, 2026-09-30); calls and contacts also
-/// from telephony, once there is one. A type the panel does not know is open to every kind
+/// from telephony, once there is one. The site's counts come from the PostHog import alone
+/// (§3.4). A type the panel does not know is open to every kind
 /// (§3.2): it is stored, not projected, and judged again once it is registered.
 pub fn may_write(kind: SourceKind, type_name: &str) -> bool {
-	use SourceKind::{Panel, Site, Telephony};
+	use SourceKind::{Panel, Posthog, Site, Telephony};
 	match type_name {
 		"lead.created" => matches!(kind, Site | Panel),
+		"site.metrics" | "contact.metrics" | "experiment.metrics" => matches!(kind, Posthog),
 		"lead.contacted" | "call.attempted" | "call.logged" => matches!(kind, Panel | Telephony),
 		"lead.quoted" | "job.won" | "lead.lost" | "job.completed" | "payment.received" => matches!(kind, Panel),
 		_ => true,
@@ -220,7 +222,7 @@ mod tests {
 	#[test]
 	fn who_writes_what() {
 		use SourceKind::*;
-		let table: [(&str, &[SourceKind]); 9] = [
+		let table: [(&str, &[SourceKind]); 12] = [
 			("lead.created", &[Site, Panel]),
 			("lead.contacted", &[Panel, Telephony]),
 			("lead.quoted", &[Panel]),
@@ -230,6 +232,9 @@ mod tests {
 			("payment.received", &[Panel]),
 			("call.attempted", &[Panel, Telephony]),
 			("call.logged", &[Panel, Telephony]),
+			("site.metrics", &[Posthog]),
+			("contact.metrics", &[Posthog]),
+			("experiment.metrics", &[Posthog]),
 		];
 		for (name, allowed) in table {
 			for kind in SourceKind::ALL {

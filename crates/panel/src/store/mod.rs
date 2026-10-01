@@ -3,15 +3,16 @@
 //! compile-time checks the `query!` macros would give.
 
 pub mod events;
+pub mod metrics;
 pub mod projections;
 pub mod reads;
 pub mod sessions;
 pub mod sources;
 pub mod telegram;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use eyre::WrapErr;
-use jiff::Timestamp;
+use jiff::{Timestamp, civil::Date};
 use sqlx::{
 	Connection, Executor, PgConnection, PgPool,
 	migrate::Migrator,
@@ -113,6 +114,17 @@ pub(crate) fn to_pg(ts: Timestamp) -> eyre::Result<DateTime<Utc>> {
 	DateTime::from_timestamp(secs, nanos).ok_or_else(|| eyre::eyre!("timestamp {ts} is out of Postgres' range"))
 }
 
+/// A civil date as the database's.
+pub(crate) fn to_pg_day(d: Date) -> eyre::Result<NaiveDate> {
+	NaiveDate::from_ymd_opt(i32::from(d.year()), u32::from(d.month().unsigned_abs()), u32::from(d.day().unsigned_abs())).ok_or_else(|| eyre::eyre!("date {d}"))
+}
+
+pub(crate) fn from_pg_day(d: NaiveDate) -> eyre::Result<Date> {
+	use chrono::Datelike;
+	let small = |v: u32| i8::try_from(v).wrap_err_with(|| format!("stored date {d}"));
+	Date::new(i16::try_from(d.year()).wrap_err_with(|| format!("stored date {d}"))?, small(d.month())?, small(d.day())?).wrap_err_with(|| format!("stored date {d}"))
+}
+
 pub(crate) fn from_pg(ts: DateTime<Utc>) -> eyre::Result<Timestamp> {
 	Timestamp::new(ts.timestamp(), i32::try_from(ts.timestamp_subsec_nanos()).wrap_err("nanoseconds")?).wrap_err_with(|| format!("stored timestamp {ts}"))
 }
@@ -126,6 +138,14 @@ mod tests {
 		for s in ["2026-09-30T10:00:00.123456Z", "1969-12-31T23:59:59.5Z", "1970-01-01T00:00:00Z"] {
 			let ts: Timestamp = s.parse().unwrap();
 			assert_eq!(from_pg(to_pg(ts).unwrap()).unwrap(), ts, "{s}");
+		}
+	}
+
+	#[test]
+	fn days_round_trip() {
+		for s in ["2026-09-30", "2024-02-29", "0001-01-01"] {
+			let d: Date = s.parse().unwrap();
+			assert_eq!(from_pg_day(to_pg_day(d).unwrap()).unwrap(), d, "{s}");
 		}
 	}
 }

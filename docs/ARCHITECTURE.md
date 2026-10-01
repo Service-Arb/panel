@@ -21,6 +21,10 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
   src/role.rs                        operator / admin and what each may do (§5.4)
   src/notify.rs                      Telegram: the rules and who gets each, the texts, the
                                      buttons' signed data, retry and pacing constants
+  src/metrics.rs                     the day counts of stages 3–4 and of the experiments; a
+                                     recount's revision; traffic sources bounded
+  src/experiment.rs                  a variant against its control: Wilson, Newcombe, the
+                                     `insufficient` rule
 crates/panel/                        the engine
   src/lib.rs                         the `Panel` facade: ingest, sources, PII, rebuild
   src/wire.rs                        protojson → the core: one event decoded and checked; the
@@ -33,6 +37,11 @@ crates/panel/                        the engine
   src/store/telegram.rs              links, rules, fan-out marks, the outbox and its pacing
   src/telegram.rs                    linking, the rules' fan-out, delivery, the buttons; the
                                      Bot and Directory ports
+  src/posthog.rs                     the hourly PostHog import: HogQL → counts → journal; the
+                                     Hogql port
+  src/counts.rs                      what the screens read of the counts
+  src/store/metrics.rs               daily_location_metrics, daily_experiment_metrics, the
+                                     import's lease
   src/testing.rs                     (feature `testing`) throwaway databases, signed batches
   migrations/                        the schema, `reporting` included
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
@@ -44,6 +53,8 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
   src/api.rs                         the operator API: JSON over the engine's `operator` module
   src/telegram.rs                    the Bot API (reqwest), the bot's background work in
                                      `serve`, and /api/v1/telegram
+  src/posthog.rs                     PostHog's query API (reqwest) and the import's schedule
+  src/counts.rs                      stages 3–4 in /api/v1/funnel, GET /api/v1/experiments
   src/web.rs                         the front end's static export (PANEL_WEB_DIR), behind
                                      every other route
   src/settings.rs                    the environment (ev_lib `settings!`)
@@ -72,7 +83,7 @@ registry: type@version known?
              INSERT events … ON CONFLICT (id) DO NOTHING
                ├─ id taken, same content                                  → duplicate
                ├─ id taken, other content                                 → rejected
-               └─ new: calls / payments row; lead recomputed from all its events → accepted
+               └─ new: a call / payment / count row; its lead recomputed → accepted
 ```
 
 ## Signing in (§4)
@@ -163,6 +174,10 @@ GET    /funnel?from&to&brand&by                   days, UTC, default the last 30
                                                    manual, payments}]}, one per brand's location
                                                    (location null for the leads naming none);
                                                    an empty window has no rows
+                                                  every answer: aggregate_source {source:
+                                                   "posthog", kind: "aggregate", imported_at};
+                                                   each slice: aggregate (stages 3–4, below)
+GET    /experiments?from&to&brand                 days as /funnel; below
 GET    /places                                    {places: [{brand, location, last_lead_at}]}:
                                                   every location a lead names
 GET    /sources                     admin         {sources: [{key_id, kind, brands, created_at,
@@ -187,6 +202,35 @@ The funnel counts the leads that came in (were created) within the window, and `
 `{currency, billed, commission, count}` in minor units, one per currency, never converted —
 sums the payments of those same leads, whenever they were paid; so a slice's money and its
 `paid` step are about the same leads.
+
+**Stages 3–4 beside 5–10, never divided by them** (§10.1). A slice's `aggregate` is
+`{stages: [{stage: "site.visit", total, by_source: {source: n}, days: [{day, n}]},
+{stage: "contact.intent", total, by_channel: {phone, whatsapp, form_open, booking}, days:
+[{day, n, by_channel}]}]}` — page views and intents as PostHog counted them, per UTC day (the
+days with a count only; a day missing is nothing counted, or not imported yet — see
+`imported_at`). By location, a location with visits and no lead is a row too. Stages 1–2
+(Maps) come with the GBP import.
+
+`/experiments` answers `{from, to, brand, min_sample, min_exposures: 100, confidence: 0.95,
+z, interval: "newcombe_hybrid_score", source, experiments: [{brand, experiment, first_day,
+last_day, control, variants: [{variant, control, exposures, leads, intents: {phone, whatsapp,
+form_open, booking}, rates: {lead: Share, contact: Share}, vs_control: null | {lead: Cmp,
+contact: Cmp}}]}]}`, the control first. `lead` is leads per exposure, `contact` (leads +
+phone + WhatsApp) per exposure, as the landings' own reports define them; successes past the
+exposures are capped. `Cmp` is `{difference: null | {estimate, low, high, decimals},
+insufficient, reason}` in percentage points, treatment − control: `difference` is null and
+`reason` `small_sample` while either arm has under `min_exposures`; `insufficient` with
+`interval_includes_zero` while the 95 % interval holds 0 (judged before rounding). Rounding
+follows the interval: whole points while it is 2 points wide or more, tenths when narrower
+(`decimals`). The control is the variant named `control`, else `a`, else the first by name —
+PostHog never sees the landing's config. There is no winner field, and none is to be drawn.
+
+Why Newcombe's hybrid score interval (method 10 of Newcombe 1998), not `d ± z·SE`: the Wald
+interval collapses at 0 successes, leaves [−1, 1] and undercovers badly at the rates (a few
+percent) and arm sizes (hundreds) the landings have; Newcombe's, built from the two Wilson
+intervals, has none of these faults. The tests check it against the paper's published
+examples. It treats page views as independent trials, which they only approximately are; no
+correction is made for several variants against one control.
 
 `Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`, …)
 plus `sla` while it waits for its first contact — `{waiting_since, waiting_seconds,
@@ -267,6 +311,53 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
   and the buttons removed ("Не дозвонился" leaves "Взял").
 - Language: `TELEGRAM_LOCALE` (`ru` default, `en`).
 
+## The PostHog import (§3.4, §7)
+
+With `POSTHOG_PROJECT_ID` and `POSTHOG_PERSONAL_API_KEY` (a personal key, `query:read` on the
+project the landings send to), `serve` imports once an hour; without them it warns and does
+not, and one without the other fails the boot. `POSTHOG_API_HOST` defaults to
+`https://us.posthog.com`: the query API is on the app host, not on the capture host the
+landings' `POSTHOG_HOST` names (`us.i.posthog.com`). `panel import-posthog --days N` runs one
+now (a backfill: up to 400 days, as long as each query stays under 10 000 rows).
+
+```text
+every 5 min      posthog_import: leased (10 min) if none holds it, the last import finished
+                 ≥ 1 h ago and the last try ≥ 10 min ago — one replica, once an hour
+three HogQL      the last 3 UTC days (today included), days cut in UTC whatever the project's
+queries          zone, LIMIT 10 000 (a full table is an error, not a short count):
+                 location_page_view{brand_id, location_id, source}         → visits by source
+                 contact_intent_click{brand_id, location_id, channel}      → intents by channel
+                 experiment_exposed / experiment_contact{channel} / experiment_lead
+                   {brand_id, experiment, variant, forced}, forced (QA) left out
+rows → counts    brands a source key writes for only (a landing's PostHog key is public: anyone
+                 can send events naming any brand); malformed days, locations, names, channels
+                 left out and counted; sources lowercased, ≤ 20 per location and day, the rest
+                 "other"
+compared         with the projection's counts of those days: a slice new or changed → an event
+                 at the next revision; a slice no longer found → 0 at the next revision; the
+                 same count → nothing
+journaled        site.metrics / contact.metrics / experiment.metrics, source.kind posthog,
+                 source.id posthog-<project>, no key; occurred_at the day's start; the id from
+                 (type, day, brand, location, slice, revision)
+```
+
+- **A recount replaces, the journal stays append-only.** A day's count changes for days as
+  late events land, so the projection holds the highest revision of each slice
+  (`INSERT … ON CONFLICT … WHERE revision < EXCLUDED.revision`, so a rebuild in any order
+  lands on the newest). Upserting the projection without an event was the other way; it would
+  make the counts the one projection the journal cannot rebuild. Writing only on a change
+  keeps the journal's growth to the changes, not 24 × 3 copies a day.
+- **Two writers of one revision.** The id derives from the revision and the content is
+  deterministic, so the same recount from two replicas (a lease lapsed mid-import) is a
+  duplicate; different counts under one revision is a conflict, the second refused, and the
+  next import writes the revision after.
+- **Only the import writes counts**: `may_write` lets `posthog` alone write the three types.
+  A count names no lead and no job; an experiment's no location (the landings' server-side
+  `experiment_lead` names none). `experiment_step` (vifnet) is not imported.
+- **Reporting.** `reporting.daily_location_metrics` (day, brand, location, metric `visits` |
+  `contact_intent`, dimension: the source or channel, value) and `reporting.experiment_daily`;
+  neither has anything personal — the events they come from carry no PII.
+
 ## Invariants
 
 - **The journal is append-only.** `events` rows are inserted once. Triggers refuse `DELETE`,
@@ -324,7 +415,8 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
   `panel migrate --grant-to panel_app` then applies that file too, as the owner, in one
   transaction — what the deploy runs, so the image needs no `psql`.
 - **Secrets come from the environment only** (`DATABASE_URL`, `MIGRATE_DATABASE_URL`,
-  `PANEL_DATA_KEY`, `SENTRY_DSN`, `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`),
+  `PANEL_DATA_KEY`, `SENTRY_DSN`, `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`,
+  `POSTHOG_PERSONAL_API_KEY`),
   through `ev_lib::settings`; with `APP_ENV=production`, `DATABASE_URL`, `PANEL_DATA_KEY` and the
   four sign-in variables are required at boot (`panel --print-required-vars` lists them).
 
@@ -357,6 +449,9 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
 - **Telegram, outbound only.** With `TELEGRAM_BOT_TOKEN` (the panel bot's, in sops; not
   `telegram_token_main`) the pods need egress to `api.telegram.org:443`; nothing inbound. No
   webhook is set on the bot (`getUpdates` refuses to run while one is).
+- **PostHog, outbound only.** With the import configured the pods need egress to
+  `us.posthog.com:443` (or wherever `POSTHOG_API_HOST` points); the key is a personal API key
+  of someone with access to the project, scoped to `query:read` alone, in sops.
 - **Rate-limit `/auth` per client IP at Traefik** (a `RateLimit` middleware on the
   IngressRoute's `/auth` prefix, e.g. 10/min with a burst of 20). The panel bounds how many
   sign-ins run at once, not who starts them; per-IP limits are the edge's.

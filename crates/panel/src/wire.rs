@@ -11,6 +11,7 @@ use panel_core::{
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
 	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, bounded},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
+	metrics::{DailyMetric, IntentChannel, MetricValue, Tally},
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -235,6 +236,9 @@ pub const REGISTERED: &[(&str, u32, &str)] = &[
 	("payment.received", 1, "sa.v1.PaymentReceivedV1"),
 	("call.attempted", 1, "sa.v1.CallAttemptedV1"),
 	("call.logged", 1, "sa.v1.CallLoggedV1"),
+	("site.metrics", 1, "sa.v1.SiteMetricsV1"),
+	("contact.metrics", 1, "sa.v1.ContactMetricsV1"),
+	("experiment.metrics", 1, "sa.v1.ExperimentMetricsV1"),
 ];
 
 /// Checks an event's properties against its `type@version`, and what the type needs of its
@@ -277,12 +281,59 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 				attempt_id: bounded("properties.attempt_id", p.attempt_id)?,
 			})
 		}),
+		("site.metrics", 1) => props::<v1::SiteMetricsV1>(key, properties).and_then(|p| {
+			metric(
+				&p.day,
+				p.revision,
+				MetricValue::Visits {
+					source: DailyMetric::source(&p.source)?,
+					visits: DailyMetric::count("visits", p.visits)?,
+				},
+			)
+		}),
+		("contact.metrics", 1) => props::<v1::ContactMetricsV1>(key, properties).and_then(|p| {
+			metric(
+				&p.day,
+				p.revision,
+				MetricValue::Intents {
+					channel: IntentChannel::parse(&p.channel)?,
+					intents: DailyMetric::count("intents", p.intents)?,
+				},
+			)
+		}),
+		("experiment.metrics", 1) => props::<v1::ExperimentMetricsV1>(key, properties).and_then(|p| {
+			let count = DailyMetric::count;
+			metric(
+				&p.day,
+				p.revision,
+				MetricValue::Experiment {
+					experiment: DailyMetric::name("experiment", &p.experiment)?,
+					variant: DailyMetric::name("variant", &p.variant)?,
+					tally: Tally {
+						exposures: count("exposures", p.exposures)?,
+						leads: count("leads", p.leads)?,
+						phone: count("phone", p.phone)?,
+						whatsapp: count("whatsapp", p.whatsapp)?,
+						form_open: count("form_open", p.form_open)?,
+						booking: count("booking", p.booking)?,
+					},
+				},
+			)
+		}),
 		_ => return Checked::Unregistered,
 	};
 	match fact.and_then(|f| f.check_subject(subject).map(|()| f)) {
 		Ok(f) => Checked::Registered(f),
 		Err(e) => Checked::Invalid(e),
 	}
+}
+
+fn metric(day: &str, revision: u32, value: MetricValue) -> Result<Fact, Invalid> {
+	Ok(Fact::Metric(DailyMetric {
+		day: DailyMetric::parse_day(day)?,
+		revision: DailyMetric::revision(revision)?,
+		value,
+	}))
 }
 
 fn props<T: DeserializeOwned>(key: &TypeKey, properties: &Value) -> Result<T, Invalid> {
@@ -409,6 +460,62 @@ mod tests {
 			Checked::Invalid(Invalid::new("a site source may not write payment.received")),
 			"payments are entered by hand"
 		);
+	}
+
+	#[test]
+	fn counts() {
+		let key = |name| TypeKey::parse(name, 1).unwrap();
+		let mut subject = decode(event(), now()).unwrap().envelope.subject;
+		let visits = json!({"day": "2026-09-30", "source": "google.com", "visits": "12", "revision": 2});
+		assert_eq!(
+			check(&key("site.metrics"), SourceKind::Posthog, &visits, &subject),
+			Checked::Invalid(Invalid::new("a count names no lead and no job"))
+		);
+		subject.lead_id = None;
+		let Checked::Registered(Fact::Metric(m)) = check(&key("site.metrics"), SourceKind::Posthog, &visits, &subject) else {
+			panic!("visits refused")
+		};
+		assert_eq!((m.day.to_string(), m.revision, m.dimension()), ("2026-09-30".into(), 2, "google.com"));
+		assert_eq!(
+			check(&key("site.metrics"), SourceKind::Site, &visits, &subject),
+			Checked::Invalid(Invalid::new("a site source may not write site.metrics")),
+			"a landing cannot write its own counts"
+		);
+		for (name, props, want) in [
+			(
+				"site.metrics",
+				json!({"day": "2026-09-30", "source": "x", "visits": -1, "revision": 1}),
+				"properties.visits is negative",
+			),
+			("site.metrics", json!({"day": "2026-09-30", "source": "x", "visits": 1}), "properties.revision must be 1"),
+			("contact.metrics", json!({"day": "30.09.2026", "channel": "phone", "intents": 1, "revision": 1}), "properties.day"),
+			(
+				"contact.metrics",
+				json!({"day": "2026-09-30", "channel": "email", "intents": 1, "revision": 1}),
+				"properties.channel",
+			),
+			(
+				"experiment.metrics",
+				json!({"day": "2026-09-30", "experiment": "hero", "variant": "b", "exposures": 3, "revision": 1}),
+				"names no location",
+			),
+		] {
+			let Checked::Invalid(e) = check(&key(name), SourceKind::Posthog, &props, &subject) else {
+				panic!("{name} {props} passed")
+			};
+			assert!(e.0.contains(want), "{name}: {e}");
+		}
+		subject.location_id = None;
+		let Checked::Registered(Fact::Metric(m)) = check(
+			&key("experiment.metrics"),
+			SourceKind::Posthog,
+			&json!({"day": "2026-09-30", "experiment": "hero", "variant": "b", "exposures": 300, "formOpen": 4, "revision": 1}),
+			&subject,
+		) else {
+			panic!("an experiment's count refused")
+		};
+		let MetricValue::Experiment { tally, .. } = m.value else { panic!("{m:?}") };
+		assert_eq!((tally.exposures, tally.form_open, tally.leads), (300, 4, 0));
 	}
 
 	#[test]

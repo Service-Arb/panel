@@ -22,7 +22,7 @@ use panel::{
 use panel_core::{
 	Invalid,
 	event::SourceKind,
-	funnel::{MIN_SAMPLE, Share},
+	funnel::{MIN_SAMPLE, Share, Totals},
 	ids::{BrandId, JobId, LeadId, LocationId},
 	lead::Stage,
 };
@@ -85,6 +85,7 @@ pub fn routes() -> Router<Panel> {
 		.route("/leads/{brand}/{lead}/calls/{attempt}/outcome", post(call_outcome))
 		.route("/leads/{brand}/{lead}/payments", post(payment))
 		.route("/funnel", get(funnel))
+		.route("/experiments", get(crate::counts::experiments))
 		.route("/places", get(places))
 		.route("/sources", get(sources))
 }
@@ -143,7 +144,7 @@ impl From<ActionError> for ApiError {
 	}
 }
 
-type ApiResult<T> = Result<T, ApiError>;
+pub(crate) type ApiResult<T> = Result<T, ApiError>;
 
 /// A JSON body, its rejection turned into our error shape.
 fn body<T: DeserializeOwned>(b: Result<Json<T>, JsonRejection>) -> ApiResult<T> {
@@ -180,6 +181,24 @@ fn days(from: Option<&str>, to: Option<&str>, names: [&str; 2]) -> ApiResult<(Op
 		&& f > t
 	{
 		return Err(ApiError::BadRequest(format!("{} is after {}", names[0], names[1])));
+	}
+	Ok((from, to))
+}
+
+/// `from` and `to` of a report, UTC days, both included: by default the last 30 days, at
+/// most [`MAX_FUNNEL_DAYS`].
+pub(crate) fn window(from: Option<&str>, to: Option<&str>) -> ApiResult<(Date, Date)> {
+	let (from, to) = days(from, to, ["from", "to"])?;
+	let to = to.unwrap_or_else(|| Timestamp::now().to_zoned(TimeZone::UTC).date());
+	let from = match from {
+		Some(d) => d,
+		None => to.checked_sub(SignedDuration::from_hours(24 * 29)).map_err(|e| ApiError::Internal(e.into()))?,
+	};
+	if from > to {
+		return Err(ApiError::BadRequest("from is after to".into()));
+	}
+	if (to - from).get_days() >= MAX_FUNNEL_DAYS {
+		return Err(ApiError::BadRequest(format!("at most {MAX_FUNNEL_DAYS} days at once")));
 	}
 	Ok((from, to))
 }
@@ -503,7 +522,7 @@ struct FunnelQuery {
 /// A share as the front end may show it: `percent` only when `of` is large enough, and
 /// `small_sample` saying so otherwise, so "12 of 17" is all that can be drawn.
 #[derive(Serialize)]
-struct ShareDto {
+pub(crate) struct ShareDto {
 	n: u64,
 	of: u64,
 	percent: Option<u64>,
@@ -571,34 +590,44 @@ fn slice_body(s: FunnelSlice) -> serde_json::Map<String, Value> {
 
 async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::extract::rejection::QueryRejection>) -> ApiResult<Json<Value>> {
 	let Query(q) = q.map_err(|e| ApiError::BadRequest(e.body_text()))?;
-	let (from, to) = days(q.from.as_deref(), q.to.as_deref(), ["from", "to"])?;
-	let to = to.unwrap_or_else(|| Timestamp::now().to_zoned(TimeZone::UTC).date());
-	let from = match from {
-		Some(d) => d,
-		None => to.checked_sub(SignedDuration::from_hours(24 * 29)).map_err(|e| ApiError::Internal(e.into()))?,
-	};
-	if from > to {
-		return Err(ApiError::BadRequest("from is after to".into()));
-	}
-	if (to - from).get_days() >= MAX_FUNNEL_DAYS {
-		return Err(ApiError::BadRequest(format!("at most {MAX_FUNNEL_DAYS} days at once")));
-	}
+	let (from, to) = window(q.from.as_deref(), q.to.as_deref())?;
 	let by = match q.by.as_deref() {
 		None => FunnelBy::All,
 		Some("location") => FunnelBy::Location,
 		Some(_) => return Err(ApiError::BadRequest("by is location, or absent".into())),
 	};
 	let brand = q.brand.as_deref().map(BrandId::parse).transpose()?;
-	let slices = panel.funnel_slices(from, to, brand.as_ref(), by).await?;
+	let mut slices = panel.funnel_slices(from, to, brand.as_ref(), by).await?;
+	let mut site = panel.site_slices(from, to, brand.as_ref(), by).await?;
+	if by == FunnelBy::Location {
+		// A location with visits and no lead yet is a row of the funnel too.
+		for s in &site {
+			if !slices.iter().any(|l| l.brand == s.brand && l.location == s.location) {
+				slices.push(FunnelSlice {
+					brand: s.brand.clone(),
+					location: s.location.clone(),
+					totals: Totals::default(),
+					payments: Vec::new(),
+				});
+			}
+		}
+		slices.sort_by(|a, b| (&a.brand, a.location.is_none(), &a.location).cmp(&(&b.brand, b.location.is_none(), &b.location)));
+	}
+	let mut aggregate_of = |brand: &Option<String>, location: &Option<String>| {
+		let at = site.iter().position(|s| &s.brand == brand && &s.location == location);
+		crate::counts::aggregate_body(at.map(|i| site.swap_remove(i)).unwrap_or_default())
+	};
 	let mut body = json!({
 		"from": from.to_string(),
 		"to": to.to_string(),
 		"brand": brand.as_ref().map(BrandId::as_str),
 		"min_sample": MIN_SAMPLE,
+		"aggregate_source": crate::counts::source_body(panel.posthog_imported_at().await?),
 	});
 	match by {
 		FunnelBy::All => {
 			let whole = slices.into_iter().next().ok_or_else(|| ApiError::Internal(eyre::eyre!("the whole funnel came back empty")))?;
+			body["aggregate"] = aggregate_of(&None, &None);
 			for (k, v) in slice_body(whole) {
 				body[k] = v;
 			}
@@ -610,6 +639,7 @@ async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::
 					let mut row = serde_json::Map::new();
 					row.insert("brand".into(), json!(s.brand));
 					row.insert("location".into(), json!(s.location));
+					row.insert("aggregate".into(), aggregate_of(&s.brand, &s.location));
 					row.extend(slice_body(s));
 					Value::Object(row)
 				})

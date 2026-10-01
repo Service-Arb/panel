@@ -1,10 +1,10 @@
-//! The registered event types of phase 1, typed. A [`Fact`] is what an event says once its
-//! properties have been checked against `type@type_version`; the checks that need the
-//! subject (a lead event without a lead) are here too.
+//! The registered event types, typed. A [`Fact`] is what an event says once its properties
+//! have been checked against `type@type_version`; the checks that need the subject (a lead
+//! event without a lead) are here too.
 
 use std::fmt;
 
-use crate::{Invalid, event::Subject, ids::is_slug};
+use crate::{Invalid, event::Subject, ids::is_slug, metrics::DailyMetric};
 
 /// ISO 4217 code: three uppercase letters.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -157,6 +157,9 @@ pub enum Fact {
 		outcome: CallOutcome,
 		attempt_id: Option<String>,
 	},
+	/// A day's count of an aggregate stage or an experiment's variant (`site.metrics`,
+	/// `contact.metrics`, `experiment.metrics`): about no lead.
+	Metric(DailyMetric),
 }
 
 /// Free text a person typed: bounded, so a source cannot park a document in the journal.
@@ -208,9 +211,19 @@ impl Fact {
 		})
 	}
 
-	/// What the fact needs to know about its subject: every phase-1 type is about a lead,
-	/// and the job types about a job too.
+	/// What the fact needs to know about its subject: every lead type is about a lead, and
+	/// the job types about a job too; a count is about no one, and an experiment's about no
+	/// location either.
 	pub fn check_subject(&self, subject: &Subject) -> Result<(), Invalid> {
+		if let Self::Metric(m) = self {
+			if subject.lead_id.is_some() || subject.job_id.is_some() {
+				return Err(Invalid::new("a count names no lead and no job"));
+			}
+			if !m.located() && subject.location_id.is_some() {
+				return Err(Invalid::new("an experiment's count names no location"));
+			}
+			return Ok(());
+		}
 		if subject.lead_id.is_none() {
 			return Err(Invalid::new("subject.lead_id is required for this type"));
 		}
@@ -222,7 +235,8 @@ impl Fact {
 			| Self::LeadLost { .. }
 			| Self::PaymentReceived { .. }
 			| Self::CallAttempted
-			| Self::CallLogged { .. } => false,
+			| Self::CallLogged { .. }
+			| Self::Metric(_) => false,
 		};
 		if needs_job && subject.job_id.is_none() {
 			return Err(Invalid::new("subject.job_id is required for this type"));
