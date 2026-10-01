@@ -37,3 +37,8 @@ GRANT SELECT, UPDATE ON telegram_poller TO panel_app;
 
 -- The bot's unsolicited replies, throttled per chat.
 GRANT SELECT, INSERT, UPDATE, DELETE ON telegram_replies TO panel_app;
+
+-- The PostHog import's counts are projections like the others; its lease row is taken,
+-- renewed and released.
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON daily_location_metrics, daily_experiment_metrics TO panel_app;
+GRANT SELECT, UPDATE ON posthog_import TO panel_app;

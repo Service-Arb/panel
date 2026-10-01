@@ -1,4 +1,5 @@
-//! The projections — `leads`, `calls`, `payments` — derived from registered events only.
+//! The projections — `leads`, `calls`, `payments`, and the counts of
+//! [`super::metrics`] — derived from registered events only.
 //!
 //! A lead is never patched: every event about it recomputes its row from all of its
 //! events ([`panel_core::lead::fold`]), under a per-lead advisory lock so two events of
@@ -28,7 +29,7 @@ pub async fn apply(conn: &mut PgConnection, event: &Recorded) -> eyre::Result<()
 	Ok(())
 }
 
-/// The event's own row, if its type has a table: a call or a payment. Idempotent.
+/// The event's own row, if its type has a table: a call, a payment, a count. Idempotent.
 pub async fn insert_row(conn: &mut PgConnection, e: &Recorded) -> eyre::Result<()> {
 	let lead = e.subject.lead_id.as_ref().map(LeadId::as_str);
 	let location = e.subject.location_id.as_ref().map(LocationId::as_str);
@@ -76,6 +77,7 @@ pub async fn insert_row(conn: &mut PgConnection, e: &Recorded) -> eyre::Result<(
 			.await
 			.wrap_err("projecting a payment")?;
 		}
+		Fact::Metric(m) => super::metrics::project(conn, e, m).await?,
 		Fact::LeadCreated { .. } | Fact::LeadContacted { .. } | Fact::LeadQuoted { .. } | Fact::JobWon | Fact::LeadLost { .. } | Fact::JobCompleted => {}
 	}
 	Ok(())
@@ -187,6 +189,9 @@ pub async fn take_rebuild_lock(conn: &mut PgConnection) -> eyre::Result<()> {
 /// Empties the projections, for a rebuild. Takes their locks until the transaction ends,
 /// so ingest waits rather than writing into a half-built state.
 pub async fn clear(conn: &mut PgConnection) -> eyre::Result<()> {
-	sqlx::query("TRUNCATE leads, calls, payments").execute(&mut *conn).await.wrap_err("clearing the projections")?;
+	sqlx::query("TRUNCATE leads, calls, payments, daily_location_metrics, daily_experiment_metrics")
+		.execute(&mut *conn)
+		.await
+		.wrap_err("clearing the projections")?;
 	Ok(())
 }

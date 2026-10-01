@@ -144,3 +144,52 @@ message CallLoggedV1 {
   // The id of the call.attempted event this closes, when there was one.
   optional string attempt_id = 2;
 }
+
+// ── counts, from the PostHog import (spec §2 stages 3–4, §3.4, §7) ─────────────────────
+//
+// One count of one UTC day and slice; never about a person, so never a lead or a job in the
+// subject. A day is counted again while it is recent: a later count of the same slice comes
+// as a new event with the next `revision`, and the projection keeps the highest. Counts are
+// int64 (a JSON string or number), at least 0.
+
+// site.metrics@1 — page views of a location (`location_page_view`) from one traffic source.
+// subject.location_id: the location; absent for pages that name none.
+message SiteMetricsV1 {
+  // The UTC day, "2026-09-30".
+  string day = 1;
+  // Lowercase, 1–64 of [a-z0-9._:-]: utm_source, the referrer's host, direct, internal,
+  // unknown, or "other" for whatever does not fit and for the tail past the 20 largest.
+  string source = 2;
+  int64 visits = 3;
+  // 1, 2, …
+  uint32 revision = 4;
+}
+
+// contact.metrics@1 — intents at a location (`contact_intent_click`) through one channel.
+// subject.location_id as for site.metrics.
+message ContactMetricsV1 {
+  string day = 1;
+  // phone | whatsapp | form_open | booking
+  string channel = 2;
+  int64 intents = 3;
+  uint32 revision = 4;
+}
+
+// experiment.metrics@1 — one variant of one of the brand's experiments, forced (QA) visits
+// left out. No subject.location_id: the server-side lead event names none.
+message ExperimentMetricsV1 {
+  string day = 1;
+  // Lowercase slugs, as the landing names them ("quote_single_step", "b").
+  string experiment = 2;
+  string variant = 3;
+  // Page views shown the variant (`experiment_exposed`).
+  int64 exposures = 4;
+  // Leads the landing stored under it (`experiment_lead`).
+  int64 leads = 5;
+  // Intents under it, by channel (`experiment_contact{channel}`).
+  int64 phone = 6;
+  int64 whatsapp = 7;
+  int64 form_open = 8;
+  int64 booking = 9;
+  uint32 revision = 10;
+}
