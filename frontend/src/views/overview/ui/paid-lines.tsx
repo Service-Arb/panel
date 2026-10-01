@@ -5,7 +5,7 @@ import { useLocale, useT } from "@/shared/i18n";
 
 import { paidLines } from "../model/paid";
 
-/** "Paid · €2,310 · commission €231", one line per currency, under the "Paid" step. */
+/** "€2,310 · commission €231", one line per currency, under the "Paid" step that already names it. */
 export function PaidLines({ payments }: { payments: readonly Paid[] }) {
   const t = useT();
   const locale = useLocale();
@@ -15,7 +15,7 @@ export function PaidLines({ payments }: { payments: readonly Paid[] }) {
     <ul className="col-span-full flex flex-col gap-0.5 text-sm">
       {lines.map((line) => (
         <li key={line.currency} className="flex flex-wrap gap-x-2 tabular-nums">
-          <span className="font-medium text-ink">{t("funnel.paid.billed", { amount: line.billed })}</span>
+          <span className="font-medium text-ink">{line.billed}</span>
           {line.commission && <span className="text-ink-soft">{t("funnel.paid.commission", { amount: line.commission })}</span>}
         </li>
       ))}
