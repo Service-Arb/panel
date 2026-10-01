@@ -27,12 +27,13 @@ use eyre::WrapErr;
 use jiff::Timestamp;
 use panel_core::{
 	Invalid,
-	event::{KeyGrant, SourceKind},
+	event::{Envelope, KeyGrant, SourceKind},
 	ids::{BrandId, LeadId},
 	lead::Recorded,
 	signature::{self, SignatureError},
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -113,6 +114,30 @@ pub struct Rebuilt {
 	pub unregistered: u64,
 	pub invalid: u64,
 	pub leads: u64,
+}
+
+/// An id derived from its parts, the same for the same parts: what makes a retry of something
+/// the panel writes itself land on the journal's id instead of a second event.
+///
+/// Shaped as a UUIDv7 (version and variant bits), which is what the journal keys by, but its
+/// time field is hash, not time: the journal orders by `occurred_at`/`received_at`, the id
+/// only breaks ties.
+pub fn derived_id(namespace: &[u8], parts: &[&[u8]]) -> uuid::Uuid {
+	let mut h = Sha256::new();
+	h.update(namespace);
+	for (i, part) in parts.iter().enumerate() {
+		if i > 0 {
+			h.update([0]);
+		}
+		h.update(part);
+	}
+	let digest = h.finalize();
+	let mut bytes = [0u8; 16];
+	bytes.copy_from_slice(&digest[..16]);
+	uuid::Builder::from_bytes(bytes)
+		.with_version(uuid::Version::SortRand)
+		.with_variant(uuid::Variant::RFC4122)
+		.into_uuid()
 }
 
 /// The engine.
@@ -227,6 +252,26 @@ impl Panel {
 			Checked::Invalid(e) => return Ok(Outcome::Rejected(e)),
 		};
 		self.journal(&incoming, Some(&grant.key_id), status, fact, now).await
+	}
+
+	/// Journals an event the panel writes itself — an operator's action, an imported count —
+	/// decoded and judged exactly as a source's, with no signing key. `Err` inside: the
+	/// registry refuses it, and why.
+	async fn write_own(&self, raw: Value, now: Timestamp) -> eyre::Result<Result<(Outcome, Envelope), Invalid>> {
+		let incoming = match wire::decode(raw, now) {
+			Ok(i) => i,
+			Err(e) => return Ok(Err(e)),
+		};
+		let env = &incoming.envelope;
+		let checked = wire::check(&env.type_key, env.source.kind, &incoming.properties, &env.subject);
+		let (status, _) = Status::of(&checked);
+		let fact = match checked {
+			Checked::Registered(fact) => fact,
+			Checked::Invalid(e) => return Ok(Err(e)),
+			Checked::Unregistered => eyre::bail!("the panel wrote an unregistered type {}", env.type_key),
+		};
+		let outcome = self.journal(&incoming, None, status, Some(fact), now).await?;
+		Ok(Ok((outcome, incoming.envelope)))
 	}
 
 	/// Journals one event and, when registered, projects it — in one transaction, so a

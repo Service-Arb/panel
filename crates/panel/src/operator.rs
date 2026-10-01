@@ -7,7 +7,6 @@
 //!
 //! And what the operator screens read: leads, a lead's card, the funnel.
 
-use chrono::NaiveDate;
 use eyre::WrapErr;
 use jiff::{Timestamp, civil::Date};
 use panel_contracts::SCHEMA;
@@ -19,17 +18,15 @@ use panel_core::{
 	lead::Stage,
 };
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
 	Panel,
 	seal::pii_aad,
 	store::{
-		events::Status,
 		reads::{self, EventRow, LeadFilter, LeadRow, PaymentSum, PlaceRow, Sealed},
+		to_pg_day,
 	},
-	wire::{self, Checked},
 };
 
 /// Why an operator's action was not recorded.
@@ -67,20 +64,7 @@ pub struct Done<T> {
 /// its time field is hash, not time: the journal orders by `occurred_at`/`received_at`, the
 /// id only breaks ties.
 pub fn idempotent_id(by: Actor, action: &str, key: &str) -> Uuid {
-	let mut h = Sha256::new();
-	h.update(b"sa-panel/idempotency/v1/");
-	h.update(by.0.as_bytes());
-	h.update([0]);
-	h.update(action.as_bytes());
-	h.update([0]);
-	h.update(key.as_bytes());
-	let digest = h.finalize();
-	let mut bytes = [0u8; 16];
-	bytes.copy_from_slice(&digest[..16]);
-	uuid::Builder::from_bytes(bytes)
-		.with_version(uuid::Version::SortRand)
-		.with_variant(uuid::Variant::RFC4122)
-		.into_uuid()
+	crate::derived_id(b"sa-panel/idempotency/v1/", &[by.0.as_bytes(), action.as_bytes(), key.as_bytes()])
 }
 
 /// A lead taken over the phone, bypassing the form (§10a "+ Call").
@@ -396,16 +380,8 @@ impl Panel {
 		if let Some(pii) = pii {
 			raw["pii"] = pii;
 		}
-		let incoming = wire::decode(raw, now).map_err(ActionError::Invalid)?;
-		let env = &incoming.envelope;
-		let checked = wire::check(&env.type_key, env.source.kind, &incoming.properties, &env.subject);
-		let (status, _) = Status::of(&checked);
-		let fact = match checked {
-			Checked::Registered(fact) => fact,
-			Checked::Invalid(e) => return Err(ActionError::Invalid(e)),
-			Checked::Unregistered => return Err(ActionError::Internal(eyre::eyre!("the panel wrote an unregistered type {}", env.type_key))),
-		};
-		match self.journal(&incoming, None, status, Some(fact), now).await? {
+		let (outcome, env) = self.write_own(raw, now).await?.map_err(ActionError::Invalid)?;
+		match outcome {
 			crate::Outcome::Accepted { .. } => {
 				tracing::info!(user_id = %by.0, r#type, brand = %env.subject.brand_id, "operator action recorded");
 				let lead = env.subject.lead_id.clone().ok_or_else(|| eyre::eyre!("an operator action without a lead"))?;
@@ -477,14 +453,14 @@ impl Panel {
 	/// included).
 	pub async fn funnel(&self, from: Date, to: Date, brand: Option<&BrandId>) -> eyre::Result<Totals> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
-		reads::funnel(&mut conn, pg_day(from)?, pg_day(to)?, brand).await
+		reads::funnel(&mut conn, to_pg_day(from)?, to_pg_day(to)?, brand).await
 	}
 
 	/// [`Self::funnel`] cut `by`, each slice with the payments of its leads (whenever they were
 	/// paid). With [`FunnelBy::All`], a single slice, zeros included.
 	pub async fn funnel_slices(&self, from: Date, to: Date, brand: Option<&BrandId>, by: FunnelBy) -> eyre::Result<Vec<FunnelSlice>> {
 		let by_location = by == FunnelBy::Location;
-		let (from, to) = (pg_day(from)?, pg_day(to)?);
+		let (from, to) = (to_pg_day(from)?, to_pg_day(to)?);
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
 		let rows = reads::funnel_rows(&mut conn, from, to, brand, by_location).await?;
 		let payments = reads::funnel_payments(&mut conn, from, to, brand, by_location).await?;
@@ -553,11 +529,6 @@ impl Panel {
 		let plain = self.key.open(&pii_aad(id), blob).wrap_err_with(|| format!("opening the PII of event {id}"))?;
 		Ok(Some(serde_json::from_slice(&plain).wrap_err("stored PII is not JSON")?))
 	}
-}
-
-/// A civil date as the database's.
-fn pg_day(d: Date) -> eyre::Result<NaiveDate> {
-	NaiveDate::from_ymd_opt(i32::from(d.year()), u32::from(d.month().unsigned_abs()), u32::from(d.day().unsigned_abs())).ok_or_else(|| eyre::eyre!("date {d}"))
 }
 
 /// The subject of an action on a lead: its brand and id, and its location and job as the
