@@ -7,9 +7,11 @@
 //! PUT  /api/v1/places/{brand}/{slug}/settings        admin    {settings, expected_updated_at}
 //!                                                              → 200 as GET; 409 stale; 422 fields
 //! GET  /api/v1/places/{brand}/{slug}/settings/history         {changes: [{id, at, by, kind, before, after}]}
-//! POST /api/v1/places/{brand}/{slug}/settings/revert/{id}  admin  → 200 as GET; 404
+//! POST /api/v1/places/{brand}/{slug}/settings/revert/{id}  admin  [{expected_updated_at}]
+//!                                                              → 200 as GET; 404; 409 stale
 //! POST /api/v1/places/{brand}/{slug}/withdraw | /restore   admin  → 200 as GET
-//! POST /api/v1/places                                admin    {brand, slug} → 201 as GET (200 if known)
+//! POST /api/v1/places                                admin    {brand, slug} → 201 as GET;
+//!                                                              409 {"error": "exists"}
 //! GET  /api/internal/brands/{brand}/locations/{slug}?locale    PlaceLive, `{}` when none or
 //!                                                              unknown; 404 only when withdrawn
 //! ```
@@ -18,6 +20,7 @@ use std::time::Duration;
 
 use axum::{
 	Extension, Json, Router,
+	body::Bytes,
 	error_handling::HandleErrorLayer,
 	extract::{Path, State, rejection::JsonRejection},
 	http::StatusCode,
@@ -184,13 +187,7 @@ async fn set(
 	admin(&caller)?;
 	let (brand, slug) = ids(&brand, &slug)?;
 	let b = json_body(b)?;
-	let expected = match b.expected_updated_at.as_deref() {
-		None => None,
-		Some(raw) => Some(
-			raw.parse::<Timestamp>()
-				.map_err(|_| ApiError::BadRequest("expected_updated_at is not an RFC 3339 instant".into()))?,
-		),
-	};
+	let expected = expected_at(b.expected_updated_at.as_deref())?;
 	let settings = PlaceSettings::parse(&b.settings).map_err(PlaceApiError::Invalid)?;
 	let v = panel
 		.set_place(&editor(&caller), &brand, &slug, settings, Expected::At(expected), Timestamp::now())
@@ -199,14 +196,45 @@ async fn set(
 	Ok(Json(body(v, &caller)))
 }
 
-async fn revert(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path((brand, slug, id)): Path<(String, String, String)>) -> PlaceResult<Json<Value>> {
+/// `expected_updated_at` as the editor sent it: null for settings never set.
+fn expected_at(raw: Option<&str>) -> Result<Option<Timestamp>, ApiError> {
+	raw.map(|raw| {
+		raw.parse::<Timestamp>()
+			.map_err(|_| ApiError::BadRequest("expected_updated_at is not an RFC 3339 instant".into()))
+	})
+	.transpose()
+}
+
+/// A revert's body, optional: `{"expected_updated_at": "…" | null}` checks it as a PUT does;
+/// no body, `null` or `{}` reverts over whatever is there.
+fn revert_expected(raw: &[u8]) -> Result<Expected, ApiError> {
+	if raw.iter().all(u8::is_ascii_whitespace) {
+		return Ok(Expected::Any);
+	}
+	let v: Value = serde_json::from_slice(raw).map_err(|e| ApiError::BadRequest(format!("the body is not JSON: {e}")))?;
+	match v {
+		Value::Null => Ok(Expected::Any),
+		Value::Object(m) => {
+			if let Some(k) = m.keys().find(|k| *k != "expected_updated_at") {
+				return Err(ApiError::BadRequest(format!("unknown field `{k}`, expected `expected_updated_at`")));
+			}
+			match m.get("expected_updated_at") {
+				None => Ok(Expected::Any),
+				Some(Value::Null) => Ok(Expected::At(None)),
+				Some(Value::String(t)) => Ok(Expected::At(expected_at(Some(t))?)),
+				Some(_) => Err(ApiError::BadRequest("expected_updated_at is a string or null".into())),
+			}
+		}
+		_ => Err(ApiError::BadRequest("the body is {\"expected_updated_at\": …}".into())),
+	}
+}
+
+async fn revert(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path((brand, slug, id)): Path<(String, String, String)>, raw: Bytes) -> PlaceResult<Json<Value>> {
 	admin(&caller)?;
 	let (brand, slug) = ids(&brand, &slug)?;
 	let id = Uuid::parse_str(&id).map_err(|_| ApiError::NotFound)?;
-	let v = panel
-		.revert_place(&editor(&caller), &brand, &slug, id, Expected::Any, Timestamp::now())
-		.await
-		.map_err(place_error)?;
+	let expected = revert_expected(&raw)?;
+	let v = panel.revert_place(&editor(&caller), &brand, &slug, id, expected, Timestamp::now()).await.map_err(place_error)?;
 	Ok(Json(body(v, &caller)))
 }
 
@@ -237,8 +265,10 @@ async fn register(State(panel): State<Panel>, Extension(caller): Extension<Calle
 	let b = json_body(b)?;
 	let (brand, slug) = ids(&b.brand, &b.slug)?;
 	let (v, added) = panel.register_place(&editor(&caller), &brand, &slug, Timestamp::now()).await?;
-	let status = if added { StatusCode::CREATED } else { StatusCode::OK };
-	Ok((status, Json(body(v, &caller))).into_response())
+	if !added {
+		return Ok((StatusCode::CONFLICT, Json(json!({ "error": "exists" }))).into_response());
+	}
+	Ok((StatusCode::CREATED, Json(body(v, &caller))).into_response())
 }
 
 /// What a site gets. `locale` is accepted and not needed: a landmark is stored with every

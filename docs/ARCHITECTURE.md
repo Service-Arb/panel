@@ -255,7 +255,8 @@ A landing bakes its places into its build and lays over each, field by field, wh
 panel answers for it (kitstart's `createPlaceSource`, `PlaceLive`): `phone`, `whatsapp`
 (E.164), `hours` (`[{days, opens, closes}]`), `serviceArea` (commune names), and for
 storefronts `address`, `geo`, `storefrontPhoto` (https), `landmark` (a text per locale),
-`rating`. kitstart fetches every 10 minutes at most, times out after 3 s, and keeps its baked
+`rating`. Hours are the place's local time, Europe/Paris for every place in v1 (no
+time zone per place). kitstart fetches every 10 minutes at most, times out after 3 s, and keeps its baked
 place on a 5xx or no answer; a JSON 404 is a place withdrawn, and the site 404s it.
 
 ```text
@@ -275,14 +276,18 @@ GET  /places/{brand}/{slug}/settings          {brand, slug, withdrawn, settings,
 PUT  /places/{brand}/{slug}/settings          {settings, expected_updated_at} → 200 as GET; a
                                               full replace; 409 {"error": "conflict"} when
                                               expected_updated_at is not the current one;
-                                              422 {"error": "invalid", "fields": {field: why}}
+                                              422 {"error": "invalid", "fields": {key: why}},
+                                              a key the field or its path in a list:
+                                              hours[0].opens, hours[1].days, serviceArea[2]
 GET  /places/{brand}/{slug}/settings/history  {changes: [{id, at, by, kind, before, after,
                                               reverts}]}, newest first; kind register | set |
                                               revert | withdraw | restore
 POST /places/{brand}/{slug}/settings/revert/{id}  the `before` of that change made current,
-                                              journaled as a revert → 200 as GET; 404
+                                              journaled as a revert → 200 as GET; 404; body
+                                              {expected_updated_at} optional, 409 as a PUT
 POST /places/{brand}/{slug}/withdraw|restore  → 200 as GET; the settings are kept
-POST /places                                  {brand, slug} → 201 as GET; 200 if known
+POST /places                                  {brand, slug} → 201 as GET; 409 {"error":
+                                              "exists"} once registered (by hand or an edit)
 ```
 
 - **Checked as kitstart reads them, refused instead of dropped.** kitstart drops a field it

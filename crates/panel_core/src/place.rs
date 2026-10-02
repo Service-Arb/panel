@@ -15,7 +15,8 @@ use jiff::Timestamp;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-/// Why each field was refused, by its wire name: what the editor shows beside the field.
+/// Why each field was refused, by its wire name — or its path inside a list, `hours[0].opens`,
+/// `hours[1].days`, `serviceArea[2]`: what the editor shows beside the field.
 pub type FieldErrors = BTreeMap<String, String>;
 
 /// Every field a place's settings may set, by its wire name.
@@ -53,24 +54,24 @@ impl PlaceSettings {
 			if value.is_null() {
 				continue;
 			}
+			let whole = |r: Result<Value, String>| r.map_err(|e| vec![(String::new(), e)]);
 			let checked = match name.as_str() {
-				"phone" | "whatsapp" => phone(value),
+				"phone" | "whatsapp" => whole(phone(value)),
 				"hours" => hours(value),
 				"serviceArea" => service_area(value),
-				"address" => address(value),
-				"geo" => geo(value),
-				"storefrontPhoto" => https_url(value),
-				"landmark" => landmark(value),
-				"rating" => rating(value),
-				_ => Err(format!("is not a setting; one of {}", FIELDS.join(", "))),
+				"address" => whole(address(value)),
+				"geo" => whole(geo(value)),
+				"storefrontPhoto" => whole(https_url(value)),
+				"landmark" => whole(landmark(value)),
+				"rating" => whole(rating(value)),
+				_ => whole(Err(format!("is not a setting; one of {}", FIELDS.join(", ")))),
 			};
 			match checked {
 				Ok(v) => {
 					out.insert(name.clone(), v);
 				}
-				Err(e) => {
-					errors.insert(name.clone(), e);
-				}
+				// A part of a list is named by its path: `hours[0].opens`, `serviceArea[2]`.
+				Err(bad) => errors.extend(bad.into_iter().map(|(path, why)| (format!("{name}{path}"), why))),
 			}
 		}
 		if errors.is_empty() { Ok(Self(out)) } else { Err(errors) }
@@ -169,71 +170,93 @@ fn is_time(s: &str) -> bool {
 	b.len() == 5 && b[2] == b':' && b.iter().enumerate().all(|(i, c)| i == 2 || c.is_ascii_digit()) && matches!(b[0], b'0'..=b'2') && (b[0] != b'2' || b[1] <= b'3') && b[3] <= b'5'
 }
 
+/// What was wrong inside a list field: `(path below the field, why)`, every one found.
+type Bad = Vec<(String, String)>;
+
 /// `[{days: [Monday, …], opens: "08:00", closes: "19:00"}, …]`: at least one row (an empty
 /// list is what kitstart drops); a day once per row; a row closes after it opens (a night
-/// across midnight is two rows).
-fn hours(v: &Value) -> Result<Value, String> {
+/// across midnight is two rows). Times are the place's local time, Europe/Paris for every
+/// place today.
+fn hours(v: &Value) -> Result<Value, Bad> {
+	let whole = |why: String| vec![(String::new(), why)];
 	let Value::Array(rows) = v else {
-		return Err("must be a list of {days, opens, closes}".into());
+		return Err(whole("must be a list of {days, opens, closes}".into()));
 	};
 	if rows.is_empty() {
-		return Err("must have a row at least; leave it out to keep the site's own hours".into());
+		return Err(whole("must have a row at least; leave it out to keep the site's own hours".into()));
 	}
 	if rows.len() > MAX_HOURS {
-		return Err(format!("must have at most {MAX_HOURS} rows"));
+		return Err(whole(format!("must have at most {MAX_HOURS} rows")));
 	}
 	let mut out = Vec::with_capacity(rows.len());
+	let mut bad = Bad::new();
 	for (i, row) in rows.iter().enumerate() {
-		let at = |msg: String| format!("row {}: {msg}", i + 1);
-		let m = object(row, &["days", "opens", "closes"]).map_err(at)?;
-		let Value::Array(days) = &m["days"] else {
-			return Err(at("days must be a list of day names".into()));
-		};
-		if days.is_empty() {
-			return Err(at("days must name a day at least".into()));
-		}
-		let mut seen = [false; 7];
-		for d in days {
-			let Some(n) = d.as_str().and_then(|d| DAYS.iter().position(|day| *day == d)) else {
-				return Err(at(format!("days are among {}", DAYS.join(", "))));
-			};
-			if std::mem::replace(&mut seen[n], true) {
-				return Err(at(format!("{} is named twice", DAYS[n])));
+		let mut row_bad = |part: &str, why: String| bad.push((format!("[{i}]{part}"), why));
+		let m = match object(row, &["days", "opens", "closes"]) {
+			Ok(m) => m,
+			Err(why) => {
+				row_bad("", why);
+				continue;
 			}
-		}
+		};
+		let days = row_days(&m["days"]).map_err(|why| row_bad(".days", why));
 		let time = |k: &str| match m[k].as_str() {
 			Some(t) if is_time(t) => Ok(t.to_owned()),
-			_ => Err(at(format!("{k} must be HH:MM, 00:00 to 23:59"))),
+			_ => Err("must be HH:MM, 00:00 to 23:59".to_owned()),
 		};
-		let (opens, closes) = (time("opens")?, time("closes")?);
+		let opens = time("opens").map_err(|why| row_bad(".opens", why));
+		let closes = time("closes").map_err(|why| row_bad(".closes", why));
+		let (Ok(days), Ok(opens), Ok(closes)) = (days, opens, closes) else { continue };
 		// HH:MM sorts as the time it names.
 		if closes <= opens {
-			return Err(at("closes must be after opens; split a night across midnight into two rows".into()));
+			row_bad(".closes", "must be after opens; split a night across midnight into two rows".into());
+			continue;
 		}
-		let days: Vec<Value> = DAYS.iter().zip(seen).filter(|(_, s)| *s).map(|(d, _)| Value::from(*d)).collect();
 		out.push(serde_json::json!({ "days": days, "opens": opens, "closes": closes }));
 	}
-	Ok(Value::Array(out))
+	if bad.is_empty() { Ok(Value::Array(out)) } else { Err(bad) }
+}
+
+/// A row's days: one at least, each once, put in week order.
+fn row_days(v: &Value) -> Result<Vec<Value>, String> {
+	let Value::Array(days) = v else { return Err("must be a list of day names".into()) };
+	if days.is_empty() {
+		return Err("must name a day at least".into());
+	}
+	let mut seen = [false; 7];
+	for d in days {
+		let Some(n) = d.as_str().and_then(|d| DAYS.iter().position(|day| *day == d)) else {
+			return Err(format!("are among {}", DAYS.join(", ")));
+		};
+		if std::mem::replace(&mut seen[n], true) {
+			return Err(format!("name {} twice", DAYS[n]));
+		}
+	}
+	Ok(DAYS.iter().zip(seen).filter(|(_, s)| *s).map(|(d, _)| Value::from(*d)).collect())
 }
 
 /// Commune names, at least one, each once.
-fn service_area(v: &Value) -> Result<Value, String> {
-	let Value::Array(names) = v else { return Err("must be a list of commune names".into()) };
+fn service_area(v: &Value) -> Result<Value, Bad> {
+	let whole = |why: String| vec![(String::new(), why)];
+	let Value::Array(names) = v else {
+		return Err(whole("must be a list of commune names".into()));
+	};
 	if names.is_empty() {
-		return Err("must name a commune at least; leave it out to keep the site's own".into());
+		return Err(whole("must name a commune at least; leave it out to keep the site's own".into()));
 	}
 	if names.len() > MAX_AREA {
-		return Err(format!("must have at most {MAX_AREA} names"));
+		return Err(whole(format!("must have at most {MAX_AREA} names")));
 	}
 	let mut out: Vec<String> = Vec::with_capacity(names.len());
+	let mut bad = Bad::new();
 	for (i, n) in names.iter().enumerate() {
-		let name = text(n, MAX_TEXT).map_err(|e| format!("name {}: {e}", i + 1))?;
-		if out.iter().any(|o| o.to_lowercase() == name.to_lowercase()) {
-			return Err(format!("{name} is named twice"));
+		match text(n, MAX_TEXT) {
+			Ok(name) if out.iter().any(|o| o.to_lowercase() == name.to_lowercase()) => bad.push((format!("[{i}]"), format!("{name} is named twice"))),
+			Ok(name) => out.push(name),
+			Err(why) => bad.push((format!("[{i}]"), why)),
 		}
-		out.push(name);
 	}
-	Ok(Value::from(out))
+	if bad.is_empty() { Ok(Value::from(out)) } else { Err(bad) }
 }
 
 /// `{street, postalCode, locality}`, a French postal code of five digits.
@@ -453,8 +476,23 @@ mod tests {
 			(json!({"hours": [{"days": ["Monday"], "opens": "08:00"}]}), "no closes"),
 			(json!({"hours": [{"days": ["Monday"], "opens": "08:00", "closes": "19:00", "note": "x"}]}), "a stray key"),
 		] {
-			assert!(err(body).contains_key("hours"), "{why}");
+			assert!(err(body).keys().all(|k| k.starts_with("hours")), "{why}");
 		}
+	}
+
+	#[test]
+	fn a_list_names_the_part_that_is_wrong() {
+		let e = err(json!({
+			"hours": [
+				{"days": ["Monday"], "opens": "08:00", "closes": "19:00"},
+				{"days": ["Tuesday", "Tuesday"], "opens": "8h", "closes": "19:00"},
+				{"days": ["Friday"], "opens": "19:00", "closes": "08:00"},
+			],
+			"serviceArea": ["Royat", "", "royat"],
+		}));
+		let keys: Vec<&str> = e.keys().map(String::as_str).collect();
+		assert_eq!(keys, ["hours[1].days", "hours[1].opens", "hours[2].closes", "serviceArea[1]", "serviceArea[2]"]);
+		assert_eq!(err(json!({"hours": "Mo-Fr"})).keys().collect::<Vec<_>>(), ["hours"]);
 	}
 
 	#[test]

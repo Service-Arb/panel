@@ -1025,6 +1025,11 @@ async fn an_admin_edits_a_places_settings_and_the_sites_read_them() {
 	assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", invalid.body);
 	assert_eq!(invalid.body["error"], "invalid");
 	assert_eq!(invalid.body["fields"]["phone"], "must be E.164, e.g. +33612345678");
+	let rows = json!({"settings": {"hours": [{"days": ["Monday"], "opens": "8:00", "closes": "19:00"}], "serviceArea": ["Royat", " "]}});
+	let nested = put(&mut b, &app, settings, rows).await;
+	assert_eq!(nested.status, StatusCode::UNPROCESSABLE_ENTITY);
+	let keys: Vec<&String> = nested.body["fields"].as_object().unwrap().keys().collect();
+	assert_eq!(keys, ["hours[0].opens", "serviceArea[1]"]);
 	assert!(invalid.body["fields"]["fax"].is_string());
 	let no_csrf = b.send(&app, Method::PUT, settings, Some(json!({"settings": wanted, "expected_updated_at": null})), false).await;
 	assert_eq!(no_csrf.status, StatusCode::FORBIDDEN);
@@ -1048,7 +1053,10 @@ async fn an_admin_edits_a_places_settings_and_the_sites_read_them() {
 	assert_eq!((changes[0]["before"].clone(), changes[0]["after"].clone()), (wanted.clone(), json!({"phone": "+33612345678"})));
 
 	let id = changes[0]["id"].as_str().unwrap();
-	let reverted = b.post(&app, &format!("{settings}/revert/{id}"), json!(null)).await;
+	let stale = b.post(&app, &format!("{settings}/revert/{id}"), json!({"expected_updated_at": updated_at})).await;
+	assert_eq!((stale.status, stale.body), (StatusCode::CONFLICT, json!({"error": "conflict"})), "as a PUT");
+	let current = cleared.body["updated_at"].clone();
+	let reverted = b.post(&app, &format!("{settings}/revert/{id}"), json!({"expected_updated_at": current})).await;
 	assert_eq!(reverted.status, StatusCode::OK, "{}", reverted.body);
 	assert_eq!(reverted.body["settings"], wanted);
 	assert_eq!(
@@ -1066,11 +1074,10 @@ async fn an_admin_edits_a_places_settings_and_the_sites_read_them() {
 	let added = b.post(&app, "/api/v1/places", json!({"brand": "aquafix", "slug": "vichy"})).await;
 	assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
 	assert_eq!(added.body["settings"], json!({}));
-	assert_eq!(
-		b.post(&app, "/api/v1/places", json!({"brand": "aquafix", "slug": "vichy"})).await.status,
-		StatusCode::OK,
-		"known already"
-	);
+	let again = b.post(&app, "/api/v1/places", json!({"brand": "aquafix", "slug": "vichy"})).await;
+	assert_eq!((again.status, again.body), (StatusCode::CONFLICT, json!({"error": "exists"})));
+	let known = b.post(&app, "/api/v1/places", json!({"brand": "aquafix", "slug": "royat"})).await;
+	assert_eq!(known.status, StatusCode::CONFLICT, "registered by its first edit");
 	let places = b.get(&app, "/api/v1/places").await;
 	assert_eq!(
 		places.body["places"],
