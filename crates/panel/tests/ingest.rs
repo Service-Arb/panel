@@ -116,6 +116,73 @@ async fn dedup_by_id() {
 }
 
 #[tokio::test]
+async fn a_callback_request_is_a_lead_channel() {
+	let db = TestDb::create().await;
+	let (panel, secret, _) = setup(&db).await;
+	let events = [
+		event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "callback"})),
+		event("lead.created", at(0), "site", lead("L-2"), json!({"channel": "smoke_signal"})),
+	];
+	let got = panel.ingest(sign("aquafix-site", &secret, &events, now()).batch(), now()).await.unwrap();
+	assert_eq!(
+		outcomes(&got),
+		[
+			ACCEPTED,
+			Outcome::Rejected(panel_core::Invalid::new("properties.channel is not one of form, phone_inbound, callback"))
+		]
+	);
+	let pool = db.pool().await;
+	let channel = || async {
+		sqlx::query_scalar::<_, Option<String>>("SELECT channel FROM reporting_leads WHERE lead_id = 'L-1'")
+			.fetch_one(&pool)
+			.await
+			.unwrap()
+	};
+	assert_eq!(channel().await.as_deref(), Some("callback"));
+	panel.rebuild_projections().await.unwrap();
+	assert_eq!(channel().await.as_deref(), Some("callback"), "and the rebuild agrees");
+}
+
+/// The migration that let `callback` into `leads.channel` rebuilt the table: undone and
+/// applied again, the rows and the views over them are still there.
+#[tokio::test]
+async fn the_callback_migration_keeps_the_leads_both_ways() {
+	const CALLBACK: i64 = 20261003120000;
+	let db = TestDb::create().await;
+	let (panel, secret, _) = setup(&db).await;
+	let events = [
+		event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"})),
+		event("lead.created", at(1), "site", lead("L-2"), json!({"channel": "callback"})),
+	];
+	panel.ingest(sign("aquafix-site", &secret, &events, now()).batch(), now()).await.unwrap();
+	let pool = db.pool().await;
+	let rows = || async {
+		sqlx::query_as::<_, (String, Option<String>)>("SELECT lead_id, channel FROM reporting_leads ORDER BY lead_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap()
+	};
+	let funnel = "SELECT sum(leads) FROM reporting_funnel_daily";
+
+	let migrator = sqlx::migrate!("./migrations");
+	migrator.undo(&pool, CALLBACK - 1).await.unwrap();
+	assert_eq!(
+		rows().await,
+		[("L-1".to_owned(), Some("form".to_owned())), ("L-2".to_owned(), None)],
+		"callback has no word before it"
+	);
+	assert_eq!(count(&pool, funnel).await, 2);
+	let refused = sqlx::query("UPDATE leads SET channel = 'callback' WHERE lead_id = 'L-2'").execute(&pool).await;
+	assert!(refused.is_err(), "the old CHECK is back");
+
+	migrator.run(&pool).await.unwrap();
+	assert_eq!(rows().await, [("L-1".to_owned(), Some("form".to_owned())), ("L-2".to_owned(), None)]);
+	assert_eq!(count(&pool, funnel).await, 2);
+	panel.rebuild_projections().await.unwrap();
+	assert_eq!(rows().await[1], ("L-2".to_owned(), Some("callback".to_owned())), "the journal still has it");
+}
+
+#[tokio::test]
 async fn unregistered_types_are_kept_not_projected() {
 	let db = TestDb::create().await;
 	let (panel, secret, _) = setup(&db).await;

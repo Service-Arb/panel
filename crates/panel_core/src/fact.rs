@@ -44,6 +44,8 @@ pub enum LeadChannel {
 	Form,
 	/// A call that bypassed the form, entered by the operator (spec §10a).
 	PhoneInbound,
+	/// The landing's "call me back" request: the customer left a number to be called on.
+	Callback,
 }
 
 impl LeadChannel {
@@ -51,6 +53,7 @@ impl LeadChannel {
 		match self {
 			Self::Form => "form",
 			Self::PhoneInbound => "phone_inbound",
+			Self::Callback => "callback",
 		}
 	}
 
@@ -58,7 +61,8 @@ impl LeadChannel {
 		match raw {
 			"form" => Ok(Self::Form),
 			"phone_inbound" => Ok(Self::PhoneInbound),
-			_ => Err(Invalid::new("properties.channel is not one of form, phone_inbound")),
+			"callback" => Ok(Self::Callback),
+			_ => Err(Invalid::new("properties.channel is not one of form, phone_inbound, callback")),
 		}
 	}
 }
