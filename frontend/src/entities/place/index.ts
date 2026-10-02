@@ -15,3 +15,4 @@ export { formatDays, formatHours, isOpenAt, localTimeOf, minutesOf } from "./lib
 export type { LocalTime } from "./lib/hours";
 export { ChannelPreview } from "./ui/channel-preview";
 export { ChangeEntry } from "./ui/change-entry";
+export { ConflictAlert } from "./ui/conflict-alert";

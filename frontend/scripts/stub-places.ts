@@ -4,7 +4,7 @@
  * contract"). In memory, validated roughly as the backend validates, with a
  * journal for the history and the reverts.
  *
- *   STUB_PLACES_CONFLICT=1   every save answers 409, as if someone saved first
+ *   STUB_PLACES_CONFLICT=1   every save and revert answers 409, as if someone saved first
  */
 import { randomUUID } from "node:crypto";
 
@@ -134,9 +134,9 @@ export function placeSettingsRoute(method: string, path: string, body: Json, rol
     if (role !== "admin") return { status: 403, body: { error: "your role may not do this" } };
     const brand = String(body.brand ?? "");
     const location = String(body.slug ?? "");
-    if (added.some((p) => p.brand === brand && p.location === location)) return { status: 409, body: { error: "the place exists already" } };
+    if (added.some((p) => p.brand === brand && p.location === location) || places.has(`${brand}/${location}`)) return { status: 409, body: { error: "exists" } };
     added.push({ brand, location });
-    return { status: 201, body: { brand, slug: location } };
+    return { status: 201, body: view(brand, location, role) };
   }
   const m = path.match(/^\/places\/([^/]+)\/([^/]+)\/(settings(?:\/history|\/revert\/[^/]+)?|withdraw|restore)$/);
   if (!m) return null;
@@ -146,9 +146,9 @@ export function placeSettingsRoute(method: string, path: string, body: Json, rol
   if (writes && role !== "admin") return { status: 403, body: { error: "your role may not do this" } };
 
   if (rest === "settings" && method === "GET") return { status: 200, body: view(brand, slug, role) };
+  const stale = () => ALWAYS_CONFLICT || (body.expected_updated_at ?? null) !== (places.get(key)?.updated_at ?? null);
   if (rest === "settings" && method === "PUT") {
-    const current = places.get(key)?.updated_at ?? null;
-    if (ALWAYS_CONFLICT || (body.expected_updated_at ?? null) !== current) return { status: 409, body: { error: "conflict" } };
+    if (stale()) return { status: 409, body: { error: "conflict" } };
     const settings = typeof body.settings === "object" && body.settings !== null ? (body.settings as Json) : {};
     const fields = invalid(settings);
     if (Object.keys(fields).length > 0) return { status: 422, body: { error: "invalid", fields } };
@@ -159,6 +159,7 @@ export function placeSettingsRoute(method: string, path: string, body: Json, rol
   if (rest.startsWith("settings/revert/") && method === "POST") {
     const change = journal.get(key)?.find((c) => c.id === decodeURIComponent(rest.slice("settings/revert/".length)));
     if (!change) return { status: 404, body: { error: "not_found" } };
+    if (stale()) return { status: 409, body: { error: "conflict" } };
     write(key, me, (p) => (p.settings = change.before));
     return { status: 200, body: view(brand, slug, role) };
   }

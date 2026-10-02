@@ -55,7 +55,7 @@ export function PlaceSettingsPanel({ place, onChanged }: { place: PlaceKey; onCh
           {view.can_edit ? <SettingsForm key={view.updated_at ?? "never"} place={view} onSaved={written} onReload={changed(false)} /> : <SettingsSummary place={view} />}
         </TabsContent>
         <TabsContent value="history" className="pt-3">
-          <PlaceHistory place={place} version={version} canEdit={view.can_edit} onChanged={written} />
+          <PlaceHistory view={view} version={version} onChanged={written} onReload={changed(false)} />
         </TabsContent>
       </Tabs>
       {managesPlaces(role) && (

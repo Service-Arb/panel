@@ -1,9 +1,9 @@
 "use client";
 
-import { Alert, AlertDescription, AlertTitle, Button } from "@evinvest/uikit";
+import { Alert, AlertDescription, Button } from "@evinvest/uikit";
 import { useState } from "react";
 
-import { ChannelPreview, type PlaceSettingsView } from "@/entities/place";
+import { ChannelPreview, ConflictAlert, type PlaceSettingsView } from "@/entities/place";
 import { useT } from "@/shared/i18n";
 import { useButtonSize } from "@/shared/ui/touch";
 
@@ -42,15 +42,7 @@ export function SettingsForm({ place, onSaved, onReload }: SettingsFormProps) {
         if (changed && draftValid(draft)) void save(settingsOf(draft, base));
       }}
     >
-      {state.kind === "conflict" && (
-        <Alert variant="destructive" className="flex flex-col gap-2">
-          <AlertTitle>{t("placeSettings.conflict.title")}</AlertTitle>
-          <AlertDescription>{t("placeSettings.conflict.body")}</AlertDescription>
-          <Button type="button" variant="outline" size={button("sm")} className="self-start" onClick={onReload}>
-            {t("placeSettings.conflict.reload")}
-          </Button>
-        </Alert>
-      )}
+      {state.kind === "conflict" && <ConflictAlert onReload={onReload} />}
       {state.kind === "invalid" && (
         <Alert variant="destructive">
           <AlertDescription>

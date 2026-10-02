@@ -23,7 +23,7 @@ tests/               vitest, in Node: the rules the screens obey live in plain m
 npm ci
 npm run dev:stub     # :3121 — the operator API over made-up leads; STUB_ROLE=admin, STUB_ME=401|403|503,
                      # STUB_MIN_SAMPLE=2 for percents on so few leads, STUB_POSTHOG=off for no import yet,
-                     # STUB_PLACES_CONFLICT=1 for a 409 on every place-settings save
+                     # STUB_PLACES_CONFLICT=1 for a 409 on every place-settings save and revert
 npm run dev          # :3120 — proxies /api and /auth to PANEL_DEV_BACKEND (default the stub)
 ```
 
@@ -60,7 +60,7 @@ baked config within its 600 s fetch TTL. The form edits only those four; any
 other live field (address, geo, photo, landmark, rating) goes back as it came,
 since a save is a full replace guarded by `expected_updated_at` (409 → reload).
 A 422 names its fields and the form shows each reason on its field. The history
-reads each change as before → after, with a revert; an admin can withdraw a
+reads each change as before → after, with a revert guarded the same way; an admin can withdraw a
 point (the site then answers 404 for it) and add one by hand. An operator reads.
 
 The preview of the contact channels assumes the places' hours are Paris time

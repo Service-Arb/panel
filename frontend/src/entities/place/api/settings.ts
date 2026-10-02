@@ -1,4 +1,4 @@
-import { http, ignoreBody } from "@/shared/api";
+import { http } from "@/shared/api";
 
 import { type PlaceSettings, type PlaceSettingsView, type SettingsChange, historyParser, placeSettingsParser, settingsToWire } from "../model/settings";
 
@@ -26,9 +26,12 @@ export async function fetchSettingsHistory(key: PlaceKey): Promise<SettingsChang
   return (await http.get(`${placePath(key)}/settings/history`, historyParser)).changes;
 }
 
-/** The change's `before` becomes current; the revert is itself a change in the history. */
-export function revertSettingsChange(key: PlaceKey, changeId: string): Promise<PlaceSettingsView> {
-  return http.send("POST", `${placePath(key)}/settings/revert/${encodeURIComponent(changeId)}`, undefined, placeSettingsParser);
+/**
+ * The change's `before` becomes current; the revert is itself a change in the
+ * history. Guarded like a save: a newer `updated_at` on the server answers 409.
+ */
+export function revertSettingsChange(key: PlaceKey, changeId: string, expectedUpdatedAt: string | null): Promise<PlaceSettingsView> {
+  return http.send("POST", `${placePath(key)}/settings/revert/${encodeURIComponent(changeId)}`, { expected_updated_at: expectedUpdatedAt }, placeSettingsParser);
 }
 
 /** Admin only: the site answers 404 for a withdrawn place until it is restored. */
@@ -36,7 +39,7 @@ export function setPlaceWithdrawn(key: PlaceKey, withdrawn: boolean): Promise<Pl
   return http.send("POST", `${placePath(key)}/${withdrawn ? "withdraw" : "restore"}`, undefined, placeSettingsParser);
 }
 
-/** Admin only: a place no lead or visit has named yet. */
-export async function addPlace(key: PlaceKey): Promise<void> {
-  await http.send("POST", "/api/v1/places", key, ignoreBody);
+/** Admin only: a place no lead or visit has named yet. 409 `exists` when it is registered already. */
+export function addPlace(key: PlaceKey): Promise<PlaceSettingsView> {
+  return http.send("POST", "/api/v1/places", key, placeSettingsParser);
 }
