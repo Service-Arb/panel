@@ -18,6 +18,8 @@ export type ApiFailure =
   | { kind: "not_found" }
   | { kind: "conflict"; message: string }
   | { kind: "bad_request"; message: string }
+  /** A 422 naming the fields it refused, each with the backend's reason. */
+  | { kind: "invalid_fields"; fields: Record<string, string> }
   | { kind: "failed"; status: number; message: string }
   | { kind: "network" };
 
@@ -46,18 +48,31 @@ function withQuery(path: string, query?: Query): string {
   return s ? `${path}?${s}` : path;
 }
 
-async function errorMessage(res: Response): Promise<string> {
+interface ErrorBody {
+  message: string;
+  fields: Record<string, string> | null;
+}
+
+/** `{"error": "...", "fields": {...}}`, the backend's error shape; anything else says nothing. */
+async function errorBody(res: Response): Promise<ErrorBody> {
   try {
     const body: unknown = await res.json();
-    if (typeof body === "object" && body !== null && "error" in body && typeof body.error === "string") return body.error;
+    if (typeof body !== "object" || body === null) return { message: "", fields: null };
+    const message = "error" in body && typeof body.error === "string" ? body.error : "";
+    const raw = "fields" in body ? body.fields : null;
+    const fields =
+      typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? Object.fromEntries(Object.entries(raw).filter((e): e is [string, string] => typeof e[1] === "string"))
+        : null;
+    return { message, fields };
   } catch {
     // Not JSON: a proxy's page, say. The status says enough.
+    return { message: "", fields: null };
   }
-  return "";
 }
 
 export async function failureOf(res: Response): Promise<ApiFailure> {
-  const message = await errorMessage(res);
+  const { message, fields } = await errorBody(res);
   switch (res.status) {
     case 401:
       return { kind: "unauthenticated" };
@@ -71,6 +86,8 @@ export async function failureOf(res: Response): Promise<ApiFailure> {
       return { kind: "conflict", message };
     case 400:
       return { kind: "bad_request", message };
+    case 422:
+      return fields ? { kind: "invalid_fields", fields } : { kind: "failed", status: 422, message };
     case 503:
       return { kind: "unavailable" };
     default:
@@ -81,7 +98,7 @@ export async function failureOf(res: Response): Promise<ApiFailure> {
 export interface Http {
   get<T>(path: string, parser: Parser<T>, query?: Query): Promise<T>;
   /** Every write carries the CSRF header; the backend refuses one without it. */
-  send<T>(method: "POST" | "DELETE", path: string, body: unknown, parser: Parser<T>): Promise<T>;
+  send<T>(method: "POST" | "PUT" | "DELETE", path: string, body: unknown, parser: Parser<T>): Promise<T>;
 }
 
 export function createHttp(deps: HttpDeps): Http {

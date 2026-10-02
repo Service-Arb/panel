@@ -15,6 +15,8 @@ export function failureText(failure: ApiFailure | { kind: "invalid"; message: st
     case "bad_request":
     case "conflict":
       return failure.message;
+    case "invalid_fields":
+      return Object.values(failure.fields).join(" · ") || t("state.error", { detail: "422" });
     case "failed":
       return t("state.error", { detail: `HTTP ${failure.status}` });
     case "invalid":
