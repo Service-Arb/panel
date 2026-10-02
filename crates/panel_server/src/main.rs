@@ -8,8 +8,18 @@ use std::{collections::BTreeSet, net::SocketAddr};
 use clap::{Parser, Subcommand};
 use ev_lib::error_monitoring;
 use eyre::WrapErr;
-use panel::{Panel, seal::DataKey, store::Store, telegram::Notifier};
-use panel_core::{event::SourceKind, ids::BrandId};
+use panel::{
+	Panel,
+	place::{Expected, PlaceError, PlaceView},
+	seal::DataKey,
+	store::Store,
+	telegram::Notifier,
+};
+use panel_core::{
+	event::SourceKind,
+	ids::{BrandId, LocationId},
+	place::{self, Editor},
+};
 use panel_server::{
 	DEFAULT_BIND,
 	concierge::Concierge,
@@ -50,8 +60,44 @@ enum Cmd {
 	/// The sources that may write events, and their keys.
 	#[command(subcommand)]
 	Source(SourceCmd),
+	/// A place's live settings, what the sites lay over their baked config.
+	#[command(subcommand)]
+	Place(PlaceCmd),
 	/// Print a fresh PANEL_DATA_KEY.
 	GenDataKey,
+}
+
+#[derive(Subcommand)]
+enum PlaceCmd {
+	/// Set some fields, clear others; the rest stay. Journaled as `by = cli`.
+	Set {
+		brand: String,
+		slug: String,
+		/// E.164, e.g. +33612345678.
+		#[arg(long)]
+		phone: Option<String>,
+		#[arg(long)]
+		whatsapp: Option<String>,
+		/// Rows split by commas: 'Mo-Fr 08:00-19:00,Sa 09:00-12:00'.
+		#[arg(long)]
+		hours: Option<String>,
+		/// Commune names split by commas: 'Royat,Chamalières'.
+		#[arg(long = "service-area")]
+		service_area: Option<String>,
+		/// A field to clear (the site's baked value takes over); repeat for several.
+		#[arg(long = "clear", value_name = "FIELD")]
+		clear: Vec<String>,
+	},
+	/// The settings as the sites get them, and who set them when.
+	Show { brand: String, slug: String },
+	/// Every change, newest first.
+	History { brand: String, slug: String },
+	/// Put back the settings a change found; journaled as a change of its own.
+	Revert { brand: String, slug: String, id: uuid::Uuid },
+	/// Take the place off the sites: they answer it as gone (404).
+	Withdraw { brand: String, slug: String },
+	/// Put a withdrawn place back.
+	Restore { brand: String, slug: String },
 }
 
 #[derive(Subcommand)]
@@ -155,6 +201,7 @@ async fn run(cli: Cli, settings: Settings) -> eyre::Result<()> {
 			Ok(())
 		}
 		Cmd::Source(cmd) => source(&connect().await?, cmd).await,
+		Cmd::Place(cmd) => place(&connect().await?, cmd).await,
 		Cmd::GenDataKey => {
 			println!("{}", DataKey::generate_hex()?);
 			Ok(())
@@ -186,6 +233,88 @@ async fn source(panel: &Panel, cmd: SourceCmd) -> eyre::Result<()> {
 			Ok(())
 		}
 	}
+}
+
+/// A place's change refused, said field by field.
+fn refused(e: PlaceError) -> eyre::Report {
+	match e {
+		PlaceError::Invalid(fields) => {
+			let lines: Vec<String> = fields.iter().map(|(field, why)| format!("  {field}: {why}")).collect();
+			eyre::eyre!("invalid settings:\n{}", lines.join("\n"))
+		}
+		PlaceError::NotFound => eyre::eyre!("no such change of this place"),
+		PlaceError::Conflict => eyre::eyre!("the settings changed meanwhile; run it again"),
+		PlaceError::Internal(e) => e,
+	}
+}
+
+fn print_place(v: &PlaceView) -> eyre::Result<()> {
+	let state = if v.withdrawn { "withdrawn: the sites answer 404" } else { "live" };
+	match (v.updated_at, &v.updated_by) {
+		(Some(at), Some(by)) => println!("{}/{}  {state}; set {at} by {by}", v.brand, v.slug),
+		_ => println!("{}/{}  {state}; never set, the sites serve their baked config", v.brand, v.slug),
+	}
+	println!("{}", serde_json::to_string_pretty(&v.settings.as_json())?);
+	Ok(())
+}
+
+async fn place(panel: &Panel, cmd: PlaceCmd) -> eyre::Result<()> {
+	let ids = |brand: &str, slug: &str| eyre::Ok((BrandId::parse(brand)?, LocationId::parse(slug)?));
+	let now = jiff::Timestamp::now();
+	let cli = Editor::Cli;
+	let view = match cmd {
+		PlaceCmd::Set {
+			brand,
+			slug,
+			phone,
+			whatsapp,
+			hours,
+			service_area,
+			clear,
+		} => {
+			let (brand, slug) = ids(&brand, &slug)?;
+			let mut set = serde_json::Map::new();
+			if let Some(p) = phone {
+				set.insert("phone".into(), p.into());
+			}
+			if let Some(w) = whatsapp {
+				set.insert("whatsapp".into(), w.into());
+			}
+			if let Some(h) = hours {
+				set.insert("hours".into(), place::hours_from_spec(&h).map_err(|e| eyre::eyre!("--hours {e}"))?);
+			}
+			if let Some(a) = service_area {
+				set.insert("serviceArea".into(), a.split(',').map(str::trim).collect::<Vec<_>>().into());
+			}
+			eyre::ensure!(!set.is_empty() || !clear.is_empty(), "nothing to set: give a field, or --clear one");
+			panel.patch_place(&cli, &brand, &slug, set, &clear, now).await.map_err(refused)?
+		}
+		PlaceCmd::Show { brand, slug } => {
+			let (brand, slug) = ids(&brand, &slug)?;
+			panel.place(&brand, &slug).await?
+		}
+		PlaceCmd::History { brand, slug } => {
+			let (brand, slug) = ids(&brand, &slug)?;
+			for c in panel.place_history(&brand, &slug).await? {
+				println!("{}  {:<8}  {:<24}  {}", c.at, c.kind.as_str(), c.by, c.id);
+				println!("  before {}\n  after  {}", c.before.as_json(), c.after.as_json());
+			}
+			return Ok(());
+		}
+		PlaceCmd::Revert { brand, slug, id } => {
+			let (brand, slug) = ids(&brand, &slug)?;
+			panel.revert_place(&cli, &brand, &slug, id, Expected::Any, now).await.map_err(refused)?
+		}
+		PlaceCmd::Withdraw { brand, slug } => {
+			let (brand, slug) = ids(&brand, &slug)?;
+			panel.withdraw_place(&cli, &brand, &slug, true, now).await.map_err(refused)?
+		}
+		PlaceCmd::Restore { brand, slug } => {
+			let (brand, slug) = ids(&brand, &slug)?;
+			panel.withdraw_place(&cli, &brand, &slug, false, now).await.map_err(refused)?
+		}
+	};
+	print_place(&view)
 }
 
 async fn serve(
