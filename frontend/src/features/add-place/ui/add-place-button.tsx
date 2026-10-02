@@ -1,10 +1,11 @@
 "use client";
 
-import { Button, Field, FieldDescription, FieldLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, toast } from "@evinvest/uikit";
+import { Button, Field, FieldDescription, FieldError, FieldLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, toast } from "@evinvest/uikit";
 import { Plus } from "lucide-react";
 import { useId, useState } from "react";
 
 import { type PlaceKey, addPlace } from "@/entities/place";
+import { ApiError } from "@/shared/api";
 import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
@@ -24,6 +25,8 @@ export function AddPlaceButton({ brands, onAdded }: { brands: string[]; onAdded:
   const [brand, setBrand] = useState("");
   const [slug, setSlug] = useState("");
   const [busy, setBusy] = useState(false);
+  // The pair the backend said exists; editing either field clears it.
+  const [exists, setExists] = useState<PlaceKey | null>(null);
   const ready = brands.includes(brand) && isSlug(slug);
 
   const submit = async () => {
@@ -35,6 +38,7 @@ export function AddPlaceButton({ brands, onAdded }: { brands: string[]; onAdded:
       setSlug("");
       onAdded({ brand, slug });
     } catch (e) {
+      if (e instanceof ApiError && e.failure.kind === "conflict") return setExists({ brand, slug });
       notifyFailure(e, t);
     } finally {
       setBusy(false);
@@ -57,7 +61,13 @@ export function AddPlaceButton({ brands, onAdded }: { brands: string[]; onAdded:
         >
           <Field className="flex flex-col gap-1">
             <FieldLabel htmlFor={`${id}-brand`}>{t("addPlace.brand")}</FieldLabel>
-            <Select value={brand} onValueChange={setBrand}>
+            <Select
+              value={brand}
+              onValueChange={(b) => {
+                setBrand(b);
+                setExists(null);
+              }}
+            >
               <SelectTrigger id={`${id}-brand`} size={size} className="w-full">
                 <SelectValue />
               </SelectTrigger>
@@ -72,10 +82,15 @@ export function AddPlaceButton({ brands, onAdded }: { brands: string[]; onAdded:
           </Field>
           <Field className="flex flex-col gap-1">
             <FieldLabel htmlFor={`${id}-slug`}>{t("addPlace.slug")}</FieldLabel>
-            <Input id={`${id}-slug`} size={size} autoCapitalize="none" value={slug} onChange={(e) => setSlug(e.target.value.toLowerCase().trim())} />
+            <Input id={`${id}-slug`} size={size} autoCapitalize="none" value={slug} onChange={(e) => {
+                setSlug(e.target.value.toLowerCase().trim());
+                setExists(null);
+              }}
+            />
             <FieldDescription>{t("addPlace.slug.hint")}</FieldDescription>
+            {exists && <FieldError>{t("addPlace.exists", { brand: exists.brand, slug: exists.slug })}</FieldError>}
           </Field>
-          <Button type="submit" size={button()} disabled={busy || !ready} className="self-end">
+          <Button type="submit" size={button()} disabled={busy || !ready || exists !== null} className="self-end">
             {t("addPlace.submit")}
           </Button>
         </form>

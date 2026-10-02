@@ -288,5 +288,6 @@
   "addPlace.slug": "Slug",
   "addPlace.slug.hint": "Lowercase letters, digits, - and _, as in the site's address.",
   "addPlace.submit": "Add",
-  "addPlace.done": "Added {brand} · {slug}."
+  "addPlace.done": "Added {brand} · {slug}.",
+  "addPlace.exists": "{brand} · {slug} is registered already: open its card instead."
 }

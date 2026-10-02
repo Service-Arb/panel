@@ -288,5 +288,6 @@
   "addPlace.slug": "Slug",
   "addPlace.slug.hint": "Строчные буквы, цифры, - и _, как в адресе сайта.",
   "addPlace.submit": "Добавить",
-  "addPlace.done": "Добавлено: {brand} · {slug}."
+  "addPlace.done": "Добавлено: {brand} · {slug}.",
+  "addPlace.exists": "{brand} · {slug} уже зарегистрирована — откройте её карточку."
 }
