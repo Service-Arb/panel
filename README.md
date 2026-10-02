@@ -27,6 +27,9 @@ lead, with buttons that record "taken" and "no answer" as the operator API would
 its contact SLA; for admins, payments and a source gone silent — through an outbox in the
 same database, paced to Telegram's limits.
 
+Admins edit each place's live settings — the phones, hours and service area the landings
+show — and the landings read them from the panel instead of a release.
+
 Not here yet: the UI, the GBP and PostHog imports. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for where things live.
 <!-- markdownlint-disable -->
@@ -66,6 +69,16 @@ panel serve
 
 # leads, calls and payments again from the journal, against the registry as it is now
 panel rebuild-projections
+
+# A place's live settings (see "Place settings"): set some fields, clear others, the rest stay
+panel place set aquafix royat --phone +33423500640 --whatsapp +33612345678 \
+  --hours 'Mo-Fr 08:00-19:00,Sa 09:00-12:00' --service-area 'Royat,Chamalières'
+panel place set aquafix royat --clear whatsapp
+panel place show aquafix royat
+panel place history aquafix royat              # every change, newest first, with its id
+panel place revert aquafix royat <change id>   # the settings that change found, back
+panel place withdraw aquafix royat             # the sites answer it as gone (404)
+panel place restore aquafix royat
 ```
 
 ## Sending events
@@ -84,6 +97,34 @@ journaled already), or `rejected` with a reason. A type the panel does not know 
 `accepted` and stored, and projected once it is registered. `401` refuses the whole batch
 (key, signature or timestamp), `400` a body that is not a batch. The contract is
 [`contracts/proto/sa/v1/events.proto`](contracts/proto/sa/v1/events.proto).
+
+## Place settings
+
+A landing (kitstart) bakes its places into its build, and lays over them what the panel
+answers for each one: phones, WhatsApp, opening hours, service area, and for storefronts an
+address, a pin, a photo, a landmark, a rating (kitstart's `PlaceLive`). Changing a number is
+an edit in the panel or a `panel place set`, not a release. A site fetches at most every
+10 minutes; the panel being down or slow only delays a change, the site serves what it baked.
+
+```text
+GET /api/internal/brands/<brand>/locations/<slug>?locale=fr
+    200 {"phone": "+33…", "hours": [{"days": ["Monday"], "opens": "08:00", "closes": "19:00"}], …}
+        only the fields set; {} for a place without settings or unknown to the panel
+    404 {"error": "not_found"}  only for a place an admin withdrew: the site 404s that page
+```
+
+A site points at it with, in its deploy config (in-cluster, not a secret):
+
+```sh
+LOCATIONS_API_URL=http://panel.service-arb.svc.cluster.local:59120/api/internal/brands/<brand>
+```
+
+`/api/internal` has no session and is not published: the public IngressRoute must exclude it,
+and the NetworkPolicy lets the landings' pods in. Admins edit in the panel (operators read);
+every change, from the panel or the CLI (`by = cli`), is journaled with what was before and
+after, and can be reverted. The settings are checked as kitstart reads them, refused field
+by field (`422`) where kitstart would quietly drop them. The session API is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#place-settings).
 
 ## Tests
 

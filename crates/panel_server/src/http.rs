@@ -1,4 +1,5 @@
-//! The HTTP API: ingest, `/health`, and — when signing in is configured — the sign-in
+//! The HTTP API: ingest, `/health`, the sites' read of a place's live settings
+//! (`/api/internal`, [`crate::places`]), and — when signing in is configured — the sign-in
 //! (`/auth/*`, [`crate::signin`]) and the operator API (`/api/v1/*`, [`crate::api`]).
 //!
 //! `POST /api/ingest/v1/events` is authenticated by the source's signature alone (see
@@ -37,7 +38,7 @@ use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
 
 use crate::{
-	api,
+	api, places,
 	signin::{self, SignIn},
 	telegram::{self, BotName, TelegramState},
 };
@@ -98,10 +99,12 @@ pub fn app_with_telegram(sign_in: SignIn, limits: Limits, bot: BotName) -> Route
 		.route("/auth/callback", get(signin::callback))
 		.route("/auth/logout", post(signin::logout));
 	let auth = bounded(auth, limits.auth_concurrent, limits.auth_timeout).with_state(sign_in.clone());
-	let reads_and_edits = api::routes().route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate));
-	// Minting and revoking source keys asks concierge afresh: a grant revoked a moment ago
-	// must not still mint a key from the cache.
-	let key_changes = api::key_changes().route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate_fresh));
+	let reads_and_edits = api::routes().merge(places::reads()).route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate));
+	// Minting and revoking source keys, and changing a place, ask concierge afresh: a grant
+	// revoked a moment ago must not still mint a key or move a phone number from the cache.
+	let key_changes = api::key_changes()
+		.merge(places::writes())
+		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate_fresh));
 	let telegram_state = TelegramState { panel: sign_in.panel.clone(), bot };
 	let telegram = telegram::routes()
 		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate))
@@ -147,6 +150,7 @@ pub fn router_with(panel: Panel, limits: Limits) -> Router {
 	Router::new()
 		.route("/health", get(|| async { "ok" }))
 		.route("/api/ingest/v1/events", post(ingest).layer(layers))
+		.merge(places::internal())
 		.with_state(panel)
 		.layer(middleware::map_response(nosniff))
 }

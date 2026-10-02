@@ -368,28 +368,43 @@ pub async fn funnel_payments(conn: &mut SqliteConnection, from: Date, to: Date, 
 		.collect()
 }
 
-/// A brand's location that leads have come from, and when the newest came in.
+/// A place the panel knows, when its newest lead came in, and the state of its live settings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlaceRow {
 	pub brand_id: String,
 	pub location_id: String,
-	/// `None` while its leads have only been seen before their creation.
+	/// `None` while its leads have only been seen before their creation, or it has none.
 	pub last_lead_at: Option<Timestamp>,
+	/// Live settings with a field set at least.
+	pub has_settings: bool,
+	pub withdrawn: bool,
 }
 
-/// Every location a lead names, by brand.
+/// Every place the panel knows, by brand: the locations a lead names or the PostHog import
+/// counted, and those registered by hand or by an edit of their settings.
 pub async fn places(conn: &mut SqliteConnection) -> eyre::Result<Vec<PlaceRow>> {
-	let rows: Vec<(String, String, Option<i64>)> =
-		sqlx::query_as("SELECT brand_id, location_id, max(created_at) FROM leads WHERE location_id IS NOT NULL GROUP BY brand_id, location_id ORDER BY brand_id, location_id")
-			.fetch_all(&mut *conn)
-			.await
-			.wrap_err("listing the places")?;
+	let rows: Vec<(String, String, Option<i64>, bool, bool)> = sqlx::query_as(
+		"WITH known AS ( \
+		   SELECT brand_id, location_id FROM leads WHERE location_id IS NOT NULL \
+		   UNION SELECT brand_id, location_id FROM daily_location_metrics WHERE location_id IS NOT NULL \
+		   UNION SELECT brand_id, location_id FROM places) \
+		 SELECT k.brand_id, k.location_id, \
+		   (SELECT max(l.created_at) FROM leads l WHERE l.brand_id = k.brand_id AND l.location_id = k.location_id), \
+		   EXISTS (SELECT 1 FROM place_settings s, json_each(s.settings) WHERE s.brand_id = k.brand_id AND s.location_id = k.location_id), \
+		   coalesce((SELECT p.withdrawn FROM places p WHERE p.brand_id = k.brand_id AND p.location_id = k.location_id), 0) \
+		 FROM known k ORDER BY k.brand_id, k.location_id",
+	)
+	.fetch_all(&mut *conn)
+	.await
+	.wrap_err("listing the places")?;
 	rows.into_iter()
-		.map(|(brand_id, location_id, at)| {
+		.map(|(brand_id, location_id, at, has_settings, withdrawn)| {
 			Ok(PlaceRow {
 				brand_id,
 				location_id,
 				last_lead_at: at.map(from_db).transpose()?,
+				has_settings,
+				withdrawn,
 			})
 		})
 		.collect()

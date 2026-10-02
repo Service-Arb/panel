@@ -989,3 +989,129 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 	assert_eq!(b.get(&off, "/api/v1/telegram").await.body["enabled"], false);
 	assert_eq!(b.send(&off, Method::POST, "/api/v1/telegram/link", None, true).await.status, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+// ── a place's live settings ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn an_admin_edits_a_places_settings_and_the_sites_read_them() {
+	let db = TestDb::create().await;
+	let (app, fake, panel) = setup(&db).await;
+	user(&fake, ADMIN, "investor", Some("admin"));
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+	let mut site = Browser::default();
+	let live = "/api/internal/brands/aquafix/locations/royat?locale=fr";
+	let settings = "/api/v1/places/aquafix/royat/settings";
+
+	let unknown = site.get(&app, live).await;
+	assert_eq!((unknown.status, unknown.body), (StatusCode::OK, json!({})), "an unknown place is never a 404");
+	for odd in ["/api/internal/brands/Aquafix/locations/royat", "/api/internal/brands/aquafix/locations/+33612345678"] {
+		assert_eq!(site.get(&app, odd).await.body, json!({}), "{odd}");
+	}
+
+	let empty = b.get(&app, settings).await;
+	assert_eq!(empty.status, StatusCode::OK, "{}", empty.body);
+	assert_eq!(
+		empty.body,
+		json!({"brand": "aquafix", "slug": "royat", "withdrawn": false, "settings": {}, "updated_at": null, "updated_by": null, "can_edit": true})
+	);
+
+	let wanted = json!({
+		"phone": "+33423500640",
+		"hours": [{"days": ["Monday", "Tuesday"], "opens": "08:00", "closes": "19:00"}],
+		"serviceArea": ["Royat", "Chamalières"],
+	});
+	let invalid = put(&mut b, &app, settings, json!({"settings": {"phone": "0423500640", "fax": "x"}, "expected_updated_at": null})).await;
+	assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", invalid.body);
+	assert_eq!(invalid.body["error"], "invalid");
+	assert_eq!(invalid.body["fields"]["phone"], "must be E.164, e.g. +33612345678");
+	let rows = json!({"settings": {"hours": [{"days": ["Monday"], "opens": "8:00", "closes": "19:00"}], "serviceArea": ["Royat", " "]}});
+	let nested = put(&mut b, &app, settings, rows).await;
+	assert_eq!(nested.status, StatusCode::UNPROCESSABLE_ENTITY);
+	let keys: Vec<&String> = nested.body["fields"].as_object().unwrap().keys().collect();
+	assert_eq!(keys, ["hours[0].opens", "serviceArea[1]"]);
+	assert!(invalid.body["fields"]["fax"].is_string());
+	let no_csrf = b.send(&app, Method::PUT, settings, Some(json!({"settings": wanted, "expected_updated_at": null})), false).await;
+	assert_eq!(no_csrf.status, StatusCode::FORBIDDEN);
+
+	let saved = put(&mut b, &app, settings, json!({"settings": wanted, "expected_updated_at": null})).await;
+	assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+	assert_eq!(saved.body["settings"], wanted);
+	assert_eq!(saved.body["updated_by"], "investor@example.com");
+	let updated_at = saved.body["updated_at"].as_str().unwrap().to_owned();
+	let stale = put(&mut b, &app, settings, json!({"settings": {}, "expected_updated_at": null})).await;
+	assert_eq!((stale.status, stale.body), (StatusCode::CONFLICT, json!({"error": "conflict"})));
+	assert_eq!(site.get(&app, live).await.body, wanted, "what the site reads: only the fields set");
+
+	let cleared = put(&mut b, &app, settings, json!({"settings": {"phone": "+33612345678"}, "expected_updated_at": updated_at})).await;
+	assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.body);
+	let history = b.get(&app, &format!("{settings}/history")).await;
+	assert_eq!(history.status, StatusCode::OK, "{}", history.body);
+	let changes = history.body["changes"].as_array().unwrap();
+	assert_eq!(changes.len(), 2);
+	assert_eq!((changes[0]["kind"].as_str(), changes[0]["by"].as_str()), (Some("set"), Some("investor@example.com")));
+	assert_eq!((changes[0]["before"].clone(), changes[0]["after"].clone()), (wanted.clone(), json!({"phone": "+33612345678"})));
+
+	let id = changes[0]["id"].as_str().unwrap();
+	let stale = b.post(&app, &format!("{settings}/revert/{id}"), json!({"expected_updated_at": updated_at})).await;
+	assert_eq!((stale.status, stale.body), (StatusCode::CONFLICT, json!({"error": "conflict"})), "as a PUT");
+	let current = cleared.body["updated_at"].clone();
+	let reverted = b.post(&app, &format!("{settings}/revert/{id}"), json!({"expected_updated_at": current})).await;
+	assert_eq!(reverted.status, StatusCode::OK, "{}", reverted.body);
+	assert_eq!(reverted.body["settings"], wanted);
+	assert_eq!(
+		b.post(&app, &format!("{settings}/revert/0190a7c4-0000-7000-8000-0000000000ff"), json!(null)).await.status,
+		StatusCode::NOT_FOUND
+	);
+
+	let withdrawn = b.post(&app, "/api/v1/places/aquafix/royat/withdraw", json!(null)).await;
+	assert_eq!((withdrawn.status, withdrawn.body["withdrawn"].clone()), (StatusCode::OK, json!(true)));
+	let gone = site.get(&app, live).await;
+	assert_eq!((gone.status, gone.body), (StatusCode::NOT_FOUND, json!({"error": "not_found"})));
+	assert_eq!(b.post(&app, "/api/v1/places/aquafix/royat/restore", json!(null)).await.status, StatusCode::OK);
+	assert_eq!(site.get(&app, live).await.body, wanted);
+
+	let added = b.post(&app, "/api/v1/places", json!({"brand": "aquafix", "slug": "vichy"})).await;
+	assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+	assert_eq!(added.body["settings"], json!({}));
+	let again = b.post(&app, "/api/v1/places", json!({"brand": "aquafix", "slug": "vichy"})).await;
+	assert_eq!((again.status, again.body), (StatusCode::CONFLICT, json!({"error": "exists"})));
+	let known = b.post(&app, "/api/v1/places", json!({"brand": "aquafix", "slug": "royat"})).await;
+	assert_eq!(known.status, StatusCode::CONFLICT, "registered by its first edit");
+	let places = b.get(&app, "/api/v1/places").await;
+	assert_eq!(
+		places.body["places"],
+		json!([
+			{"brand": "aquafix", "location": "royat", "last_lead_at": null, "has_settings": true, "withdrawn": false},
+			{"brand": "aquafix", "location": "vichy", "last_lead_at": null, "has_settings": false, "withdrawn": false},
+		])
+	);
+
+	// Without the sign-in configured, the sites still read.
+	let bare = http::router(panel);
+	assert_eq!(Browser::default().get(&bare, live).await.body, wanted);
+}
+
+#[tokio::test]
+async fn an_operator_reads_a_places_settings_and_changes_nothing() {
+	let db = TestDb::create().await;
+	let (app, fake, _) = setup(&db).await;
+	user(&fake, OPERATOR, "investor", Some("operator"));
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+	let read = b.get(&app, "/api/v1/places/aquafix/royat/settings").await;
+	assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+	assert_eq!(read.body["can_edit"], false);
+	assert_eq!(b.get(&app, "/api/v1/places/aquafix/royat/settings/history").await.body, json!({"changes": []}));
+	let body = json!({"settings": {"phone": "+33612345678"}, "expected_updated_at": null});
+	assert_eq!(put(&mut b, &app, "/api/v1/places/aquafix/royat/settings", body).await.status, StatusCode::FORBIDDEN);
+	for uri in ["/api/v1/places/aquafix/royat/withdraw", "/api/v1/places/aquafix/royat/restore"] {
+		assert_eq!(b.post(&app, uri, json!(null)).await.status, StatusCode::FORBIDDEN, "{uri}");
+	}
+	let register = b.post(&app, "/api/v1/places", json!({"brand": "aquafix", "slug": "vichy"})).await;
+	assert_eq!(register.status, StatusCode::FORBIDDEN);
+}
+
+async fn put(b: &mut Browser, app: &Router, uri: &str, body: Value) -> Answer {
+	b.send(app, Method::PUT, uri, Some(body), true).await
+}

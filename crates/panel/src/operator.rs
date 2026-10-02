@@ -489,7 +489,7 @@ impl Panel {
 		Ok(slices)
 	}
 
-	/// Every location a lead has named, by brand, with its newest lead.
+	/// Every place the panel knows, by brand: see [`reads::places`].
 	pub async fn places(&self) -> eyre::Result<Vec<PlaceRow>> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
 		reads::places(&mut conn).await

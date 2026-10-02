@@ -20,5 +20,8 @@ lead, with buttons that record "taken" and "no answer" as the operator API would
 its contact SLA; for admins, payments and a source gone silent — through an outbox in the
 same database, paced to Telegram's limits.
 
+Admins edit each place's live settings — the phones, hours and service area the landings
+show — and the landings read them from the panel instead of a release.
+
 Not here yet: the UI, the GBP and PostHog imports. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for where things live.

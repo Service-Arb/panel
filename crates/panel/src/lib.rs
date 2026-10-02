@@ -11,10 +11,12 @@
 //! [`operator`] is what a signed-in user does and reads, as events through the same journal;
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
 //! bot's notifications and buttons; [`posthog`] the hourly import of the site's counts, and
-//! [`counts`] what the screens read of them.
+//! [`counts`] what the screens read of them; [`place`] the places' live settings the sites
+//! read and the panel edits.
 
 pub mod counts;
 pub mod operator;
+pub mod place;
 pub mod posthog;
 pub mod seal;
 pub mod session;

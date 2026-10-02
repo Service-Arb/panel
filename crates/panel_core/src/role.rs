@@ -70,6 +70,15 @@ impl Role {
 		}
 	}
 
+	/// A place's live settings (its phones route the money), withdrawing and restoring it,
+	/// registering one by hand. Every role reads them.
+	pub fn edits_places(self) -> bool {
+		match self {
+			Self::Operator => false,
+			Self::Admin => true,
+		}
+	}
+
 	pub fn grafana(self) -> GrafanaRole {
 		match self {
 			Self::Operator => GrafanaRole::Viewer,
@@ -97,9 +106,16 @@ mod tests {
 	/// The table of spec §5.4, row by row.
 	#[test]
 	fn the_spec_table() {
-		let table = [(Role::Operator, [true, true, false], GrafanaRole::Viewer), (Role::Admin, [true, true, true], GrafanaRole::Editor)];
-		for (role, [pii, edits, sources], grafana) in table {
-			assert_eq!([role.sees_pii(), role.edits_leads(), role.manages_sources()], [pii, edits, sources], "{role:?}");
+		let table = [
+			(Role::Operator, [true, true, false, false], GrafanaRole::Viewer),
+			(Role::Admin, [true, true, true, true], GrafanaRole::Editor),
+		];
+		for (role, [pii, edits, sources, places], grafana) in table {
+			assert_eq!(
+				[role.sees_pii(), role.edits_leads(), role.manages_sources(), role.edits_places()],
+				[pii, edits, sources, places],
+				"{role:?}"
+			);
 			assert_eq!(role.grafana(), grafana);
 			assert_eq!(role.as_str().parse::<Role>().unwrap(), role);
 		}

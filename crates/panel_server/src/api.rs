@@ -658,7 +658,15 @@ async fn places(State(panel): State<Panel>) -> ApiResult<Json<Value>> {
 		.places()
 		.await?
 		.into_iter()
-		.map(|p| json!({ "brand": p.brand_id, "location": p.location_id, "last_lead_at": ts(p.last_lead_at) }))
+		.map(|p| {
+			json!({
+				"brand": p.brand_id,
+				"location": p.location_id,
+				"last_lead_at": ts(p.last_lead_at),
+				"has_settings": p.has_settings,
+				"withdrawn": p.withdrawn,
+			})
+		})
 		.collect();
 	Ok(Json(json!({ "places": places })))
 }
