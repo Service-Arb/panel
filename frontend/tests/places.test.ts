@@ -89,6 +89,22 @@ describe("location cards", () => {
   it("show the backend's percent once the sample is large enough", () => {
     expect(rows[0]?.steps.map((s) => formatShare(s.share, en))).toEqual(["75%", "30%", "25%"]);
   });
+
+  it("carry each place's site-data flags, and list a place with no lead last", () => {
+    const places = parse(placesParser, {
+      places: [
+        { brand: "aquafix", location: "lyon-7", last_lead_at: null, has_settings: true, withdrawn: false },
+        { brand: "aquafix", location: "royat", last_lead_at: null, has_settings: false, withdrawn: true },
+      ],
+    }).places;
+    const withSites = placeRows(parse(funnelByLocationParser, byLocation).locations, places);
+    expect(withSites.map((r) => [r.location, r.leads, r.site])).toEqual([
+      ["paris-11", 40, { hasSettings: false, withdrawn: false }],
+      ["lyon-7", 3, { hasSettings: true, withdrawn: false }],
+      [null, 1, null],
+      ["royat", 0, { hasSettings: false, withdrawn: true }],
+    ]);
+  });
 });
 
 describe("the places the filters offer", () => {
