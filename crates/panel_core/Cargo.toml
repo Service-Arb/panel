@@ -13,6 +13,7 @@ ev_lib = { workspace = true, features = ["architecture"] }
 hex.workspace = true
 hmac.workspace = true
 jiff.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
