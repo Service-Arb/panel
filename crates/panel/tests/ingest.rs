@@ -39,13 +39,13 @@ fn outcomes(v: &[panel::EventVerdict]) -> Vec<Outcome> {
 
 const ACCEPTED: Outcome = Outcome::Accepted { unregistered: false };
 
-async fn count(pool: &sqlx::PgPool, sql: &'static str) -> i64 {
+async fn count(pool: &sqlx::SqlitePool, sql: &'static str) -> i64 {
 	sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
 }
 
 #[tokio::test]
 async fn signatures() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, secret, ops) = setup(&db).await;
 	let events = [event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}))];
 
@@ -76,7 +76,7 @@ async fn signatures() {
 
 #[tokio::test]
 async fn sources_are_listed_and_unique() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, _, _) = setup(&db).await;
 	assert!(
 		panel.add_source("aquafix-site", SourceKind::Site, brands(&["vifnet"])).await.unwrap().is_none(),
@@ -92,7 +92,7 @@ async fn sources_are_listed_and_unique() {
 
 #[tokio::test]
 async fn dedup_by_id() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, secret, _) = setup(&db).await;
 	let e = event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}));
 
@@ -117,7 +117,7 @@ async fn dedup_by_id() {
 
 #[tokio::test]
 async fn unregistered_types_are_kept_not_projected() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, secret, _) = setup(&db).await;
 	let mut future = event("lead.created", at(0), "site", lead("L-9"), json!({"channel": "form", "utm": "gbp"}));
 	future["typeVersion"] = json!(2);
@@ -128,12 +128,12 @@ async fn unregistered_types_are_kept_not_projected() {
 	let pool = db.pool().await;
 	assert_eq!(count(&pool, "SELECT count(*) FROM events WHERE status = 'unregistered'").await, 2);
 	assert_eq!(count(&pool, "SELECT count(*) FROM leads").await, 0);
-	assert_eq!(count(&pool, "SELECT sum(events)::int8 FROM reporting.ingest_daily WHERE status = 'unregistered'").await, 2);
+	assert_eq!(count(&pool, "SELECT sum(events) FROM reporting_ingest_daily WHERE status = 'unregistered'").await, 2);
 }
 
 #[tokio::test]
 async fn a_key_writes_only_its_brands_and_kind() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, secret, _) = setup(&db).await;
 	let events = [
 		event("lead.created", at(0), "site", json!({"brandId": "vifnet", "leadId": "V-1"}), json!({"channel": "form"})),
@@ -153,7 +153,7 @@ async fn a_key_writes_only_its_brands_and_kind() {
 
 #[tokio::test]
 async fn invalid_events_of_known_types_are_rejected() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, _, ops) = setup(&db).await;
 	let events = [
 		event("call.logged", at(0), "panel", lead("L-1"), json!({"outcome": "voicemail"})),
@@ -201,11 +201,18 @@ async fn scenario(panel: &Panel, site: &str, ops: &str) {
 }
 
 /// The projections as rows of JSON, in a stable order: what "the same state" means.
-async fn projections(pool: &sqlx::PgPool) -> Vec<Value> {
+async fn projections(pool: &sqlx::SqlitePool) -> Vec<Value> {
 	sqlx::query_scalar(
-		"SELECT to_jsonb(t) FROM (SELECT 'lead' AS kind, to_jsonb(l) AS row FROM leads l \
-		 UNION ALL SELECT 'call', to_jsonb(c) FROM calls c \
-		 UNION ALL SELECT 'payment', to_jsonb(p) FROM payments p) t ORDER BY kind, row::text",
+		"SELECT json_object('kind', kind, 'row', json(row)) FROM ( \
+		   SELECT 'lead' AS kind, json_object('brand_id', brand_id, 'lead_id', lead_id, 'location_id', location_id, 'job_id', job_id, \
+		     'stage', stage, 'channel', channel, 'manual', manual, 'created_at', created_at, 'contacted_at', contacted_at, \
+		     'quoted_at', quoted_at, 'won_at', won_at, 'completed_at', completed_at, 'paid_at', paid_at, 'lost_at', lost_at, \
+		     'lost_reason', lost_reason, 'last_event_id', hex(last_event_id), 'last_event_at', last_event_at) AS row FROM leads \
+		   UNION ALL SELECT 'call', json_object('event_id', hex(event_id), 'brand_id', brand_id, 'lead_id', lead_id, 'location_id', location_id, \
+		     'kind', kind, 'outcome', outcome, 'attempt_id', attempt_id, 'occurred_at', occurred_at, 'manual', manual) FROM calls \
+		   UNION ALL SELECT 'payment', json_object('event_id', hex(event_id), 'brand_id', brand_id, 'lead_id', lead_id, 'location_id', location_id, \
+		     'job_id', job_id, 'billed', billed, 'commission', commission, 'currency', currency, 'occurred_at', occurred_at, 'manual', manual) FROM payments \
+		 ) ORDER BY kind, row",
 	)
 	.fetch_all(pool)
 	.await
@@ -214,7 +221,7 @@ async fn projections(pool: &sqlx::PgPool) -> Vec<Value> {
 
 #[tokio::test]
 async fn stages_are_projected_from_the_events() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, ops) = setup(&db).await;
 	scenario(&panel, &site, &ops).await;
 	let pool = db.pool().await;
@@ -231,28 +238,21 @@ async fn stages_are_projected_from_the_events() {
 			("L-2".into(), "lost".into(), true, Some("no_answer".into()), None),
 		]
 	);
-	let times: Vec<Option<chrono::DateTime<chrono::Utc>>> = sqlx::query_as::<
-		_,
-		(
-			Option<chrono::DateTime<chrono::Utc>>,
-			Option<chrono::DateTime<chrono::Utc>>,
-			Option<chrono::DateTime<chrono::Utc>>,
-			Option<chrono::DateTime<chrono::Utc>>,
-		),
-	>("SELECT created_at, contacted_at, won_at, paid_at FROM leads WHERE lead_id = 'L-1'")
-	.fetch_one(&pool)
-	.await
-	.map(|(a, b, c, d)| vec![a, b, c, d])
-	.unwrap();
-	let pg = |m| Some(chrono::DateTime::from_timestamp(at(m).as_second(), 0).unwrap());
-	assert_eq!(times, [pg(0), pg(3), pg(60), pg(300)]);
+	let times: Vec<Option<i64>> =
+		sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<i64>)>("SELECT created_at, contacted_at, won_at, paid_at FROM leads WHERE lead_id = 'L-1'")
+			.fetch_one(&pool)
+			.await
+			.map(|(a, b, c, d)| vec![a, b, c, d])
+			.unwrap();
+	let db = |m| Some(at(m).as_microsecond());
+	assert_eq!(times, [db(0), db(3), db(60), db(300)]);
 
 	assert_eq!(count(&pool, "SELECT count(*) FROM calls").await, 3);
 	assert_eq!(count(&pool, "SELECT count(*) FROM calls WHERE kind = 'logged' AND outcome IS NOT NULL").await, 2);
 	let (billed, commission): (i64, i64) = sqlx::query_as("SELECT billed, commission FROM payments").fetch_one(&pool).await.unwrap();
 	assert_eq!((billed, commission), (12_000, 1_800));
 
-	let funnel: (i64, i64, i64, i64, i64) = sqlx::query_as("SELECT leads, contacted, paid, lost_now, manual FROM reporting.funnel_daily")
+	let funnel: (i64, i64, i64, i64, i64) = sqlx::query_as("SELECT leads, contacted, paid, lost_now, manual FROM reporting_funnel_daily")
 		.fetch_one(&pool)
 		.await
 		.unwrap();
@@ -261,7 +261,7 @@ async fn stages_are_projected_from_the_events() {
 
 #[tokio::test]
 async fn rebuild_lands_on_the_same_state() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, ops) = setup(&db).await;
 	scenario(&panel, &site, &ops).await;
 	let pool = db.pool().await;
@@ -275,7 +275,7 @@ async fn rebuild_lands_on_the_same_state() {
 
 #[tokio::test]
 async fn rebuild_picks_up_a_type_registered_after_it_arrived() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, _) = setup(&db).await;
 	let pool = db.pool().await;
 	panel
@@ -287,7 +287,7 @@ async fn rebuild_picks_up_a_type_registered_after_it_arrived() {
 		.unwrap();
 	// As an older panel that did not know lead.created would have left it.
 	sqlx::query("UPDATE events SET status = 'unregistered'").execute(&pool).await.unwrap();
-	sqlx::query("TRUNCATE leads").execute(&pool).await.unwrap();
+	sqlx::query("DELETE FROM leads").execute(&pool).await.unwrap();
 
 	let rebuilt = panel.rebuild_projections().await.unwrap();
 	assert_eq!((rebuilt.registered, rebuilt.unregistered, rebuilt.leads), (1, 0, 1));
@@ -297,7 +297,7 @@ async fn rebuild_picks_up_a_type_registered_after_it_arrived() {
 
 #[tokio::test]
 async fn the_journal_is_append_only() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, _) = setup(&db).await;
 	panel
 		.ingest(
@@ -310,8 +310,8 @@ async fn the_journal_is_append_only() {
 	for sql in [
 		"UPDATE events SET brand_id = 'vifnet'",
 		"UPDATE events SET properties = '{}'",
+		"UPDATE events SET id = randomblob(16)",
 		"DELETE FROM events",
-		"TRUNCATE events CASCADE",
 	] {
 		let err = sqlx::query(sql).execute(&pool).await.unwrap_err().to_string();
 		assert!(err.contains("append-only"), "{sql}: {err}");
@@ -324,7 +324,7 @@ async fn the_journal_is_append_only() {
 
 #[tokio::test]
 async fn pii_is_sealed_and_kept_out_of_reporting() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, ops) = setup(&db).await;
 	scenario(&panel, &site, &ops).await;
 	let pool = db.pool().await;
@@ -335,10 +335,11 @@ async fn pii_is_sealed_and_kept_out_of_reporting() {
 	assert_eq!(pii["phone"], "+33 6 12 34 56 78");
 	assert_eq!(panel.pii(uuid::Uuid::now_v7()).await.unwrap(), None);
 
-	let columns: Vec<String> = sqlx::query_scalar("SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema = 'reporting'")
-		.fetch_all(&pool)
-		.await
-		.unwrap();
+	let columns: Vec<String> =
+		sqlx::query_scalar("SELECT v.name || '.' || c.name FROM sqlite_schema v JOIN pragma_table_info(v.name) c WHERE v.type = 'view' AND v.name LIKE 'reporting\\_%' ESCAPE '\\'")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
 	assert!(columns.len() > 20, "{columns:?}");
 	for c in &columns {
 		assert!(!["pii", "properties", "secret", "sealed"].iter().any(|bad| c.contains(bad)), "{c} in reporting");
@@ -347,7 +348,7 @@ async fn pii_is_sealed_and_kept_out_of_reporting() {
 
 #[tokio::test]
 async fn a_site_key_writes_no_operator_events() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, _) = setup(&db).await;
 	let events = [
 		event("payment.received", at(0), "site", lead("L-1"), json!({"billed": 100, "commission": 10, "currency": "EUR"})),
@@ -371,10 +372,11 @@ async fn a_site_key_writes_no_operator_events() {
 		.unwrap();
 	sqlx::query(
 		"INSERT INTO events (id, schema, type, type_version, occurred_at, received_at, source_kind, source_id, brand_id, lead_id, properties, content_mac, status) \
-		 VALUES ($1, 'sa.funnel.v1', 'payment.received', 1, now(), now(), 'site', 'x', 'aquafix', 'L-1', '{\"billed\": 100, \"commission\": 10, \"currency\": \"EUR\"}', $2, 'registered')",
+		 VALUES ($1, 'sa.funnel.v1', 'payment.received', 1, $3, $3, 'site', 'x', 'aquafix', 'L-1', '{\"billed\": 100, \"commission\": 10, \"currency\": \"EUR\"}', $2, 'registered')",
 	)
 	.bind(uuid::Uuid::now_v7())
 	.bind(vec![0u8; 32])
+	.bind(now().as_microsecond())
 	.execute(&pool)
 	.await
 	.unwrap();
@@ -389,7 +391,7 @@ async fn a_site_key_writes_no_operator_events() {
 
 #[tokio::test]
 async fn a_back_dated_creation_does_not_take_over_a_lead() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, ops) = setup(&db).await;
 	let by_hand = event("lead.created", at(10), "panel", lead("L-1"), json!({"channel": "phone_inbound", "enteredBy": "op-1"}));
 	panel.ingest(sign("aquafix-ops", &ops, &[by_hand], now()).batch(), now()).await.unwrap();
@@ -400,7 +402,7 @@ async fn a_back_dated_creation_does_not_take_over_a_lead() {
 
 	let pool = db.pool().await;
 	let lead_row = || async {
-		sqlx::query_as::<_, (bool, Option<String>, chrono::DateTime<chrono::Utc>)>("SELECT manual, channel, created_at FROM leads WHERE lead_id = 'L-1'")
+		sqlx::query_as::<_, (bool, Option<String>, i64)>("SELECT manual, channel, created_at FROM leads WHERE lead_id = 'L-1'")
 			.fetch_one(&pool)
 			.await
 			.unwrap()
@@ -408,14 +410,14 @@ async fn a_back_dated_creation_does_not_take_over_a_lead() {
 	let (manual, channel, created) = lead_row().await;
 	assert!(manual);
 	assert_eq!(channel.as_deref(), Some("phone_inbound"));
-	assert_eq!(created.timestamp(), at(10).as_second());
+	assert_eq!(created, at(10).as_microsecond());
 	panel.rebuild_projections().await.unwrap();
 	assert_eq!(lead_row().await, (manual, channel, created), "and the rebuild agrees");
 }
 
 #[tokio::test]
-async fn what_postgres_would_refuse_is_rejected_not_a_500() {
-	let Some(db) = TestDb::create().await else { return };
+async fn what_the_journal_would_refuse_is_rejected_not_a_500() {
+	let db = TestDb::create().await;
 	let (panel, site, _) = setup(&db).await;
 	let mut huge_version = event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}));
 	huge_version["typeVersion"] = json!(u32::MAX);
@@ -436,7 +438,7 @@ async fn what_postgres_would_refuse_is_rejected_not_a_500() {
 
 #[tokio::test]
 async fn a_source_is_named_by_its_key() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, _) = setup(&db).await;
 	let mut e = event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}));
 	e["source"]["id"] = json!("vifnet-site");
@@ -451,12 +453,12 @@ async fn a_source_is_named_by_its_key() {
 
 #[tokio::test]
 async fn ingest_waits_for_a_rebuild_in_progress() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, site, _) = setup(&db).await;
 	let pool = db.pool().await;
-	// Stands in for a rebuild: the lock a rebuild holds, held open.
-	let mut rebuild = pool.begin().await.unwrap();
-	panel::store::projections::take_rebuild_lock(&mut rebuild).await.unwrap();
+	// Stands in for a rebuild: the write lock a rebuild holds, held open.
+	let mut conn = pool.acquire().await.unwrap();
+	let rebuild = panel::store::begin_write(&mut conn).await.unwrap();
 
 	let events = [event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}))];
 	let signed = sign("aquafix-site", &site, &events, now());

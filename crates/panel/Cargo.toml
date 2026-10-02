@@ -1,6 +1,6 @@
 [package]
 name = "panel"
-description = "The Service-Arb panel's engine: ingest of sa.funnel.v1 events, the Postgres journal, and the funnel projections"
+description = "The Service-Arb panel's engine: ingest of sa.funnel.v1 events, the SQLite journal, and the funnel projections"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -15,7 +15,6 @@ testing = []
 [dependencies]
 base64.workspace = true
 chacha20poly1305.workspace = true
-chrono.workspace = true
 eyre.workspace = true
 futures.workspace = true
 getrandom.workspace = true

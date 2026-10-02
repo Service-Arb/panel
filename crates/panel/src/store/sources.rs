@@ -3,14 +3,15 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
 use eyre::WrapErr;
+use jiff::Timestamp;
 use panel_core::{
 	event::{KeyGrant, SourceKind},
 	ids::BrandId,
 };
+use sqlx::types::Json;
 
-use super::Store;
+use super::{Store, from_db};
 
 /// A source's row, secret still sealed.
 #[derive(Clone, Debug)]
@@ -18,19 +19,19 @@ pub struct SourceRow {
 	pub grant: KeyGrant,
 	pub secret_sealed: Vec<u8>,
 	pub data_key_fp: Vec<u8>,
-	pub created_at: DateTime<Utc>,
-	pub revoked_at: Option<DateTime<Utc>>,
+	pub created_at: Timestamp,
+	pub revoked_at: Option<Timestamp>,
 }
 
 #[derive(sqlx::FromRow)]
 struct Row {
 	key_id: String,
 	kind: String,
-	brand_ids: Vec<String>,
+	brand_ids: Json<Vec<String>>,
 	secret_sealed: Vec<u8>,
 	data_key_fp: Vec<u8>,
-	created_at: DateTime<Utc>,
-	revoked_at: Option<DateTime<Utc>>,
+	created_at: i64,
+	revoked_at: Option<i64>,
 }
 
 impl TryFrom<Row> for SourceRow {
@@ -40,6 +41,7 @@ impl TryFrom<Row> for SourceRow {
 		let kind: SourceKind = r.kind.parse().wrap_err_with(|| format!("source {}", r.key_id))?;
 		let brands = r
 			.brand_ids
+			.0
 			.iter()
 			.map(|b| BrandId::parse(b))
 			.collect::<Result<BTreeSet<_>, _>>()
@@ -48,8 +50,8 @@ impl TryFrom<Row> for SourceRow {
 			grant: KeyGrant { key_id: r.key_id, kind, brands },
 			secret_sealed: r.secret_sealed,
 			data_key_fp: r.data_key_fp,
-			created_at: r.created_at,
-			revoked_at: r.revoked_at,
+			created_at: from_db(r.created_at)?,
+			revoked_at: r.revoked_at.map(from_db).transpose()?,
 		})
 	}
 }
@@ -68,7 +70,7 @@ impl Store {
 		let inserted = sqlx::query("INSERT INTO sources (key_id, kind, brand_ids, secret_sealed, data_key_fp) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (key_id) DO NOTHING")
 			.bind(&grant.key_id)
 			.bind(grant.kind.as_str())
-			.bind(&brands)
+			.bind(Json(&brands))
 			.bind(secret_sealed)
 			.bind(data_key_fp)
 			.execute(&self.pool)
@@ -101,7 +103,7 @@ impl Store {
 
 	/// Revokes a source; `false` when there is no active one by that id. Its events stay.
 	pub async fn revoke_source(&self, key_id: &str) -> eyre::Result<bool> {
-		let revoked = sqlx::query("UPDATE sources SET revoked_at = now() WHERE key_id = $1 AND revoked_at IS NULL")
+		let revoked = sqlx::query("UPDATE sources SET revoked_at = CAST(unixepoch('subsec') * 1000000 AS INTEGER) WHERE key_id = $1 AND revoked_at IS NULL")
 			.bind(key_id)
 			.execute(&self.pool)
 			.await

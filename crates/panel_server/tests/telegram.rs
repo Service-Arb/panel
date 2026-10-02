@@ -138,15 +138,15 @@ impl Directory for FakeConcierge {
 
 struct Setup {
 	_db: TestDb,
-	db: sqlx::PgPool,
+	db: sqlx::SqlitePool,
 	panel: Panel,
 	mock: MockBot,
 	concierge: FakeConcierge,
 	n: Notifier<BotApi, FakeConcierge>,
 }
 
-async fn setup() -> Option<Setup> {
-	let db = TestDb::create().await?;
+async fn setup() -> Setup {
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let (mock, base) = mock_bot().await;
 	let concierge = FakeConcierge::default();
@@ -156,14 +156,14 @@ async fn setup() -> Option<Setup> {
 		concierge: concierge.clone(),
 		locale: Locale::Ru,
 	};
-	Some(Setup {
+	Setup {
 		db: db.pool().await,
 		_db: db,
 		panel,
 		mock,
 		concierge,
 		n,
-	})
+	}
 }
 
 fn private(id: i64) -> Chat {
@@ -260,7 +260,7 @@ fn texts(calls: &[Value]) -> Vec<String> {
 
 #[tokio::test]
 async fn a_link_token_is_single_use_private_and_expires() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let (alice, bob) = (Uuid::now_v7(), Uuid::now_v7());
 
 	let token = s.panel.telegram_link_token(alice, Role::Operator, "Alice", t0()).await.unwrap();
@@ -318,7 +318,7 @@ async fn a_link_token_is_single_use_private_and_expires() {
 
 #[tokio::test]
 async fn a_new_lead_goes_to_linked_users_with_access_only() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let operator = Uuid::now_v7(); // linked, on by default: gets it
 	let muted = Uuid::now_v7(); // turned the rule off
 	let revoked = Uuid::now_v7(); // concierge said no since
@@ -395,7 +395,7 @@ async fn a_new_lead_goes_to_linked_users_with_access_only() {
 
 #[tokio::test]
 async fn a_lead_typed_in_is_not_told_to_whoever_typed_it() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let (typist, colleague) = (Uuid::now_v7(), Uuid::now_v7());
 	s.link(typist, Role::Operator, 1, t0()).await;
 	s.link(colleague, Role::Operator, 2, t0()).await;
@@ -413,7 +413,7 @@ async fn a_lead_typed_in_is_not_told_to_whoever_typed_it() {
 
 #[tokio::test]
 async fn a_silent_source_is_told_to_admins_once_a_day() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let admin = Uuid::now_v7();
 	s.panel
 		.add_source("aquafix-site", panel_core::event::SourceKind::Site, [brand()].into_iter().collect())
@@ -421,11 +421,10 @@ async fn a_silent_source_is_told_to_admins_once_a_day() {
 		.unwrap()
 		.unwrap();
 	let added = t0() - SignedDuration::from_hours(25);
-	sqlx::query("UPDATE sources SET created_at = $1::timestamptz")
-		.bind(added.to_string())
-		.execute(&s.db)
-		.await
-		.unwrap();
+	// Back-dates the source, which the schema refuses to anything but a test: the trigger goes
+	// for this throwaway database alone.
+	sqlx::raw_sql("DROP TRIGGER sources_only_revoked").execute(&s.db).await.unwrap();
+	sqlx::query("UPDATE sources SET created_at = $1").bind(added.as_microsecond()).execute(&s.db).await.unwrap();
 	s.link(admin, Role::Admin, 5, t0()).await;
 	s.panel.telegram_set_rules(admin, Role::Admin, &[(panel_core::notify::Rule::SourceSilent, true)]).await.unwrap();
 	s.mock.clear();
@@ -445,7 +444,7 @@ async fn a_silent_source_is_told_to_admins_once_a_day() {
 
 #[tokio::test]
 async fn the_outbox_keeps_one_a_second_per_chat_and_25_in_all() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	for chat in 1..=30 {
 		s.link(Uuid::now_v7(), Role::Operator, chat, t0()).await;
 	}
@@ -482,7 +481,7 @@ async fn the_outbox_keeps_one_a_second_per_chat_and_25_in_all() {
 
 #[tokio::test]
 async fn a_429_waits_what_telegram_says_and_a_5xx_backs_off() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	s.link(Uuid::now_v7(), Role::Operator, 1, t0()).await;
 	s.mock.clear();
 	s.lead(t0()).await;
@@ -503,7 +502,7 @@ async fn a_429_waits_what_telegram_says_and_a_5xx_backs_off() {
 
 #[tokio::test]
 async fn a_blocked_bot_marks_the_chat_dead() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	s.mock.clear();
@@ -584,7 +583,7 @@ fn answers(s: &Setup) -> Vec<String> {
 
 #[tokio::test]
 async fn a_button_records_its_event_once() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	s.session(user, Some(Role::Operator), "Olga").await;
@@ -627,7 +626,7 @@ async fn a_button_records_its_event_once() {
 
 #[tokio::test]
 async fn a_button_needs_access_now() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	let lead = s.lead(t0()).await;
@@ -650,7 +649,7 @@ async fn a_button_needs_access_now() {
 
 #[tokio::test]
 async fn a_forged_button_is_refused() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	s.session(user, Some(Role::Operator), "Olga").await;
@@ -689,7 +688,7 @@ async fn outbox_errors(s: &Setup) -> Vec<(String, Option<String>)> {
 
 #[tokio::test]
 async fn access_is_asked_again_when_a_message_is_sent() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let (stale, revoked) = (Uuid::now_v7(), Uuid::now_v7());
 	s.link(stale, Role::Operator, 1, t0() - SignedDuration::from_mins(50)).await;
 	s.link(revoked, Role::Operator, 2, t0()).await;
@@ -710,7 +709,7 @@ async fn access_is_asked_again_when_a_message_is_sent() {
 
 #[tokio::test]
 async fn a_session_concierge_will_not_rotate_ends_access_and_one_refusal_does_not() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	s.session(user, Some(Role::Operator), "Olga").await;
@@ -749,7 +748,7 @@ async fn a_session_concierge_will_not_rotate_ends_access_and_one_refusal_does_no
 
 #[tokio::test]
 async fn linking_names_both_accounts_and_never_takes_a_chat_over() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let (alice, bob) = (Uuid::now_v7(), Uuid::now_v7());
 	let start = |chat, token: &str, username: &str| Update::Start {
 		chat: private(chat),
@@ -769,7 +768,7 @@ async fn linking_names_both_accounts_and_never_takes_a_chat_over() {
 	let replies = texts(&s.mock.calls("sendMessage"));
 	assert!(replies.last().unwrap().contains("аккаунт: Alice Panel"), "{replies:?}");
 	assert_eq!(s.panel.telegram_settings(alice, Role::Operator).await.unwrap().account.as_deref(), Some("@alice_tg"));
-	let checked: String = sqlx::query_scalar("SELECT role_checked_at::text FROM telegram_links WHERE user_id = $1")
+	let checked: String = sqlx::query_scalar("SELECT datetime(role_checked_at / 1000000, 'unixepoch') FROM telegram_links WHERE user_id = $1")
 		.bind(alice)
 		.fetch_one(&s.db)
 		.await
@@ -793,7 +792,7 @@ async fn linking_names_both_accounts_and_never_takes_a_chat_over() {
 
 #[tokio::test]
 async fn what_a_customer_typed_cannot_forge_a_line_or_a_link() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	s.session(user, Some(Role::Operator), "Olga").await;
@@ -840,7 +839,7 @@ async fn what_a_customer_typed_cannot_forge_a_line_or_a_link() {
 
 #[tokio::test]
 async fn the_bot_does_not_chatter_and_a_429_pauses_everything() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	s.n.handle(Update::Other { chat: private(9) }, t0()).await.unwrap();
 	for ms in [0, 1_000, 599_999] {
 		s.n.handle(
@@ -886,7 +885,7 @@ async fn the_bot_does_not_chatter_and_a_429_pauses_everything() {
 
 #[tokio::test]
 async fn stale_lead_messages_are_dropped_and_a_flood_is_summarized() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	s.mock.clear();
@@ -917,12 +916,12 @@ async fn stale_lead_messages_are_dropped_and_a_flood_is_summarized() {
 
 #[tokio::test]
 async fn the_bot_asks_only_with_a_session_in_use() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	s.session(user, Some(Role::Operator), "Olga").await;
-	sqlx::query("UPDATE sessions SET last_seen_at = $1::timestamptz")
-		.bind((t0() - SignedDuration::from_hours(24 * 8)).to_string())
+	sqlx::query("UPDATE sessions SET last_seen_at = $1")
+		.bind((t0() - SignedDuration::from_hours(24 * 8)).as_microsecond())
 		.execute(&s.db)
 		.await
 		.unwrap();
@@ -939,7 +938,7 @@ async fn the_bot_asks_only_with_a_session_in_use() {
 
 #[tokio::test]
 async fn a_chat_telegram_cannot_find_is_dead() {
-	let Some(s) = setup().await else { return };
+	let s = setup().await;
 	let user = Uuid::now_v7();
 	s.link(user, Role::Operator, 1, t0()).await;
 	s.mock.clear();

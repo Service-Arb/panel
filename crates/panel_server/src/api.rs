@@ -702,8 +702,8 @@ async fn sources(State(panel): State<Panel>, Extension(caller): Extension<Caller
 			key_id: s.grant.key_id,
 			kind: s.grant.kind.as_str(),
 			brands: s.grant.brands.iter().map(|b| b.as_str().to_owned()).collect(),
-			created_at: s.created_at.to_rfc3339(),
-			revoked_at: s.revoked_at.map(|t| t.to_rfc3339()),
+			created_at: s.created_at.to_string(),
+			revoked_at: s.revoked_at.map(|t| t.to_string()),
 		})
 		.collect();
 	Ok(Json(json!({ "sources": sources })))

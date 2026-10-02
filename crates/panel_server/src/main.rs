@@ -30,14 +30,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-	/// Apply the migrations this build carries, as the schema's owner (MIGRATE_DATABASE_URL).
-	/// Nothing else migrates: every other command refuses a database that lacks one.
-	Migrate {
-		/// Then grant this role the runtime's rights (deploy/panel_app.sql), e.g. panel_app:
-		/// the deploy's one step before a rollout. The role must exist.
-		#[arg(long, value_name = "ROLE")]
-		grant_to: Option<String>,
-	},
+	/// Create the database at PANEL_DB_PATH if need be and apply the migrations it lacks, then
+	/// exit. Every command does as much on open, `serve` included; this one does nothing else.
+	Migrate,
 	/// The HTTP API.
 	Serve {
 		#[arg(long, default_value = DEFAULT_BIND)]
@@ -127,15 +122,10 @@ fn init_tracing() -> eyre::Result<()> {
 }
 
 async fn run(cli: Cli, settings: Settings) -> eyre::Result<()> {
-	let connect = || async { eyre::Ok(Panel::new(Store::connect(settings.database_url()?).await?, settings.data_key()?)) };
+	let connect = || async { eyre::Ok(Panel::new(Store::open(settings.db_path()?).await?, settings.data_key()?)) };
 	match cli.cmd {
-		Cmd::Migrate { grant_to } => {
-			let url = settings.migrate_database_url()?;
-			let options = || url.parse().wrap_err("MIGRATE_DATABASE_URL is not a Postgres URL");
-			Store::migrate(options()?).await?;
-			if let Some(role) = grant_to {
-				Store::grant_runtime(options()?, &role).await?;
-			}
+		Cmd::Migrate => {
+			Store::open(settings.db_path()?).await?.pool().close().await;
 			Ok(())
 		}
 		Cmd::Serve { bind } => {

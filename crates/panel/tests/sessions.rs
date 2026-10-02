@@ -57,7 +57,7 @@ impl Refresher for Fake {
 
 #[tokio::test]
 async fn a_session_lives_rotates_and_ends() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let user = Uuid::now_v7();
 	let fake = Fake::new(None);
@@ -91,7 +91,7 @@ async fn a_session_lives_rotates_and_ends() {
 
 #[tokio::test]
 async fn concierge_refusing_closes_and_an_outage_does_not() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let stale = now() + SignedDuration::from_mins(20);
 
@@ -117,7 +117,7 @@ async fn concierge_refusing_closes_and_an_outage_does_not() {
 
 #[tokio::test]
 async fn pre_logins() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let begun = panel.begin_sign_in(now()).unwrap();
 	assert_eq!(begun.state.len(), 64, "256 bits");
@@ -155,7 +155,7 @@ impl Refresher for Slow {
 
 #[tokio::test]
 async fn two_replicas_present_a_refresh_token_once() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let hex = panel::seal::DataKey::generate_hex().unwrap();
 	let replica = |store| panel::Panel::new(store, panel::seal::DataKey::from_hex(&hex).unwrap());
 	let (a, b) = (replica(db.store().await), replica(db.store().await));
@@ -169,19 +169,19 @@ async fn two_replicas_present_a_refresh_token_once() {
 	assert_eq!((x.unwrap().access.as_str(), y.unwrap().access.as_str()), ("access-2", "access-2"));
 	assert_eq!(slow.seen.lock().unwrap().as_slice(), ["refresh-1"], "one replica asked, the other waited for its answer");
 
-	let lease: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT rotating_until FROM sessions").fetch_one(&db.pool().await).await.unwrap();
+	let lease: Option<i64> = sqlx::query_scalar("SELECT rotating_until FROM sessions").fetch_one(&db.pool().await).await.unwrap();
 	assert!(lease.is_none(), "the lease is dropped with the rotation");
 }
 
 #[tokio::test]
 async fn a_lease_of_a_dead_replica_lapses() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let opened = panel.open_session(Uuid::now_v7(), &tokens(1, SignedDuration::from_mins(15)), now()).await.unwrap();
 	let later = now() + SignedDuration::from_mins(15) - SignedDuration::from_secs(10);
 	// A replica took the lease and died.
 	sqlx::query("UPDATE sessions SET rotating_until = $1")
-		.bind(chrono::DateTime::<chrono::Utc>::from_timestamp((later + panel::session::ROTATION_LEASE).as_second(), 0).unwrap())
+		.bind((later + panel::session::ROTATION_LEASE).as_microsecond())
 		.execute(&db.pool().await)
 		.await
 		.unwrap();

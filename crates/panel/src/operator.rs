@@ -23,10 +23,7 @@ use uuid::Uuid;
 use crate::{
 	Panel,
 	seal::pii_aad,
-	store::{
-		reads::{self, EventRow, LeadFilter, LeadRow, PaymentSum, PlaceRow, Sealed},
-		to_pg_day,
-	},
+	store::reads::{self, EventRow, LeadFilter, LeadRow, PaymentSum, PlaceRow, Sealed},
 };
 
 /// Why an operator's action was not recorded.
@@ -453,14 +450,13 @@ impl Panel {
 	/// included).
 	pub async fn funnel(&self, from: Date, to: Date, brand: Option<&BrandId>) -> eyre::Result<Totals> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
-		reads::funnel(&mut conn, to_pg_day(from)?, to_pg_day(to)?, brand).await
+		reads::funnel(&mut conn, from, to, brand).await
 	}
 
 	/// [`Self::funnel`] cut `by`, each slice with the payments of its leads (whenever they were
 	/// paid). With [`FunnelBy::All`], a single slice, zeros included.
 	pub async fn funnel_slices(&self, from: Date, to: Date, brand: Option<&BrandId>, by: FunnelBy) -> eyre::Result<Vec<FunnelSlice>> {
 		let by_location = by == FunnelBy::Location;
-		let (from, to) = (to_pg_day(from)?, to_pg_day(to)?);
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
 		let rows = reads::funnel_rows(&mut conn, from, to, brand, by_location).await?;
 		let payments = reads::funnel_payments(&mut conn, from, to, brand, by_location).await?;

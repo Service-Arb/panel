@@ -276,7 +276,7 @@ impl Panel {
 		if let Some((r, _)) = rules.iter().find(|(r, _)| !r.open_to(role)) {
 			return Err(ActionError::Invalid(panel_core::Invalid::new(format!("{r} is not a rule for the {} role", role.as_str()))));
 		}
-		let mut tx = self.store.pool().begin().await.wrap_err("beginning a rules change")?;
+		let mut tx = self.store.begin_write().await?;
 		for (rule, on) in rules {
 			db::set_rule(&mut tx, user, *rule, *on).await?;
 		}
@@ -361,7 +361,7 @@ impl Panel {
 	#[expect(clippy::too_many_arguments, reason = "the candidate and the pass's context, each named at the call site")]
 	async fn fan_out_one(
 		&self,
-		conn: &mut sqlx::PgConnection,
+		conn: &mut sqlx::SqliteConnection,
 		rule: Rule,
 		event: Uuid,
 		lead: Option<(&str, &str)>,
@@ -371,7 +371,7 @@ impl Panel {
 		now: Timestamp,
 		locale: Locale,
 	) -> eyre::Result<usize> {
-		let mut tx = sqlx::Connection::begin(&mut *conn).await.wrap_err("beginning a fan-out")?;
+		let mut tx = crate::store::begin_write(&mut *conn).await?;
 		if !db::claim_fanout(&mut tx, rule, event, now).await? {
 			return Ok(0);
 		}
@@ -496,8 +496,8 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 			.await
 	}
 
-	async fn summarize(&self, conn: &mut sqlx::PgConnection, chat: i64, user: Uuid, now: Timestamp) -> eyre::Result<()> {
-		let mut tx = sqlx::Connection::begin(&mut *conn).await.wrap_err("beginning a summary")?;
+	async fn summarize(&self, conn: &mut sqlx::SqliteConnection, chat: i64, user: Uuid, now: Timestamp) -> eyre::Result<()> {
+		let mut tx = crate::store::begin_write(&mut *conn).await?;
 		let count = db::fold_into_summary(&mut tx, chat, now).await?;
 		let event = derived_event_id(&["backlog", &chat.to_string(), &now.to_string()]);
 		let note = Note::Backlog {
@@ -523,7 +523,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 	/// Whether the message's user may still get it: the same chat, alive, a role the rule is
 	/// open to, confirmed within [`ACCESS_TTL`] — asked again at the send, not only when it was
 	/// queued, since PII waits in the outbox.
-	async fn still_allowed(&self, conn: &mut sqlx::PgConnection, d: &db::Due, now: Timestamp) -> eyre::Result<bool> {
+	async fn still_allowed(&self, conn: &mut sqlx::SqliteConnection, d: &db::Due, now: Timestamp) -> eyre::Result<bool> {
 		let Ok(rule) = d.rule.parse::<Rule>() else { return Ok(false) };
 		let link = db::link_of_user(conn, d.user_id).await?;
 		Ok(link.is_some_and(|l| l.chat_id == d.chat_id && !l.dead && l.role.is_some_and(|r| rule.open_to(r)) && l.role_checked_at >= now - ACCESS_TTL))
@@ -732,7 +732,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 	/// back, the token kept, when the chat is another panel account's.
 	async fn start(&self, chat: i64, token: &str, from: &Account, now: Timestamp) -> eyre::Result<()> {
 		let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to link")?;
-		let mut tx = sqlx::Connection::begin(&mut *conn).await.wrap_err("beginning a link")?;
+		let mut tx = crate::store::begin_write(&mut conn).await?;
 		let Some(redeemed) = db::redeem_link_token(&mut tx, &link_token_hash(token), now).await? else {
 			tx.commit().await.wrap_err("committing a spent token")?;
 			drop(conn);

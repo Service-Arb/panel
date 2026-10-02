@@ -8,15 +8,11 @@ ev_lib::settings! {
 	/// naming it, rather than the boot — except in production, where the only thing this
 	/// binary runs is `serve`, which needs both.
 	pub struct Settings {
-		/// The panel's Postgres, as the runtime role (`deploy/panel_app.sql`): it reads and
-		/// writes, and refuses to start on a database that lacks a migration.
-		#[secret]
+		/// The panel's SQLite file, e.g. `/data/panel.db` (the image's, on the pod's volume,
+		/// replicated by litestream). Created if missing and migrated on open, by whichever
+		/// command opens it. A path, not a secret.
 		#[required_in("production")]
-		database_url: Option<String>,
-		/// The same database as the role that owns the schema: only `panel migrate` uses it,
-		/// so only the migration job's environment carries it.
-		#[secret]
-		migrate_database_url: Option<String>,
+		panel_db_path: Option<String>,
 		/// 64 hex characters: the key PII and the sources' HMAC secrets are sealed with
 		/// (`panel gen-data-key` makes one). Losing it loses both; changing it strands them.
 		#[secret]
@@ -66,12 +62,9 @@ ev_lib::settings! {
 }
 
 impl Settings {
-	pub fn database_url(&self) -> eyre::Result<&str> {
-		self.database_url.as_deref().ok_or_else(|| eyre::eyre!("DATABASE_URL must be set"))
-	}
-
-	pub fn migrate_database_url(&self) -> eyre::Result<&str> {
-		self.migrate_database_url.as_deref().ok_or_else(|| eyre::eyre!("MIGRATE_DATABASE_URL must be set for migrate"))
+	pub fn db_path(&self) -> eyre::Result<&std::path::Path> {
+		let path = self.panel_db_path.as_deref().map(str::trim).filter(|p| !p.is_empty());
+		Ok(std::path::Path::new(path.ok_or_else(|| eyre::eyre!("PANEL_DB_PATH must be set"))?))
 	}
 
 	pub fn data_key(&self) -> eyre::Result<DataKey> {
@@ -251,8 +244,7 @@ mod tests {
 		assert_eq!(
 			Settings::var_names(),
 			[
-				"DATABASE_URL",
-				"MIGRATE_DATABASE_URL",
+				"PANEL_DB_PATH",
 				"PANEL_DATA_KEY",
 				"SENTRY_DSN",
 				"PANEL_PUBLIC_ORIGIN",
@@ -272,7 +264,7 @@ mod tests {
 		assert_eq!(
 			Settings::required_var_names("production"),
 			[
-				"DATABASE_URL",
+				"PANEL_DB_PATH",
 				"PANEL_DATA_KEY",
 				"PANEL_PUBLIC_ORIGIN",
 				"CONCIERGE_PUBLIC_ORIGIN",
@@ -295,10 +287,12 @@ mod tests {
 		assert!(from(&[("PANEL_DATA_KEY", "short")]).unwrap().data_key().is_err());
 		assert!(from(&[("APP_ENV", "production")]).is_err());
 		let key = "ab".repeat(32);
-		let s = from(&[("PANEL_DATA_KEY", &key), ("DATABASE_URL", "postgres://u:hunter2@db/panel")]).unwrap();
+		let s = from(&[("PANEL_DATA_KEY", &key), ("PANEL_DB_PATH", "/data/panel.db")]).unwrap();
 		assert!(s.data_key().is_ok());
+		assert_eq!(s.db_path().unwrap(), std::path::Path::new("/data/panel.db"));
+		assert_eq!(format!("{}", from(&[]).unwrap().db_path().unwrap_err()), "PANEL_DB_PATH must be set");
 		let shown = format!("{s:?}");
-		assert!(!shown.contains(&key) && !shown.contains("hunter2"), "{shown}");
+		assert!(!shown.contains(&key), "{shown}");
 	}
 
 	#[test]
@@ -359,7 +353,7 @@ mod tests {
 		let with = |panel: &str, concierge: &str| {
 			from(&[
 				("APP_ENV", "production"),
-				("DATABASE_URL", "postgres://localhost/x"),
+				("PANEL_DB_PATH", "/data/panel.db"),
 				("PANEL_DATA_KEY", &key),
 				("PANEL_PUBLIC_ORIGIN", panel),
 				("CONCIERGE_PUBLIC_ORIGIN", concierge),

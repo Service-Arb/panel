@@ -7,7 +7,7 @@
 //! ```
 //!
 //! [`Panel`] is the facade the server talks to; [`wire`] turns protojson into the domain of
-//! `panel_core`; [`store`] is Postgres; [`seal`] encrypts what must not sit in the clear.
+//! `panel_core`; [`store`] is SQLite; [`seal`] encrypts what must not sit in the clear.
 //! [`operator`] is what a signed-in user does and reads, as events through the same journal;
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
 //! bot's notifications and buttons; [`posthog`] the hourly import of the site's counts, and
@@ -287,8 +287,9 @@ impl Panel {
 			}
 			None => None,
 		};
-		let mut tx = self.store.pool().begin().await.wrap_err("beginning a transaction")?;
-		projections::share_rebuild_lock(&mut tx).await?;
+		// The write lock up front: a rebuild in progress is waited out, and so is another
+		// event of the same lead (see `store`).
+		let mut tx = self.store.begin_write().await?;
 		let inserted = events::insert(
 			&mut tx,
 			&NewEvent {
@@ -345,8 +346,9 @@ impl Panel {
 	/// ones projected exactly as on arrival.
 	pub async fn rebuild_projections(&self) -> eyre::Result<Rebuilt> {
 		const PAGE: i64 = 1000;
-		let mut tx = self.store.pool().begin().await.wrap_err("beginning the rebuild")?;
-		projections::take_rebuild_lock(&mut tx).await?;
+		// One write transaction from the first delete to the commit: ingest waits for it, and
+		// readers see the old projections until then.
+		let mut tx = self.store.begin_write().await?;
 		projections::clear(&mut tx).await?;
 		let mut done = Rebuilt::default();
 		let mut leads: BTreeSet<(BrandId, LeadId)> = BTreeSet::new();
