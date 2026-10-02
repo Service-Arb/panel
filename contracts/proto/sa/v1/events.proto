@@ -89,7 +89,7 @@ message EventResult {
 
 // lead.created@1 — subject.lead_id required.
 message LeadCreatedV1 {
-  // form | phone_inbound
+  // form | phone_inbound | callback
   string channel = 1;
   // Who typed it in, for leads entered by hand (a panel user id).
   optional string entered_by = 2;

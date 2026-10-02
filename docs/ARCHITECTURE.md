@@ -44,8 +44,9 @@ crates/panel/                        the engine
   src/store/metrics.rs               daily_location_metrics, daily_experiment_metrics, the
                                      import's lease
   src/testing.rs                     (feature `testing`) throwaway SQLite files, signed batches
-  migrations/                        the schema (one init), `reporting_*` views and the
-                                     journal's append-only triggers included
+  migrations/                        the schema: the init (`reporting_*` views and the
+                                     journal's append-only triggers included), then one file
+                                     per change, each with its `down`
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
   src/http.rs                        POST /api/ingest/v1/events, GET /health; the sign-in and
                                      /api/v1 mounted on top when signing in is configured
