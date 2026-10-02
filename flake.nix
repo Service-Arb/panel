@@ -74,8 +74,8 @@
           # ev_lib's `sentry` turns on reqwest's native-tls, which is OpenSSL on Linux
           # (Security.framework on Darwin, which needs nothing here).
           buildInputs = lib.optionals pkgs.stdenv.isLinux [ pkgs.openssl ];
-          # the database tests need a Postgres the sandbox does not have; `cargo test`
-          # runs them in the devShell and CI
+          # `cargo test` runs in the devShell and CI; the tests bind loopback servers (fake
+          # Telegram, PostHog and concierge), which the Darwin sandbox refuses unless asked
           doCheck = false;
           auditable = false; # cargo-auditable doesn't support edition 2024
         };
@@ -110,36 +110,24 @@
           '';
         };
 
+        # The database: one SQLite file on the pod's volume, created and migrated by `serve` on
+        # start (no init container, no migrate step), replicated off the pod by the cluster's
+        # litestream — which is what `sqlite` below asks for. One writer: one pod, replaced
+        # (Recreate), never two at once on the volume.
+        dbPath = "/data/panel.db";
+
         # What the deploy must provide, beyond what `container.implement` records. Plain
         # data on the contract, read by the devops generator; `checks.contract-env` holds
         # `requiredEnv` to the binary's own `--print-required-vars`.
-        runtimeRole = "panel_app";
         deploy = {
-          # Settings::required_var_names("production"): the pod exits 78 without any of them
-          requiredEnv = [ "DATABASE_URL" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
+          # Settings::required_var_names("production"): the pod exits 78 without any of them.
+          # PANEL_DB_PATH is the container's own env (below); the rest the deploy supplies.
+          requiredEnv = [ "PANEL_DB_PATH" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
           # from the sops-backed Secret, never literal env
-          secretEnv = [ "DATABASE_URL" "MIGRATE_DATABASE_URL" "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" "POSTHOG_PERSONAL_API_KEY" ];
+          secretEnv = [ "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" "POSTHOG_PERSONAL_API_KEY" ];
           # without POSTHOG_PROJECT_ID and POSTHOG_PERSONAL_API_KEY the hourly import is off
           # (serve warns); one without the other fails the boot
           optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" "POSTHOG_API_HOST" "POSTHOG_PROJECT_ID" "POSTHOG_PERSONAL_API_KEY" ];
-          postgres = {
-            # the app's pods: the runtime role, holding deploy/panel_app.sql's grants only
-            runtime = { env = "DATABASE_URL"; role = runtimeRole; };
-            # the schema's owner: the migrate step alone carries it
-            owner = { env = "MIGRATE_DATABASE_URL"; };
-          };
-          # Before the new pods start (an initContainer, or a Job the rollout waits on), in
-          # this image: applies the build's migrations, then the runtime role's grants. It
-          # reads the same settings as `serve` (APP_ENV=production requires `requiredEnv`),
-          # plus MIGRATE_DATABASE_URL, which the app's own env must not carry.
-          #
-          # The binary by its image path, never its store path: Flux moves the image tag on
-          # its own, and every release has a new store path, so a pinned one would name a file
-          # the next image does not have (`contents` below puts it at /bin).
-          migrate = {
-            command = [ "/bin/${pname}" "migrate" "--grant-to" runtimeRole ];
-            env = [ "MIGRATE_DATABASE_URL" ];
-          };
           ingress = {
             # in-cluster only, by service DNS (docs/ARCHITECTURE.md, Deploy requirements)
             excludePathPrefixes = [ "/api/ingest" ];
@@ -147,7 +135,6 @@
             rateLimitPathPrefixes = [ "/auth" ];
           };
           egress = {
-            postgres = true;
             # concierge's gRPC, at the address CONCIERGE_GRPC_ADDR names
             grpcEnv = [ "CONCIERGE_GRPC_ADDR" ];
             # the Bot API; PostHog's query API (POSTHOG_API_HOST's default — follow it if it
@@ -160,14 +147,16 @@
           inherit pkgs pname;
           containers."" = {
             inherit port;
+            mounts = [ "/data" ];
+            sqlite = [ dbPath ];
             healthPath = "/health";
             # a source that gets a 5xx retries from its outbox; nothing is lost while down
             criticality = "normal";
             entrypoint = [ "${bin}/bin/${pname}" "serve" "--bind" "0.0.0.0:${toString port}" ];
-            # /bin/panel, the path `deploy.migrate.command` names
+            # /bin/panel, for `kubectl exec … panel source add` and the like
             contents = [ bin ];
             # the production guards (`#[required_in("production")]`) are armed wherever it runs
-            env = { APP_ENV = "production"; };
+            env = { APP_ENV = "production"; PANEL_DB_PATH = dbPath; };
             imageEnv = [ "PANEL_WEB_DIR=${frontend}" ];
           };
         };
@@ -185,13 +174,13 @@
           name = "help";
           text = ''
             cat <<'EOF'
-            nix develop                       toolchain, postgresql
+            nix develop                       toolchain, sqlite
             nix build                         the panel binary
             nix build .#${pname}-container    OCI image, the front end in it (Linux only)
             nix build .#frontend              the front end's static export
             nix run .#help                    this
-            cargo test                        unit tests; the database ones need DATABASE_URL
-                                              (a server the tests may CREATE DATABASE on)
+            cargo test                        every test; the database ones on throwaway
+                                              SQLite files, nothing to set up
             the CLI itself: panel --help
             EOF
           '';
@@ -227,7 +216,7 @@
               mold
               pkg-config
               openssl # sentry's native-tls
-              postgresql # psql, and a local server for the database tests
+              sqlite # inspecting the database
               rust
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 

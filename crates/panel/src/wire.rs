@@ -82,7 +82,7 @@ pub fn decode(raw: Value, now: Timestamp) -> Result<Incoming, Invalid> {
 	let occurred_at = event.occurred_at.as_ref().ok_or_else(|| Invalid::new("occurred_at is required"))?;
 	let occurred_at = Timestamp::new(occurred_at.seconds, occurred_at.nanos)
 		.map_err(|_| Invalid::new("occurred_at is out of range"))?
-		// Postgres keeps microseconds; cut here so what is checked is what is stored.
+		// The journal keeps microseconds (`store::to_db`); cut here so what is checked is what is stored.
 		.round(jiff::TimestampRound::new().smallest(jiff::Unit::Microsecond).mode(jiff::RoundMode::Trunc))
 		.map_err(|_| Invalid::new("occurred_at is out of range"))?;
 
@@ -125,9 +125,10 @@ pub fn decode(raw: Value, now: Timestamp) -> Result<Incoming, Invalid> {
 	})
 }
 
-/// What Postgres would refuse, or what would cost too much to keep, refused here instead: a
-/// NUL character anywhere (`jsonb` and `text` cannot hold one — it would be a 500 for the
-/// whole batch), and an object past [`MAX_OBJECT_BYTES`].
+/// What the journal should not hold, or what would cost too much to keep, refused here per
+/// event: a NUL character anywhere (SQLite's string and JSON functions stop at one, so a
+/// query would read another value than was stored — and the contract has always refused it),
+/// and an object past [`MAX_OBJECT_BYTES`].
 fn check_object(field: &str, value: &Value) -> Result<(), Invalid> {
 	fn has_nul(v: &Value) -> bool {
 		match v {
@@ -519,7 +520,7 @@ mod tests {
 	}
 
 	#[test]
-	fn what_postgres_would_refuse_is_rejected_per_event() {
+	fn what_the_journal_would_refuse_is_rejected_per_event() {
 		let reject = |f: &dyn Fn(&mut Value)| {
 			let mut e = event();
 			f(&mut e);

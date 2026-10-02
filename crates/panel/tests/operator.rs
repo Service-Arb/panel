@@ -24,7 +24,7 @@ fn brand() -> BrandId {
 
 #[tokio::test]
 async fn actions_are_events_and_move_the_projection() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let by = Actor(Uuid::now_v7());
 	let t = |mins| now() + SignedDuration::from_mins(mins);
@@ -141,7 +141,7 @@ async fn actions_are_events_and_move_the_projection() {
 
 #[tokio::test]
 async fn lists_filters_pages_and_the_sla() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let site = panel.add_source("aquafix-site", SourceKind::Site, [brand()].into()).await.unwrap().unwrap();
 	let at = |mins: i64| now() + SignedDuration::from_mins(mins);
@@ -208,7 +208,7 @@ async fn lists_filters_pages_and_the_sla() {
 
 #[tokio::test]
 async fn slices_places_payments_and_counts() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let site = panel.add_source("aquafix-site", SourceKind::Site, [brand()].into()).await.unwrap().unwrap();
 	let at = |mins: i64| now() + SignedDuration::from_mins(mins);

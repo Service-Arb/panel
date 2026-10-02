@@ -2,7 +2,8 @@
 //! [`super::metrics`] — derived from registered events only.
 //!
 //! A lead is never patched: every event about it recomputes its row from all of its
-//! events ([`panel_core::lead::fold`]), under a per-lead advisory lock so two events of
+//! events ([`panel_core::lead::fold`]), inside the transaction that journaled the event. That
+//! transaction holds the database's one write lock ([`super::begin_write`]), so two events of
 //! one lead arriving at once cannot each compute without the other. The rebuild calls the
 //! very same function, which is why it lands on the same state.
 
@@ -12,16 +13,16 @@ use panel_core::{
 	ids::{BrandId, JobId, LeadId, LocationId},
 	lead::{self, LeadState, Recorded},
 };
-use sqlx::PgConnection;
+use sqlx::SqliteConnection;
 
 use super::{
 	events::{self, Stored},
-	to_pg,
+	to_db,
 };
 use crate::wire::Checked;
 
 /// Projects one registered event: its call or payment row, and its lead.
-pub async fn apply(conn: &mut PgConnection, event: &Recorded) -> eyre::Result<()> {
+pub async fn apply(conn: &mut SqliteConnection, event: &Recorded) -> eyre::Result<()> {
 	insert_row(conn, event).await?;
 	if let Some(lead) = &event.subject.lead_id {
 		recompute_lead(conn, &event.subject.brand_id, lead).await?;
@@ -30,11 +31,11 @@ pub async fn apply(conn: &mut PgConnection, event: &Recorded) -> eyre::Result<()
 }
 
 /// The event's own row, if its type has a table: a call, a payment, a count. Idempotent.
-pub async fn insert_row(conn: &mut PgConnection, e: &Recorded) -> eyre::Result<()> {
+pub async fn insert_row(conn: &mut SqliteConnection, e: &Recorded) -> eyre::Result<()> {
 	let lead = e.subject.lead_id.as_ref().map(LeadId::as_str);
 	let location = e.subject.location_id.as_ref().map(LocationId::as_str);
 	let manual = e.source_kind.is_manual();
-	let at = to_pg(e.occurred_at)?;
+	let at = to_db(e.occurred_at);
 	match &e.fact {
 		Fact::CallAttempted | Fact::CallLogged { .. } => {
 			let (kind, outcome, attempt_id) = match &e.fact {
@@ -83,14 +84,10 @@ pub async fn insert_row(conn: &mut PgConnection, e: &Recorded) -> eyre::Result<(
 	Ok(())
 }
 
-/// Recomputes a lead's row from all its registered events. Must run inside a transaction:
-/// the advisory lock it takes is released at its end.
-pub async fn recompute_lead(conn: &mut PgConnection, brand: &BrandId, lead: &LeadId) -> eyre::Result<()> {
-	sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-		.bind(format!("sa-panel/lead/{brand}/{lead}"))
-		.execute(&mut *conn)
-		.await
-		.wrap_err("locking a lead")?;
+/// Recomputes a lead's row from all its registered events. Must run inside a write
+/// transaction ([`super::begin_write`]), so no other write lands between the read and the
+/// row.
+pub async fn recompute_lead(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId) -> eyre::Result<()> {
 	let recorded: Vec<Recorded> = events::of_lead(conn, brand, lead).await?.into_iter().filter_map(registered).collect();
 	match lead::fold(&recorded) {
 		Some(state) => upsert_lead(conn, &state).await,
@@ -125,8 +122,8 @@ pub fn registered(e: Stored) -> Option<Recorded> {
 	}
 }
 
-async fn upsert_lead(conn: &mut PgConnection, s: &LeadState) -> eyre::Result<()> {
-	let t = |ts: Option<jiff::Timestamp>| ts.map(to_pg).transpose();
+async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result<()> {
+	let t = |ts: Option<jiff::Timestamp>| ts.map(to_db);
 	sqlx::query(
 		"INSERT INTO leads (brand_id, lead_id, location_id, job_id, stage, channel, manual, \
 		 created_at, contacted_at, quoted_at, won_at, completed_at, paid_at, lost_at, lost_reason, last_event_id, last_event_at) \
@@ -144,52 +141,27 @@ async fn upsert_lead(conn: &mut PgConnection, s: &LeadState) -> eyre::Result<()>
 	.bind(s.stage.as_str())
 	.bind(s.channel.map(|c| c.as_str()))
 	.bind(s.manual)
-	.bind(t(s.times.created)?)
-	.bind(t(s.times.contacted)?)
-	.bind(t(s.times.quoted)?)
-	.bind(t(s.times.won)?)
-	.bind(t(s.times.completed)?)
-	.bind(t(s.times.paid)?)
-	.bind(t(s.times.lost)?)
+	.bind(t(s.times.created))
+	.bind(t(s.times.contacted))
+	.bind(t(s.times.quoted))
+	.bind(t(s.times.won))
+	.bind(t(s.times.completed))
+	.bind(t(s.times.paid))
+	.bind(t(s.times.lost))
 	.bind(s.lost_reason.as_deref())
 	.bind(s.last_event_id.raw())
-	.bind(to_pg(s.last_event_at)?)
+	.bind(to_db(s.last_event_at))
 	.execute(&mut *conn)
 	.await
 	.wrap_err_with(|| format!("writing lead {}/{}", s.brand_id, s.lead_id))?;
 	Ok(())
 }
 
-/// The advisory lock that orders ingest against a rebuild: every ingest transaction holds it
-/// shared, a rebuild holds it exclusively from before it empties the projections until it
-/// commits. So a rebuild waits for the events being journaled to land, and ingest waits for
-/// the rebuild — neither judges the journal while the other is halfway through it. The table
-/// locks of `TRUNCATE` alone would not do: an ingest could read a lead's events before the
-/// rebuild re-judged them and write its row after.
-const REBUILD_LOCK: &str = "sa-panel/projections/rebuild";
-
-pub async fn share_rebuild_lock(conn: &mut PgConnection) -> eyre::Result<()> {
-	sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
-		.bind(REBUILD_LOCK)
-		.execute(&mut *conn)
-		.await
-		.wrap_err("sharing the rebuild lock")?;
-	Ok(())
-}
-
-pub async fn take_rebuild_lock(conn: &mut PgConnection) -> eyre::Result<()> {
-	sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-		.bind(REBUILD_LOCK)
-		.execute(&mut *conn)
-		.await
-		.wrap_err("taking the rebuild lock")?;
-	Ok(())
-}
-
-/// Empties the projections, for a rebuild. Takes their locks until the transaction ends,
-/// so ingest waits rather than writing into a half-built state.
-pub async fn clear(conn: &mut PgConnection) -> eyre::Result<()> {
-	sqlx::query("TRUNCATE leads, calls, payments, daily_location_metrics, daily_experiment_metrics")
+/// Empties the projections, for a rebuild. Inside the rebuild's write transaction, so ingest
+/// waits for it to commit rather than writing into a half-built state, and readers keep
+/// seeing the projections as they were until then.
+pub async fn clear(conn: &mut SqliteConnection) -> eyre::Result<()> {
+	sqlx::raw_sql("DELETE FROM leads; DELETE FROM calls; DELETE FROM payments; DELETE FROM daily_location_metrics; DELETE FROM daily_experiment_metrics")
 		.execute(&mut *conn)
 		.await
 		.wrap_err("clearing the projections")?;

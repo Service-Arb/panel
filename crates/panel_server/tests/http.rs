@@ -30,7 +30,7 @@ const ALL: [&str; 3] = ["x-sa-key-id", "x-sa-timestamp", "x-sa-signature"];
 
 #[tokio::test]
 async fn ingest_over_http() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let secret = panel
 		.add_source("aquafix-site", SourceKind::Site, [BrandId::parse("aquafix").unwrap()].into())
@@ -106,7 +106,7 @@ fn request(key_id: &str, timestamp: &str, body: Body) -> Request<Body> {
 
 #[tokio::test]
 async fn costly_requests_are_refused_before_the_body_is_read() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let now = Timestamp::now().as_second().to_string();
 	let stale = (Timestamp::now().as_second() - 600).to_string();

@@ -1,7 +1,6 @@
 //! The journal: `events`, append-only (the table's triggers refuse deletes and any update
-//! but of `status`), deduplicated by the event's id.
+//! but of `status` and `status_reason`), deduplicated by the event's id.
 
-use chrono::{DateTime, Utc};
 use eyre::WrapErr;
 use jiff::Timestamp;
 use panel_core::{
@@ -9,10 +8,10 @@ use panel_core::{
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 };
 use serde_json::Value;
-use sqlx::{PgConnection, types::Json};
+use sqlx::{SqliteConnection, types::Json};
 use uuid::Uuid;
 
-use super::{from_pg, to_pg};
+use super::{from_db, to_db};
 use crate::wire::{Checked, Incoming, check};
 
 /// Where an event stands with the registry.
@@ -75,7 +74,7 @@ pub enum Inserted {
 }
 
 /// Inserts an event unless its id is taken.
-pub async fn insert(conn: &mut PgConnection, e: &NewEvent<'_>) -> eyre::Result<Inserted> {
+pub async fn insert(conn: &mut SqliteConnection, e: &NewEvent<'_>) -> eyre::Result<Inserted> {
 	let env = &e.incoming.envelope;
 	let (pii_sealed, data_key_fp) = e.pii.as_ref().map(|(blob, fp)| (blob.as_slice(), fp.as_slice())).unzip();
 	let inserted = sqlx::query(
@@ -88,8 +87,8 @@ pub async fn insert(conn: &mut PgConnection, e: &NewEvent<'_>) -> eyre::Result<I
 	.bind(panel_contracts::SCHEMA)
 	.bind(&env.type_key.name)
 	.bind(i32::try_from(env.type_key.version).wrap_err("type_version past i32")?)
-	.bind(to_pg(env.occurred_at)?)
-	.bind(to_pg(e.received_at)?)
+	.bind(to_db(env.occurred_at))
+	.bind(to_db(e.received_at))
 	.bind(env.source.kind.as_str())
 	.bind(&env.source.id)
 	.bind(e.key_id)
@@ -143,8 +142,8 @@ struct Row {
 	id: Uuid,
 	r#type: String,
 	type_version: i32,
-	occurred_at: DateTime<Utc>,
-	received_at: DateTime<Utc>,
+	occurred_at: i64,
+	received_at: i64,
 	source_kind: String,
 	brand_id: String,
 	location_id: Option<String>,
@@ -164,8 +163,8 @@ impl TryFrom<Row> for Stored {
 		Ok(Self {
 			id: EventId::from_raw(r.id),
 			type_key: TypeKey::parse(&r.r#type, version).wrap_err_with(at)?,
-			occurred_at: from_pg(r.occurred_at)?,
-			received_at: from_pg(r.received_at)?,
+			occurred_at: from_db(r.occurred_at)?,
+			received_at: from_db(r.received_at)?,
 			source_kind: r.source_kind.parse().wrap_err_with(at)?,
 			subject: Subject {
 				brand_id: BrandId::parse(&r.brand_id).wrap_err_with(at)?,
@@ -188,7 +187,7 @@ macro_rules! columns {
 }
 
 /// A lead's registered events.
-pub async fn of_lead(conn: &mut PgConnection, brand: &BrandId, lead: &LeadId) -> eyre::Result<Vec<Stored>> {
+pub async fn of_lead(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId) -> eyre::Result<Vec<Stored>> {
 	sqlx::query_as::<_, Row>(concat!(
 		"SELECT ",
 		columns!(),
@@ -205,7 +204,7 @@ pub async fn of_lead(conn: &mut PgConnection, brand: &BrandId, lead: &LeadId) ->
 }
 
 /// The next page of the whole journal in `(occurred_at, id)` order, after `after`.
-pub async fn page(conn: &mut PgConnection, after: Option<(Timestamp, EventId)>, limit: i64) -> eyre::Result<Vec<Stored>> {
+pub async fn page(conn: &mut SqliteConnection, after: Option<(Timestamp, EventId)>, limit: i64) -> eyre::Result<Vec<Stored>> {
 	let rows = match after {
 		None =>
 			sqlx::query_as::<_, Row>(concat!("SELECT ", columns!(), " FROM events ORDER BY occurred_at, id LIMIT $1"))
@@ -218,7 +217,7 @@ pub async fn page(conn: &mut PgConnection, after: Option<(Timestamp, EventId)>, 
 				columns!(),
 				" FROM events WHERE (occurred_at, id) > ($1, $2) ORDER BY occurred_at, id LIMIT $3"
 			))
-			.bind(to_pg(at)?)
+			.bind(to_db(at))
 			.bind(id.raw())
 			.bind(limit)
 			.fetch_all(&mut *conn)
@@ -229,7 +228,7 @@ pub async fn page(conn: &mut PgConnection, after: Option<(Timestamp, EventId)>, 
 }
 
 /// Records what the registry now says of a stored event. The one update the journal allows.
-pub async fn set_status(conn: &mut PgConnection, id: EventId, status: Status, reason: Option<&str>) -> eyre::Result<()> {
+pub async fn set_status(conn: &mut SqliteConnection, id: EventId, status: Status, reason: Option<&str>) -> eyre::Result<()> {
 	sqlx::query("UPDATE events SET status = $2, status_reason = $3 WHERE id = $1")
 		.bind(id.raw())
 		.bind(status.as_str())

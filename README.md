@@ -13,9 +13,9 @@ What exists so far is ingest. Sources (the landings, and later review_archive, G
 PostHog imports, the panel's own screens) send `sa.funnel.v1` events — a versioned protobuf
 contract, spoken as protojson — to `POST /api/ingest/v1/events`, signed with a per-source HMAC
 key that may write only for its own brands. Every accepted event goes into an append-only
-journal in Postgres, PII sealed apart; the funnel's projections (`leads` with their stages,
-`calls`, `payments`) are derived from it and can be rebuilt from it at any time. A `reporting`
-schema exposes them without PII, for the panel's Grafana.
+journal in SQLite (one file, replicated off the pod by litestream), PII sealed apart; the
+funnel's projections (`leads` with their stages, `calls`, `payments`) are derived from it and
+can be rebuilt from it at any time. The `reporting_*` views expose them without PII.
 
 People sign in through concierge (the panel is its relying party, client `sa`): the scope
 `allocation:service_arb` lets them in, as an operator or an admin, and `/api/v1` is the
@@ -24,8 +24,8 @@ calls, payments typed in by hand, the funnel, and (admins) the sources.
 
 A Telegram bot notifies each user in a private chat they link from their profile — a new
 lead, with buttons that record "taken" and "no answer" as the operator API would; a lead past
-its contact SLA; for admins, payments and a source gone silent — through an outbox in
-Postgres, paced to Telegram's limits.
+its contact SLA; for admins, payments and a source gone silent — through an outbox in the
+same database, paced to Telegram's limits.
 
 Not here yet: the UI, the GBP and PostHog imports. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for where things live.
@@ -42,14 +42,14 @@ nix build
 
 ## Usage
 ```sh
-# Secrets come from the environment only: DATABASE_URL, and PANEL_DATA_KEY (64 hex characters)
-# that seals PII and the sources' HMAC secrets. `panel --print-required-vars` lists what
-# production needs.
+# Settings come from the environment only: PANEL_DB_PATH, the SQLite file (created and migrated
+# by whichever command opens it first), and PANEL_DATA_KEY (64 hex characters) that seals PII
+# and the sources' HMAC secrets. `panel --print-required-vars` lists what production needs.
 export PANEL_DATA_KEY="$(panel gen-data-key)"
-export DATABASE_URL=postgres://postgres@localhost:5432/service_arb_panel
+export PANEL_DB_PATH=./panel.db
 
-# The schema, as its owner; every other command refuses a database that lacks a migration.
-MIGRATE_DATABASE_URL="$DATABASE_URL" panel migrate
+# Every command migrates on open; this one does nothing else.
+panel migrate
 
 # A source: its key may write events of one kind, for the brands named. The secret is printed once.
 panel source add aquafix-site --kind site --brand aquafix
@@ -87,13 +87,8 @@ journaled already), or `rejected` with a reason. A type the panel does not know 
 
 ## Tests
 
-`cargo test` runs everything; the database tests need `DATABASE_URL` pointing at a Postgres
-server they may `CREATE DATABASE` on (each test makes and drops its own `panel_test_*`). Without
-it they are skipped — in CI too, whose runners have no Postgres yet — so run them locally:
-
-```sh
-DATABASE_URL=postgres://postgres@localhost:5432/postgres cargo test
-```
+`cargo test` runs everything, here and in CI: each database test gets its own throwaway SQLite
+file in the temp directory (`panel_test_*.db`), removed when it ends. Nothing to set up.
 
 
 <br>

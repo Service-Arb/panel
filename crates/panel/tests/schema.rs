@@ -1,6 +1,7 @@
-//! The runtime role's grants (`deploy/panel_app.sql`) are enough for everything the runtime
-//! does, and no more: the schema is migrated by its owner, then the engine runs as a role
-//! holding only those grants.
+//! Everything the runtime does runs on a freshly migrated database, and the schema itself
+//! refuses what the code must never do: the journal is append-only, a source is only ever
+//! revoked. (On Postgres a runtime role's grants said so; SQLite has no roles, so the tables'
+//! triggers do.)
 
 use jiff::{SignedDuration, Timestamp};
 use panel::{
@@ -20,7 +21,6 @@ use panel_core::{
 	role::Role,
 };
 use serde_json::{Value, json};
-use sqlx::{Connection, Executor, PgConnection};
 use zeroize::Zeroizing;
 
 /// PostHog answering one visit, one intent and one exposure today.
@@ -97,60 +97,14 @@ impl Directory for Operators {
 	}
 }
 
-/// A login role for this test alone, holding the runtime grants, dropped at the end.
-struct AppRole {
-	admin: sqlx::postgres::PgConnectOptions,
-	name: String,
-}
-
-impl AppRole {
-	async fn create(db: &TestDb) -> Self {
-		let name = format!("panel_app_test_{}", uuid::Uuid::now_v7().simple());
-		let mut owner = PgConnection::connect_with(&db.options).await.unwrap();
-		// The name is ours (a UUID's hex): safe to splice into the statements.
-		owner.execute(sqlx::AssertSqlSafe(format!("CREATE ROLE {name} LOGIN"))).await.unwrap();
-		owner.close().await.unwrap();
-		// What `panel migrate --grant-to` runs.
-		Store::grant_runtime(db.options.clone(), &name).await.unwrap();
-		Self { admin: db.options.clone(), name }
-	}
-
-	fn options(&self, db: &TestDb) -> sqlx::postgres::PgConnectOptions {
-		db.options.clone().username(&self.name)
-	}
-}
-
-impl Drop for AppRole {
-	fn drop(&mut self) {
-		// Roles are the server's, not the test database's: drop it even when the test failed.
-		// Drop runs outside any async context, hence a runtime of its own on a thread.
-		let (admin, name) = (self.admin.clone(), self.name.clone());
-		let dropped = std::thread::spawn(move || {
-			tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async move {
-				let mut owner = PgConnection::connect_with(&admin).await?;
-				owner.execute(sqlx::AssertSqlSafe(format!("DROP OWNED BY {name}; DROP ROLE {name}"))).await?;
-				owner.close().await
-			})
-		})
-		.join();
-		if !matches!(dropped, Ok(Ok(()))) {
-			eprintln!("could not drop test role {}: {dropped:?}", self.name);
-		}
-	}
-}
-
 #[tokio::test]
-async fn the_runtime_role_does_its_work_and_nothing_else() {
-	let Some(db) = TestDb::create().await else { return };
-	let fresh = Store::connect_with(db.options.clone()).await.unwrap_err();
-	assert!(format!("{fresh:#}").contains("panel migrate"), "{fresh:#}");
-	Store::migrate(db.options.clone()).await.unwrap();
-	Store::migrate(db.options.clone()).await.expect("again: nothing to do");
-
-	let role = AppRole::create(&db).await;
+async fn the_runtime_does_its_work_on_a_fresh_database() {
+	let db = TestDb::create().await;
+	Store::open(db.path()).await.expect("created and migrated");
+	Store::open(db.path()).await.expect("again: nothing to do");
 	{
 		let key = DataKey::from_hex(&DataKey::generate_hex().unwrap()).unwrap();
-		let panel = Panel::new(Store::connect_with(role.options(&db)).await.unwrap(), key);
+		let panel = Panel::new(db.store().await, key);
 		let secret = panel
 			.add_source("aquafix-ops", SourceKind::Panel, [BrandId::parse("aquafix").unwrap()].into())
 			.await
@@ -274,35 +228,37 @@ async fn the_runtime_role_does_its_work_and_nothing_else() {
 		assert_eq!(panel.import_posthog(&OneOfEach, "posthog-1", 3, now).await.unwrap().written, 0, "the rebuilt counts are the same");
 
 		let pool = panel.store().pool();
-		for sql in [
-			"DELETE FROM events",
-			"UPDATE events SET brand_id = 'x'",
-			"DELETE FROM sources",
-			"UPDATE sources SET brand_ids = '{x}'",
-			"CREATE TABLE t (x int)",
-			"DROP VIEW reporting.leads",
-			"DELETE FROM telegram_poller",
-			"UPDATE telegram_link_tokens SET role = 'admin'",
-			"DELETE FROM posthog_import",
-			"DROP VIEW reporting.experiment_daily",
+		for (sql, refusal) in [
+			("DELETE FROM events", "events is append-only"),
+			("UPDATE events SET brand_id = 'x'", "events is append-only"),
+			("UPDATE events SET received_at = received_at + 1", "events is append-only"),
+			("DELETE FROM sources", "sources are never deleted"),
+			("UPDATE sources SET brand_ids = '[\"x\"]'", "a source only ever gets revoked"),
+			("INSERT INTO telegram_poller (id) VALUES (2)", "CHECK constraint failed"),
+			("INSERT INTO posthog_import (id) VALUES (2)", "CHECK constraint failed"),
+			(
+				"INSERT INTO sources (key_id, kind, brand_ids, secret_sealed, data_key_fp) VALUES ('x', 'site', '[]', x'00', zeroblob(32))",
+				"CHECK constraint failed",
+			),
+			(
+				"INSERT INTO sources (key_id, kind, brand_ids, secret_sealed, data_key_fp) VALUES ('Bad Key', 'site', '[\"x\"]', x'00', zeroblob(32))",
+				"CHECK constraint failed",
+			),
+			("UPDATE leads SET last_event_id = x'00000000000000000000000000000000'", "FOREIGN KEY constraint failed"),
 		] {
 			let err = sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await.unwrap_err().to_string();
-			assert!(err.contains("permission denied") || err.contains("must be owner"), "{sql}: {err}");
+			assert!(err.contains(refusal), "{sql}: {err}");
 		}
-		let n: i64 = sqlx::query_scalar("SELECT count(*) FROM reporting.leads").fetch_one(pool).await.unwrap();
+		sqlx::query("UPDATE events SET status = status, status_reason = 'x'")
+			.execute(pool)
+			.await
+			.expect("status and its reason are the journal's one change");
+		sqlx::query("UPDATE sources SET revoked_at = 1 WHERE revoked_at IS NULL")
+			.execute(pool)
+			.await
+			.expect("revoking is the one change to a source");
+		let n: i64 = sqlx::query_scalar("SELECT count(*) FROM reporting_leads").fetch_one(pool).await.unwrap();
 		assert_eq!(n, 4, "the ingested lead and the three taken by phone");
 		pool.close().await;
 	}
-}
-
-#[tokio::test]
-async fn grants_go_to_a_plain_role_name_only() {
-	let Some(db) = TestDb::create().await else { return };
-	Store::migrate(db.options.clone()).await.unwrap();
-	for bad in ["", "Panel_App", "panel_app; DROP TABLE events", "1panel", &"a".repeat(64)] {
-		let e = Store::grant_runtime(db.options.clone(), bad).await.unwrap_err();
-		assert!(format!("{e}").contains("plain lowercase name"), "{bad:?}: {e}");
-	}
-	let missing = Store::grant_runtime(db.options.clone(), "panel_app_nobody_made").await.unwrap_err();
-	assert!(format!("{missing:#}").contains("does the role exist"), "{missing:#}");
 }

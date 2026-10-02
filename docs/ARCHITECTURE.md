@@ -30,7 +30,8 @@ crates/panel/                        the engine
   src/wire.rs                        protojson → the core: one event decoded and checked; the
                                      registry (type@version → properties message → Fact)
   src/seal.rs                        XChaCha20-Poly1305 at rest: PII, sources' HMAC secrets
-  src/store/                         Postgres (runtime sqlx queries, embedded migrations/)
+  src/store/                         SQLite (runtime sqlx queries, embedded migrations/,
+                                     applied on open; writes BEGIN IMMEDIATE)
   src/store/events.rs                the journal
   src/store/projections.rs           leads, calls, payments
   src/store/sources.rs               the signing keys
@@ -42,8 +43,9 @@ crates/panel/                        the engine
   src/counts.rs                      what the screens read of the counts
   src/store/metrics.rs               daily_location_metrics, daily_experiment_metrics, the
                                      import's lease
-  src/testing.rs                     (feature `testing`) throwaway databases, signed batches
-  migrations/                        the schema, `reporting` included
+  src/testing.rs                     (feature `testing`) throwaway SQLite files, signed batches
+  migrations/                        the schema (one init), `reporting_*` views and the
+                                     journal's append-only triggers included
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
   src/http.rs                        POST /api/ingest/v1/events, GET /health; the sign-in and
                                      /api/v1 mounted on top when signing in is configured
@@ -60,7 +62,6 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
   src/settings.rs                    the environment (ev_lib `settings!`)
 contracts/proto/concierge/v1/        concierge's auth and directory protos, vendored at the
                                      commit in REV (`sync.sh` refreshes them)
-deploy/panel_app.sql                 the runtime role's grants (applied by the tests too)
 ```
 
 ## Ingest → journal → projections
@@ -117,7 +118,7 @@ POST /auth/logout    CSRF; every session of the user is closed
   access token's lifetime.
 - **Rotation, a refresh token presented once.** No pool connection is held while concierge
   is asked. In one process, a single flight per session: the others wait and find the fresh
-  row. Across replicas, a lease on the row (`sessions.rotating_until`, taken by one
+  row. Across processes, a lease on the row (`sessions.rotating_until`, taken by one
   conditional UPDATE, 15 s — longer than a call to concierge): only its holder asks, the
   others poll the row for up to 6 s, then answer 503; a lease whose holder died lapses and is
   taken over. The rotated pair is written only if the row still has the pair the rotation
@@ -263,7 +264,7 @@ fan-out (2 s)               new leads (their counted creation ≤ 1 h old, still
                             transaction one outbox row per recipient, UNIQUE (rule, event, chat)
 delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 waiting for a
                             chat folded into one "N new leads, open the panel" without PII;
-                            claim under one advisory lock (nothing while the outbox is paused):
+                            claim in one write transaction (nothing while the outbox is paused):
                             ≤ 25 tries started in any second, one per chat per second, none to
                             a chat with a send in flight; leased 60 s → the user's access
                             checked again (below) → sendMessage → sent | retry | dead
@@ -271,7 +272,7 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
 
 - **Updates by long polling.** A webhook would need a public route through the Cloudflare
   tunnel and a secret-header check on it; `getUpdates` needs egress to `api.telegram.org`
-  only. One replica polls, under a lease in `telegram_poller` (60 s, renewed every poll) that
+  only. One process polls, under a lease in `telegram_poller` (60 s, renewed every poll) that
   another takes over when it lapses; the offset is stored there after each update, and every
   update is idempotent, so one handled twice across a takeover does nothing twice.
 - **Retries.** 429 pauses the whole outbox for `retry_after` and costs the message no try;
@@ -322,7 +323,7 @@ now (a backfill: up to 400 days, as long as each query stays under 10 000 rows).
 
 ```text
 every 5 min      posthog_import: leased (10 min) if none holds it, the last import finished
-                 ≥ 1 h ago and the last try ≥ 10 min ago — one replica, once an hour
+                 ≥ 1 h ago and the last try ≥ 10 min ago — one process, once an hour
 three HogQL      the last 3 UTC days (today included), days cut in UTC whatever the project's
 queries          zone, LIMIT 10 000 (a full table is an error, not a short count):
                  location_page_view{brand_id, location_id, source}         → visits by source
@@ -348,14 +349,14 @@ journaled        site.metrics / contact.metrics / experiment.metrics, source.kin
   make the counts the one projection the journal cannot rebuild. Writing only on a change
   keeps the journal's growth to the changes, not 24 × 3 copies a day.
 - **Two writers of one revision.** The id derives from the revision and the content is
-  deterministic, so the same recount from two replicas (a lease lapsed mid-import) is a
+  deterministic, so the same recount from two processes (a lease lapsed mid-import) is a
   duplicate; different counts under one revision is a conflict, the second refused, and the
   next import writes the revision after.
 - **Only the import writes counts**: `may_write` lets `posthog` alone write the three types.
   A count names no lead and no job; an experiment's no location (the landings' server-side
   `experiment_lead` names none). `experiment_step` (vifnet) is not imported.
-- **Reporting.** `reporting.daily_location_metrics` (day, brand, location, metric `visits` |
-  `contact_intent`, dimension: the source or channel, value) and `reporting.experiment_daily`;
+- **Reporting.** `reporting_daily_location_metrics` (day, brand, location, metric `visits` |
+  `contact_intent`, dimension: the source or channel, value) and `reporting_experiment_daily`;
   neither has anything personal — the events they come from carry no PII.
 
 ## Invariants
@@ -390,11 +391,12 @@ journaled        site.metrics / contact.metrics / experiment.metrics, source.kin
   works around). An unknown key and a bad signature answer the same.
 - **Projections are functions of the journal.** A lead is never patched: every event about it
   recomputes its row from all its registered events (`panel_core::lead::fold`, ordered by
-  `(occurred_at, id)`, so arrival order does not matter), under a per-lead advisory lock. The
-  rebuild runs the same code in one transaction, so it lands on the same state; the tests
-  check that it does. Ingest and the rebuild do not interleave: every ingest transaction
-  holds an advisory lock shared, the rebuild holds it exclusively from before it empties the
-  projections until it commits. Calls and payments are one row per event.
+  `(occurred_at, id)`, so arrival order does not matter), inside the transaction that
+  journaled the event. The rebuild runs the same code in one transaction, so it lands on the
+  same state; the tests check that it does. Ingest and the rebuild do not interleave, nor two
+  events of one lead: every transaction that writes begins `BEGIN IMMEDIATE`, taking SQLite's
+  one write lock up front, so writers queue (up to `busy_timeout`, 10 s) and readers, in WAL,
+  go on reading the last commit. Calls and payments are one row per event.
 - **Stages move forward** through created → contacted → quoted → won → completed → paid; a
   `lead.lost` moves a lead to `lost` from anywhere, and later progress reopens it. Stage times
   are when each stage was first reached.
@@ -402,23 +404,25 @@ journaled        site.metrics / contact.metrics / experiment.metrics, source.kin
   as associated data) under `PANEL_DATA_KEY`, whose fingerprint is stored beside every blob.
   The free text a customer typed goes in `pii`, not `properties`. Sources' HMAC secrets are
   sealed the same way (they must be usable to verify, so they cannot be hashed).
-- **Reporting has no PII.** The `reporting` schema holds views over the projections and a daily
-  ingest count; none selects `properties`, `pii_sealed` or a secret. They run with their
-  owner's rights, so a Grafana role granted `SELECT` on `reporting` alone reads nothing else.
-  That role (`sa_grafana`) is the deploy's to create, not a migration's.
-- **Two database roles.** `panel migrate` applies the migrations as the schema's owner
-  (`MIGRATE_DATABASE_URL`); everything else runs as the runtime role (`DATABASE_URL`), holding
-  only the grants of [`deploy/panel_app.sql`](../deploy/panel_app.sql) — append to the journal
-  and re-judge its status, derive the projections, add and revoke sources, read `reporting` —
-  and refuses to start on a database that lacks a migration of its build. No command migrates
-  on its own, not even in development: run `panel migrate` there too, with both URLs the same.
-  `panel migrate --grant-to panel_app` then applies that file too, as the owner, in one
-  transaction — what the deploy runs, so the image needs no `psql`.
-- **Secrets come from the environment only** (`DATABASE_URL`, `MIGRATE_DATABASE_URL`,
-  `PANEL_DATA_KEY`, `SENTRY_DSN`, `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`,
-  `POSTHOG_PERSONAL_API_KEY`),
-  through `ev_lib::settings`; with `APP_ENV=production`, `DATABASE_URL`, `PANEL_DATA_KEY` and the
-  four sign-in variables are required at boot (`panel --print-required-vars` lists them).
+- **Reporting has no PII.** The `reporting_*` views over the projections and a daily ingest
+  count select no `properties`, `pii_sealed` or secret: what the screens read of the counts,
+  and what anything reading a copy of the database (a dashboard on the replica, an export)
+  should be pointed at instead of the tables. SQLite has no roles to enforce that; whoever
+  holds the file holds everything, sealed PII included — which is why PII is sealed.
+- **The schema guards the journal.** SQLite has no roles, so what a runtime role's grants
+  said on Postgres the tables' triggers say: `events` refuses DELETE and any UPDATE but of
+  `status`/`status_reason` (compared NULL-safe, so writing a value back unchanged passes);
+  `sources` refuses DELETE and any UPDATE but of `revoked_at`. Tables are STRICT, foreign keys
+  enforced (`PRAGMA foreign_keys = ON` on every connection), and every Postgres CHECK kept.
+- **One file, migrated on open.** `PANEL_DB_PATH` names it (`/data/panel.db` in the image);
+  every command, `serve` included, creates it if missing and applies the migrations it lacks
+  before anything else (`panel migrate` does only that). A migration newer than the build
+  is let be: that is a rollback onto a schema moved on. Timestamps are INTEGER microseconds
+  since the epoch, days `YYYY-MM-DD` text, UUIDs 16-byte blobs, JSON text that must parse.
+- **Secrets come from the environment only** (`PANEL_DATA_KEY`, `SENTRY_DSN`,
+  `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`, `POSTHOG_PERSONAL_API_KEY`),
+  through `ev_lib::settings`; with `APP_ENV=production`, `PANEL_DB_PATH`, `PANEL_DATA_KEY` and
+  the four sign-in variables are required at boot (`panel --print-required-vars` lists them).
 
 ## Deploy requirements
 
@@ -433,8 +437,9 @@ journaled        site.metrics / contact.metrics / experiment.metrics, source.kin
   `PANEL_WEB_DIR`, `serve` answers the API alone and says so.
 - **The contract** (`nix eval .#containers.<system>.panel.contract`) names the port
   (59120), `/health`, `APP_ENV=production`, the variables required, secret and optional,
-  the two Postgres roles, the migrate command, what the ingress must not publish or must
-  rate-limit, and the egress the pods need. `checks.contract-env` fails the flake when its
+  `PANEL_DB_PATH`, the volume (`mounts = [ "/data" ]`) and the SQLite file on it to replicate
+  (`sqlite = [ "/data/panel.db" ]`), what the ingress must not publish or must rate-limit, and
+  the egress the pods need. `checks.contract-env` fails the flake when its
   list of required variables and the binary's `--print-required-vars` disagree.
 
 - **Ingest stays inside the cluster.** Its sources (the landings, review_archive) reach it
@@ -455,10 +460,9 @@ journaled        site.metrics / contact.metrics / experiment.metrics, source.kin
 - **Rate-limit `/auth` per client IP at Traefik** (a `RateLimit` middleware on the
   IngressRoute's `/auth` prefix, e.g. 10/min with a burst of 20). The panel bounds how many
   sign-ins run at once, not who starts them; per-IP limits are the edge's.
-- **Migrate, grant, then roll out.** Before the new pods start, every release runs
-  `panel migrate --grant-to panel_app` (the contract's `migrate.command`; an init container
-  or a Job the rollout waits on) with `MIGRATE_DATABASE_URL` and the app's own settings
-  (`APP_ENV=production` asks for them at boot), so a new table is granted in the same step.
-  The app's pods must not carry `MIGRATE_DATABASE_URL`. Both roles, `panel_app`
-  included, are the deploy's to create (devops); `sa_grafana` gets `USAGE` on `reporting` and
-  `SELECT` on its views, nothing else.
+- **One pod, a volume, litestream.** The database is the file on `/data`, a volume writable
+  by uid 65534 that the cluster replicates off the pod with litestream (to R2) and restores
+  on an empty volume, as for the tenant's other apps. One writer: one replica, rolled out
+  with `Recreate`, never two pods on the volume at once. No init container: `serve` migrates
+  on start, so rolling out an image with a new migration applies it, and rolling the image
+  back does not undo it.

@@ -116,7 +116,7 @@ async fn events_of(db: &TestDb, r#type: &str) -> Vec<(Value, String)> {
 
 #[tokio::test]
 async fn a_recount_replaces_what_changed_and_nothing_else() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, mock, api, _) = setup(&db).await;
 	let day = today();
 	mock.with(|m| {
@@ -195,7 +195,7 @@ async fn a_recount_replaces_what_changed_and_nothing_else() {
 
 #[tokio::test]
 async fn a_failing_query_journals_nothing_and_frees_the_lease() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, mock, api, base) = setup(&db).await;
 	mock.with(|m| m.fail = Some(StatusCode::TOO_MANY_REQUESTS));
 	let err = once(&panel, &api, &api.source_id(), Uuid::now_v7(), WINDOW_DAYS, true).await.unwrap_err();
@@ -219,7 +219,7 @@ async fn a_failing_query_journals_nothing_and_frees_the_lease() {
 
 #[tokio::test]
 async fn one_replica_imports_once_an_hour() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (panel, ..) = setup(&db).await;
 	let now = Timestamp::now();
 	let (a, b) = (Uuid::now_v7(), Uuid::now_v7());

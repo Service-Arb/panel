@@ -350,7 +350,7 @@ const ADMIN: &str = "0190a7c4-0000-7000-8000-000000000003";
 
 #[tokio::test]
 async fn an_operator_signs_in_works_leads_and_signs_out() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	fake.with(|f| {
 		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
@@ -429,7 +429,7 @@ async fn an_operator_signs_in_works_leads_and_signs_out() {
 
 #[tokio::test]
 async fn the_screens_read_places_counts_slices_and_payments() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	fake.with(|f| {
 		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
@@ -514,7 +514,7 @@ async fn the_screens_read_places_counts_slices_and_payments() {
 
 #[tokio::test]
 async fn the_counts_beside_the_funnel_and_the_experiments() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, panel) = setup(&db).await;
 	fake.with(|f| {
 		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
@@ -614,7 +614,7 @@ async fn the_counts_beside_the_funnel_and_the_experiments() {
 
 #[tokio::test]
 async fn a_forged_callback_never_presents_the_code() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	fake.with(|f| f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15))));
 
@@ -634,7 +634,7 @@ async fn a_forged_callback_never_presents_the_code() {
 
 #[tokio::test]
 async fn only_the_scope_lets_in_and_a_refusal_ends_the_session() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 
 	// A plain investor: concierge would not issue a code, but if it did the panel still
@@ -688,7 +688,7 @@ async fn only_the_scope_lets_in_and_a_refusal_ends_the_session() {
 
 #[tokio::test]
 async fn a_stale_access_token_is_rotated_once() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	fake.with(|f| {
 		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
@@ -706,7 +706,7 @@ async fn a_stale_access_token_is_rotated_once() {
 
 #[tokio::test]
 async fn concierge_down_is_a_503_not_a_sign_out() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	// Nothing listens there.
 	let concierge = Concierge::new("http://127.0.0.1:9", SECRET).unwrap();
@@ -745,7 +745,7 @@ fn user(fake: &FakeConcierge, id: &str, global: &str, grant: Option<&str>) {
 
 #[tokio::test]
 async fn a_callback_is_redeemed_once() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	user(&fake, OPERATOR, "investor", Some("operator"));
 	let mut b = Browser::default();
@@ -771,7 +771,7 @@ async fn a_callback_is_redeemed_once() {
 
 #[tokio::test]
 async fn auth_and_api_shed_and_time_out() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let limits = http::Limits {
 		auth_concurrent: 1,
 		api_timeout: std::time::Duration::from_millis(300),
@@ -802,7 +802,7 @@ async fn auth_and_api_shed_and_time_out() {
 
 #[tokio::test]
 async fn key_changes_ask_concierge_afresh() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	user(&fake, ADMIN, "investor", Some("admin"));
 	let mut b = Browser::default();
@@ -832,7 +832,7 @@ async fn key_changes_ask_concierge_afresh() {
 
 #[tokio::test]
 async fn signing_in_again_and_out_closes_the_old_sessions() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	user(&fake, OPERATOR, "investor", Some("operator"));
 
@@ -856,7 +856,7 @@ async fn signing_in_again_and_out_closes_the_old_sessions() {
 
 #[tokio::test]
 async fn money_is_bounded_and_writes_are_idempotent() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	user(&fake, OPERATOR, "investor", Some("operator"));
 	fake.with(|f| f.me_fails_once = Some(Code::DeadlineExceeded));
@@ -922,7 +922,7 @@ async fn money_is_bounded_and_writes_are_idempotent() {
 
 #[tokio::test]
 async fn the_profile_links_telegram_and_chooses_rules() {
-	let Some(db) = TestDb::create().await else { return };
+	let db = TestDb::create().await;
 	let fake = FakeConcierge::default();
 	let addr = serve_fake(fake.clone()).await;
 	let panel = panel(&db).await;
@@ -939,8 +939,10 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 	user(&fake, OPERATOR, "investor", Some("operator"));
 	// A link whose access was last confirmed long ago, and denied: the gate's GetMe renews it.
 	let pool = db.pool().await;
-	sqlx::query("INSERT INTO telegram_links (user_id, chat_id, linked_at, role, role_checked_at, display_name) VALUES ($1::uuid, 7, now(), NULL, '2026-01-01', 'x')")
-		.bind(OPERATOR)
+	sqlx::query("INSERT INTO telegram_links (user_id, chat_id, linked_at, role, role_checked_at, display_name) VALUES ($1, 7, $2, NULL, $3, 'x')")
+		.bind(uuid::Uuid::parse_str(OPERATOR).unwrap())
+		.bind(jiff::Timestamp::now().as_microsecond())
+		.bind("2026-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap().as_microsecond())
 		.execute(&pool)
 		.await
 		.unwrap();
@@ -959,7 +961,7 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 	assert_eq!((role.as_deref(), name.as_str()), (Some("operator"), "Ann"), "the gate's GetMe confirmed the link");
 
 	assert_eq!(b.send(&app, Method::POST, "/api/v1/telegram/link", None, false).await.status, StatusCode::FORBIDDEN, "CSRF");
-	let seen: Option<String> = sqlx::query_scalar("SELECT last_seen_at::text FROM sessions").fetch_one(&pool).await.unwrap();
+	let seen: Option<i64> = sqlx::query_scalar("SELECT last_seen_at FROM sessions").fetch_one(&pool).await.unwrap();
 	assert!(seen.is_some(), "the gate marks the session used");
 	let asked = fake.with(|f| f.me_calls);
 	let link = b.send(&app, Method::POST, "/api/v1/telegram/link", None, true).await;
