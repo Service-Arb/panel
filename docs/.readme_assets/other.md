@@ -17,10 +17,5 @@ journaled already), or `rejected` with a reason. A type the panel does not know 
 
 ## Tests
 
-`cargo test` runs everything; the database tests need `DATABASE_URL` pointing at a Postgres
-server they may `CREATE DATABASE` on (each test makes and drops its own `panel_test_*`). Without
-it they are skipped — in CI too, whose runners have no Postgres yet — so run them locally:
-
-```sh
-DATABASE_URL=postgres://postgres@localhost:5432/postgres cargo test
-```
+`cargo test` runs everything, here and in CI: each database test gets its own throwaway SQLite
+file in the temp directory (`panel_test_*.db`), removed when it ends. Nothing to set up.

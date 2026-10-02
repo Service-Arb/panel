@@ -1,12 +1,12 @@
 ```sh
-# Secrets come from the environment only: DATABASE_URL, and PANEL_DATA_KEY (64 hex characters)
-# that seals PII and the sources' HMAC secrets. `panel --print-required-vars` lists what
-# production needs.
+# Settings come from the environment only: PANEL_DB_PATH, the SQLite file (created and migrated
+# by whichever command opens it first), and PANEL_DATA_KEY (64 hex characters) that seals PII
+# and the sources' HMAC secrets. `panel --print-required-vars` lists what production needs.
 export PANEL_DATA_KEY="$(panel gen-data-key)"
-export DATABASE_URL=postgres://postgres@localhost:5432/service_arb_panel
+export PANEL_DB_PATH=./panel.db
 
-# The schema, as its owner; every other command refuses a database that lacks a migration.
-MIGRATE_DATABASE_URL="$DATABASE_URL" panel migrate
+# Every command migrates on open; this one does nothing else.
+panel migrate
 
 # A source: its key may write events of one kind, for the brands named. The secret is printed once.
 panel source add aquafix-site --kind site --brand aquafix
