@@ -8,11 +8,12 @@ Sources (admin), and on a phone a bottom tab bar with "More" in place of the sid
 app/                 routes: (panel)/ is everything behind sign-in, signed-out/ is not
 src/views/           one slice per screen, plus shell/ (sidebar, tab bar, access states)
 src/features/        call-lead · move-stage · record-payment · create-lead ·
-                     lead-filters · funnel-filters · manage-sources · sign-out
+                     lead-filters · funnel-filters · manage-sources · sign-out ·
+                     edit-place-settings · revert-place-change · withdraw-place · add-place
 src/entities/        session · lead · funnel · experiment · place · source — types, response checks, requests
 src/shared/          api/ (fetch, CSRF, the gate's answers), i18n/, lib/, ui/
 messages/            en.json (the source of keys) and ru.json
-scripts/dev-stub.ts  a stand-in backend for local work
+scripts/dev-stub.ts  a stand-in backend for local work (place settings in scripts/stub-places.ts)
 tests/               vitest, in Node: the rules the screens obey live in plain modules
 ```
 
@@ -21,7 +22,8 @@ tests/               vitest, in Node: the rules the screens obey live in plain m
 ```sh
 npm ci
 npm run dev:stub     # :3121 — the operator API over made-up leads; STUB_ROLE=admin, STUB_ME=401|403|503,
-                     # STUB_MIN_SAMPLE=2 for percents on so few leads, STUB_POSTHOG=off for no import yet
+                     # STUB_MIN_SAMPLE=2 for percents on so few leads, STUB_POSTHOG=off for no import yet,
+                     # STUB_PLACES_CONFLICT=1 for a 409 on every place-settings save and revert
 npm run dev          # :3120 — proxies /api and /auth to PANEL_DEV_BACKEND (default the stub)
 ```
 
@@ -49,6 +51,20 @@ aquafix has one. What that needs of the backend and the flake:
   `out/` in the container beside the binary; the entrypoint sets the directory.
 - The IngressRoute for `sa.evinvest.ltd` sends everything to the panel's Service
   except `/api/ingest` (in-cluster only, `docs/ARCHITECTURE.md`).
+
+## Place settings
+
+A location card opens its live site data (`SA-PANEL-PLACE-SETTINGS-SPEC.md`):
+phone, WhatsApp, opening hours and service area, which the site merges over its
+baked config within its 600 s fetch TTL. The form edits only those four; any
+other live field (address, geo, photo, landmark, rating) goes back as it came,
+since a save is a full replace guarded by `expected_updated_at` (409 → reload).
+A 422 names its fields and the form shows each reason on its field. The history
+reads each change as before → after, with a revert guarded the same way; an admin can withdraw a
+point (the site then answers 404 for it) and add one by hand. An operator reads.
+
+The preview of the contact channels assumes the places' hours are Paris time
+(`entities/place/config/time-zone.ts`): the live data carries no zone.
 
 ## What the API does not answer yet
 

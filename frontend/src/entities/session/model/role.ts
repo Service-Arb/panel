@@ -22,3 +22,8 @@ export function startRouteFor(role: Role): string {
 export function managesSources(role: Role): boolean {
   return role === "admin";
 }
+
+/** Withdrawing, restoring and adding a place by hand: an admin's (phones route money). */
+export function managesPlaces(role: Role): boolean {
+  return role === "admin";
+}

@@ -12,6 +12,8 @@
   --grid-payment: 1fr 1fr 7rem;
   --grid-funnel-row: 1fr auto auto;
   --grid-place-step: 6rem 1fr auto;
+  /* A place's live field read-only: its name, then its value. */
+  --grid-place-field: 7rem 1fr;
   /* A variant's rate: label and share on a line, the comparison under them on a phone, beside from md up. */
   --grid-exp-rate: 1fr auto;
   --grid-exp-rate-md: 9rem 5rem 1fr;

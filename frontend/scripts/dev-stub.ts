@@ -8,11 +8,14 @@
  *   STUB_ME=403 npm run dev:stub      # the gate refusing: 401 | 403 | 503
  *   STUB_MIN_SAMPLE=2 npm run dev:stub  # percents (and bars) from 2 leads, not 30
  *   STUB_POSTHOG=off npm run dev:stub   # no PostHog import yet: no day counts, no experiments
+ *   STUB_PLACES_CONFLICT=1 npm run dev:stub  # every place-settings save answers 409
  *
  * then `npm run dev` in another shell. Data is made up and says so ("stub").
  */
 import { randomUUID } from "node:crypto";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
+
+import { addedPlaces, placeFlags, placeSettingsRoute } from "./stub-places.ts";
 
 const PORT = Number(process.env.STUB_PORT ?? 3121);
 const ROLE = process.env.STUB_ROLE === "admin" ? "admin" : "operator";
@@ -122,9 +125,10 @@ function funnel(brand: string | null, by: string | null): Json {
   return { ...head, by: "location", locations };
 }
 
-/** Every location a lead names, with the time of its latest lead. */
+/** Every location a lead names, with the time of its latest lead, and those added by hand; each with its site-data flags. */
 function places(): Json {
   const latest = new Map<string, { brand: string; location: string; last_lead_at: string | null }>();
+  for (const p of addedPlaces()) latest.set(`${p.brand}/${p.location}`, { ...p, last_lead_at: null });
   for (const l of leads) {
     if (!l.location) continue;
     const key = `${l.brand}/${l.location}`;
@@ -132,7 +136,7 @@ function places(): Json {
     const prev = latest.get(key);
     if (!prev || (at && (!prev.last_lead_at || at > prev.last_lead_at))) latest.set(key, { brand: l.brand, location: l.location, last_lead_at: at });
   }
-  return { places: [...latest.values()] };
+  return { places: [...latest.values()].map((p) => ({ ...p, ...placeFlags(p.brand, p.location) })) };
 }
 
 /** Leads by current stage under a place filter, every stage present. */
@@ -290,7 +294,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (path === "/me") return send(res, 200, { user_id: "00000000-0000-7000-8000-000000000001", role: ROLE, email: "stub@example.test", preferred_name: `Stub ${ROLE}` });
   if (path === "/funnel") return send(res, 200, funnel(url.searchParams.get("brand"), url.searchParams.get("by")));
   if (path === "/experiments") return send(res, 200, experiments(url.searchParams.get("brand")));
-  if (path === "/places") return send(res, 200, places());
+  if (path === "/places" && req.method === "GET") return send(res, 200, places());
+  if (path.startsWith("/places")) {
+    const reply = placeSettingsRoute(req.method ?? "GET", path, write ? await readJson(req) : {}, ROLE, `stub-${ROLE}@example.test`);
+    if (reply) return send(res, reply.status, reply.body);
+  }
   if (path === "/leads/counts") return send(res, 200, counts(url.searchParams.get("brand"), url.searchParams.get("location")));
   if (path === "/leads" && req.method === "GET") {
     const q = url.searchParams;
