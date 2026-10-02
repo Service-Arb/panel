@@ -25,6 +25,8 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
                                      recount's revision; traffic sources bounded
   src/experiment.rs                  a variant against its control: Wilson, Newcombe, the
                                      `insufficient` rule
+  src/place.rs                       a place's live settings (kitstart's PlaceLive), checked
+                                     field by field; a change and who made it
 crates/panel/                        the engine
   src/lib.rs                         the `Panel` facade: ingest, sources, PII, rebuild
   src/wire.rs                        protojson → the core: one event decoded and checked; the
@@ -41,11 +43,15 @@ crates/panel/                        the engine
   src/posthog.rs                     the hourly PostHog import: HogQL → counts → journal; the
                                      Hogql port
   src/counts.rs                      what the screens read of the counts
+  src/place.rs                       a place's settings changed (optimistic concurrency, revert,
+                                     withdraw) and what a site is answered
+  src/store/places.rs                places, place_settings, the place_changes history
   src/store/metrics.rs               daily_location_metrics, daily_experiment_metrics, the
                                      import's lease
   src/testing.rs                     (feature `testing`) throwaway SQLite files, signed batches
-  migrations/                        the schema (one init), `reporting_*` views and the
-                                     journal's append-only triggers included
+  migrations/                        the schema: the init (`reporting_*` views and the
+                                     journal's append-only triggers included), then one file
+                                     per change, each with its `down`
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
   src/http.rs                        POST /api/ingest/v1/events, GET /health; the sign-in and
                                      /api/v1 mounted on top when signing in is configured
@@ -53,6 +59,8 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
   src/concierge.rs                   concierge over gRPC: ExchangeCode, RefreshClientToken, GetMe
   src/cookies.rs                     __Host- cookies, the double-submit CSRF check
   src/api.rs                         the operator API: JSON over the engine's `operator` module
+  src/places.rs                      a place's settings: the editor's routes, and the sites'
+                                     GET /api/internal/…, which has no session
   src/telegram.rs                    the Bot API (reqwest), the bot's background work in
                                      `serve`, and /api/v1/telegram
   src/posthog.rs                     PostHog's query API (reqwest) and the import's schedule
@@ -179,8 +187,10 @@ GET    /funnel?from&to&brand&by                   days, UTC, default the last 30
                                                    "posthog", kind: "aggregate", imported_at};
                                                    each slice: aggregate (stages 3–4, below)
 GET    /experiments?from&to&brand                 days as /funnel; below
-GET    /places                                    {places: [{brand, location, last_lead_at}]}:
-                                                  every location a lead names
+GET    /places                                    {places: [{brand, location, last_lead_at,
+                                                  has_settings, withdrawn}]}: every location a
+                                                  lead names or PostHog counted, and every
+                                                  place registered (below)
 GET    /sources                     admin         {sources: [{key_id, kind, brands, created_at,
                                                   revoked_at}]}
 POST   /sources                     admin, fresh  {key_id, kind, brands} → 201 {key_id, secret}
@@ -238,6 +248,59 @@ plus `sla` while it waits for its first contact — `{waiting_since, waiting_sec
 overdue}`, overdue after 30 minutes — and `pii` (the customer's name, phone, need) for the
 roles that see it. A share is `{n, of, percent, small_sample}`; `percent` is null while `of`
 is under `min_sample` (§10.1), so the front end can only draw "n of of".
+
+## Place settings
+
+A landing bakes its places into its build and lays over each, field by field, what the
+panel answers for it (kitstart's `createPlaceSource`, `PlaceLive`): `phone`, `whatsapp`
+(E.164), `hours` (`[{days, opens, closes}]`), `serviceArea` (commune names), and for
+storefronts `address`, `geo`, `storefrontPhoto` (https), `landmark` (a text per locale),
+`rating`. kitstart fetches every 10 minutes at most, times out after 3 s, and keeps its baked
+place on a 5xx or no answer; a JSON 404 is a place withdrawn, and the site 404s it.
+
+```text
+GET  /api/internal/brands/{brand}/locations/{slug}?locale   no session; ≤ 32 at once, 3 s
+       200 the settings, only the fields set; {} for none, for a place the panel does not
+       know, and for a brand or slug that cannot name one — never a 404 for those, or an
+       empty database would take the sites down
+       404 {"error": "not_found"}: only a place an admin withdrew
+```
+
+Under `/api/v1`, CSRF on writes like the rest; writes are an admin's and ask concierge afresh
+(`gate_fresh`), operators read (`can_edit` false, `403` on a write):
+
+```text
+GET  /places/{brand}/{slug}/settings          {brand, slug, withdrawn, settings, updated_at,
+                                              updated_by, can_edit}; updated_at null: never set
+PUT  /places/{brand}/{slug}/settings          {settings, expected_updated_at} → 200 as GET; a
+                                              full replace; 409 {"error": "conflict"} when
+                                              expected_updated_at is not the current one;
+                                              422 {"error": "invalid", "fields": {field: why}}
+GET  /places/{brand}/{slug}/settings/history  {changes: [{id, at, by, kind, before, after,
+                                              reverts}]}, newest first; kind register | set |
+                                              revert | withdraw | restore
+POST /places/{brand}/{slug}/settings/revert/{id}  the `before` of that change made current,
+                                              journaled as a revert → 200 as GET; 404
+POST /places/{brand}/{slug}/withdraw|restore  → 200 as GET; the settings are kept
+POST /places                                  {brand, slug} → 201 as GET; 200 if known
+```
+
+- **Checked as kitstart reads them, refused instead of dropped.** kitstart drops a field it
+  cannot read so a page never fails on one; the panel names it in a 422 so the editor sees
+  why. Stricter than kitstart where kitstart is loose (a phone is E.164, not just `+…`;
+  hours close after they open, a night across midnight is two rows; a day once per row),
+  never looser. kitstart keeps a landmark only when it has every locale the site speaks,
+  which the panel does not know.
+- **A change is one write transaction**: the current settings read under the write lock,
+  `expected_updated_at` compared, the new ones written, the change journaled
+  (`place_changes`: before, after, who — the user's email and concierge id, or `cli` — and
+  when). `updated_at` only grows, a microsecond at least per change, so two edits never share
+  a token. A change that changes nothing writes nothing.
+- **The CLI** (`panel place set|show|history|revert|withdraw|restore`) goes through the same
+  calls, `by = cli`, patching over what is there when its transaction begins.
+- **History is append-only, places never deleted**: triggers refuse any UPDATE or DELETE of
+  `place_changes`, a DELETE of `places` or `place_settings` (cleared is `{}`), and any UPDATE
+  of `places` but `withdrawn`.
 
 ## Telegram (§8)
 
@@ -442,6 +505,9 @@ journaled        site.metrics / contact.metrics / experiment.metrics, source.kin
   the egress the pods need. `checks.contract-env` fails the flake when its
   list of required variables and the binary's `--print-required-vars` disagree.
 
+- **`/api/internal` stays inside the cluster.** The landings read their places' settings
+  there by service DNS; it has no session, so the IngressRoute must exclude the prefix
+  (`excludePathPrefixes`) and the NetworkPolicy admit only the landings' pods.
 - **Ingest stays inside the cluster.** Its sources (the landings, review_archive) reach it
   by service DNS (§3.3); the IngressRoute that publishes `sa.evinvest.ltd` must not route
   `/api/ingest`, and the NetworkPolicy lets in only the pods that send. The signature is
