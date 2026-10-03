@@ -125,9 +125,11 @@
           requiredEnv = [ "PANEL_DB_PATH" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
           # from the sops-backed Secret, never literal env
           secretEnv = [ "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" ];
+          # POSTHOG_PROJECT_API_KEY (phc_, public like the landings', not a secret; + POSTHOG_HOST):
+          # serve sends the leads' life to PostHog; unset, nothing is sent (serve warns).
           # POSTHOG_PROJECT_ID (+ POSTHOG_APP_HOST): the experiments link to their funnels in
           # PostHog; unset, no links. Links are opened by the browser: no egress for them.
-          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" "POSTHOG_PROJECT_ID" "POSTHOG_APP_HOST" ];
+          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" "POSTHOG_PROJECT_API_KEY" "POSTHOG_HOST" "POSTHOG_PROJECT_ID" "POSTHOG_APP_HOST" ];
           ingress = {
             # in-cluster only, by service DNS: the landings' ingest and place reads
             # (docs/ARCHITECTURE.md, Deploy requirements)
@@ -138,8 +140,9 @@
           egress = {
             # concierge's gRPC, at the address CONCIERGE_GRPC_ADDR names
             grpcEnv = [ "CONCIERGE_GRPC_ADDR" ];
-            # the Bot API
-            hosts = [ "api.telegram.org:443" ];
+            # the Bot API; PostHog's capture host (POSTHOG_HOST's default — follow it if it is
+            # pointed elsewhere)
+            hosts = [ "api.telegram.org:443" "us.i.posthog.com:443" ];
           };
         };
 

@@ -133,6 +133,8 @@ pub struct LeadState {
 	pub manual: bool,
 	pub last_event_id: EventId,
 	pub last_event_at: Timestamp,
+	/// The `lead.created` that counts (the first journaled); `None` while there is none.
+	pub creation: Option<EventId>,
 }
 
 /// Folds a lead's facts into its state; `None` for no facts. Every event must be about the
@@ -172,6 +174,7 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		manual: false,
 		last_event_id: first.id,
 		last_event_at: first.occurred_at,
+		creation,
 	};
 	for e in ordered {
 		debug_assert_eq!(e.subject.brand_id, state.brand_id, "fold is per lead");

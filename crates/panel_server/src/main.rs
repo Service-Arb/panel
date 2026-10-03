@@ -23,6 +23,7 @@ use panel_core::{
 };
 use panel_server::{
 	DEFAULT_BIND,
+	capture::{self, CaptureApi},
 	concierge::{Concierge, DevIdentity},
 	http,
 	signin::{SignIn, SignInConfig},
@@ -207,7 +208,9 @@ async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSign
 			};
 			let telegram = settings.telegram()?;
 			let front_end = settings.web()?;
-			serve(connect().await?, sign_in, telegram, front_end, bind).await
+			let capture = settings.capture()?.map(|c| CaptureApi::new(&c.host, &c.key)).transpose()?;
+			let panel = connect().await?.with_capture(capture.is_some());
+			serve(panel, sign_in, telegram, capture, front_end, bind).await
 		}
 		Cmd::RebuildProjections => {
 			let r = connect().await?.rebuild_projections().await?;
@@ -409,10 +412,28 @@ enum Identity {
 	Dev(settings::DevSignIn),
 }
 
-async fn serve(panel: Panel, sign_in: Option<Identity>, telegram: Option<settings::TelegramSettings>, front_end: Option<Files>, bind: SocketAddr) -> eyre::Result<()> {
+async fn serve(
+	panel: Panel,
+	sign_in: Option<Identity>,
+	telegram: Option<settings::TelegramSettings>,
+	sender: Option<CaptureApi>,
+	front_end: Option<Files>,
+	bind: SocketAddr,
+) -> eyre::Result<()> {
 	let (stop, stopped) = tokio::sync::watch::channel(false);
 	let bus = panel.bus().clone();
 	let mut bot_work = None;
+	// Held, and awaited at shutdown, like the bot's.
+	let capture_work = match sender {
+		Some(api) => {
+			tracing::info!(?api, "sending lead events to posthog");
+			Some(tokio::spawn(capture::run(panel.clone(), api, stopped.clone())))
+		}
+		None => {
+			tracing::warn!("POSTHOG_PROJECT_API_KEY unset: nothing is sent to PostHog");
+			None
+		}
+	};
 	let app = match sign_in {
 		Some(identity) => {
 			let (concierge, config) = match identity {
@@ -493,6 +514,11 @@ async fn serve(panel: Panel, sign_in: Option<Identity>, telegram: Option<setting
 		&& let Err(e) = work.await
 	{
 		panel_server::report(&eyre::eyre!(e), "the telegram worker panicked");
+	}
+	if let Some(work) = capture_work
+		&& let Err(e) = work.await
+	{
+		panel_server::report(&eyre::eyre!(e), "the posthog sender panicked");
 	}
 	served
 }

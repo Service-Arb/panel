@@ -11,8 +11,10 @@
 //! - [`role`]: who may do what inside the panel;
 //! - [`place`]: a place's live settings (phones, hours, …), checked as the sites read them;
 //! - [`pricing`]: a brand's price list, checked and priced as kitstart does, to the cent;
+//! - [`analytics`]: what PostHog is told of a lead's life, without PII;
 //! - [`notify`]: the Telegram rules, their messages and buttons, and how a delivery is retried.
 
+pub mod analytics;
 pub mod event;
 pub mod experiment;
 pub mod fact;

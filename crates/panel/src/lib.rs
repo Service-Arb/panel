@@ -15,6 +15,7 @@
 //! the brands' experiments as configuration; [`live`] the bus that tells the server's sockets what changed,
 //! published here after each commit.
 
+pub mod capture;
 pub mod experiment;
 pub mod live;
 pub mod operator;
@@ -158,6 +159,31 @@ fn sources_changed() -> live::Change {
 	}
 }
 
+/// Queues what PostHog is told of a new lead event: nothing for what is about no lead, nor for
+/// a `lead.created` that is not the one that counts (a source's second one).
+async fn queue_capture(conn: &mut sqlx::SqliteConnection, recorded: &Recorded, lead: Option<&panel_core::lead::LeadState>, now: Timestamp) -> eyre::Result<()> {
+	let (Some(capture), Some(lead)) = (panel_core::analytics::capture_of(recorded), lead) else {
+		return Ok(());
+	};
+	if matches!(recorded.fact, panel_core::fact::Fact::LeadCreated { .. }) && lead.creation != Some(recorded.id) {
+		return Ok(());
+	}
+	let properties = serde_json::to_value(&capture.properties).wrap_err("PostHog properties")?;
+	store::posthog::enqueue(
+		conn,
+		&store::posthog::Queued {
+			event_id: recorded.id.raw(),
+			event: capture.event.to_owned(),
+			distinct_id: panel_core::analytics::distinct_id(lead.brand_id.as_str(), lead.lead_id.as_str(), lead.analytics_id.as_ref()),
+			properties,
+			occurred_at: recorded.occurred_at,
+			queued_at: now,
+			tries: 0,
+		},
+	)
+	.await
+}
+
 /// The engine.
 #[derive(Clone, Debug)]
 pub struct Panel {
@@ -166,6 +192,8 @@ pub struct Panel {
 	rotations: Arc<session::Rotations>,
 	live: live::Bus,
 	posthog: Option<experiment::PosthogProject>,
+	/// Whether journaled lead events are queued for PostHog ([`capture`]).
+	capture: bool,
 }
 
 impl Panel {
@@ -176,6 +204,7 @@ impl Panel {
 			rotations: Arc::default(),
 			live: live::Bus::default(),
 			posthog: None,
+			capture: false,
 		}
 	}
 
@@ -367,7 +396,12 @@ impl Panel {
 				subject: env.subject.clone(),
 				fact,
 			};
-			projections::apply(&mut tx, &recorded).await?;
+			let lead = projections::apply(&mut tx, &recorded).await?;
+			// Here, in the journal's transaction, and nowhere else: the rebuild projects without
+			// passing here, so it never tells PostHog anything twice.
+			if self.capture {
+				queue_capture(&mut tx, &recorded, lead.as_ref(), now).await?;
+			}
 			change = live::Change::of_event(&recorded, now);
 		}
 		tx.commit().await.wrap_err("committing an event")?;

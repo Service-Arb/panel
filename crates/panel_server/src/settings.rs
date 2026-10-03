@@ -48,6 +48,12 @@ ev_lib::settings! {
 		/// origin behind the API's routes; the image sets it. Unset: `serve` answers the API
 		/// alone, and says so.
 		panel_web_dir: Option<String>,
+		/// The project key the landings send to PostHog with (`phc_…`, public — not a secret):
+		/// `serve` sends each lead's life after the form there. Unset: nothing is sent, and
+		/// `serve` says so.
+		posthog_project_api_key: Option<String>,
+		/// PostHog's capture host, the landings' too.
+		posthog_host: String = "https://us.i.posthog.com",
 		/// The PostHog project the landings send to (Service-Arb's, a number like 614067): the
 		/// experiments link to their funnels in it. Unset: no links.
 		posthog_project_id: Option<String>,
@@ -114,7 +120,31 @@ impl Settings {
 	}
 }
 
+/// Sending events to PostHog, when it is configured.
+#[derive(Debug)]
+pub struct CaptureSettings {
+	pub host: String,
+	pub key: String,
+}
+
 impl Settings {
+	/// `None` without `POSTHOG_PROJECT_API_KEY`: nothing is sent.
+	pub fn capture(&self) -> eyre::Result<Option<CaptureSettings>> {
+		let Some(key) = self.posthog_project_api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) else {
+			return Ok(None);
+		};
+		// A personal key (`phx_`) here would be a secret in the wrong place, and one PostHog
+		// refuses for capture anyway.
+		eyre::ensure!(
+			key.starts_with("phc_") && key.len() <= 128 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+			"POSTHOG_PROJECT_API_KEY is a project key, phc_…"
+		);
+		Ok(Some(CaptureSettings {
+			host: origin("POSTHOG_HOST", &self.posthog_host, &self.app_env)?,
+			key: key.to_owned(),
+		}))
+	}
+
 	/// The PostHog project the experiments link into; `None` without `POSTHOG_PROJECT_ID`.
 	pub fn posthog_project(&self) -> eyre::Result<Option<panel::experiment::PosthogProject>> {
 		let Some(project) = self.posthog_project_id.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
@@ -292,6 +322,8 @@ mod tests {
 				"TELEGRAM_BOT_USERNAME",
 				"TELEGRAM_LOCALE",
 				"PANEL_WEB_DIR",
+				"POSTHOG_PROJECT_API_KEY",
+				"POSTHOG_HOST",
 				"POSTHOG_PROJECT_ID",
 				"POSTHOG_APP_HOST",
 				"PANEL_DEV_SIGN_IN",
@@ -363,6 +395,16 @@ mod tests {
 			Locale::En
 		);
 		assert!(from(&[("TELEGRAM_BOT_TOKEN", token), ("TELEGRAM_LOCALE", "de")]).unwrap().telegram().is_err());
+	}
+
+	#[test]
+	fn capture_is_off_without_a_project_key() {
+		assert!(from(&[]).unwrap().capture().unwrap().is_none());
+		let on = from(&[("POSTHOG_PROJECT_API_KEY", "phc_abc123")]).unwrap().capture().unwrap().unwrap();
+		assert_eq!((on.host.as_str(), on.key.as_str()), ("https://us.i.posthog.com", "phc_abc123"));
+		assert!(from(&[("POSTHOG_PROJECT_API_KEY", "phx_personal")]).unwrap().capture().is_err(), "a personal key is refused");
+		let plain = from(&[("POSTHOG_PROJECT_API_KEY", "phc_x"), ("POSTHOG_HOST", "http://127.0.0.1:1"), ("APP_ENV", "development")]).unwrap();
+		assert!(plain.capture().is_ok(), "plain http outside production");
 	}
 
 	#[test]
