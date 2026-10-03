@@ -58,6 +58,15 @@ export function formatDateTime(iso: string, locale: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
 }
 
+/**
+ * A write's moment to the second: two saves a minute apart — or the same
+ * minute — must read as two moments.
+ */
+export function formatMoment(iso: string, locale: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(locale, { dateStyle: "short", timeStyle: "medium" });
+}
+
 /** A calendar day `YYYY-MM-DD` as the reader writes dates; read as UTC so no zone moves it a day. */
 export function formatDay(day: string, locale: string): string {
   const d = new Date(`${day}T00:00:00Z`);

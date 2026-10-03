@@ -13,6 +13,7 @@
 pub mod events;
 pub mod metrics;
 pub mod places;
+pub mod pricing;
 pub mod projections;
 pub mod reads;
 pub mod sessions;

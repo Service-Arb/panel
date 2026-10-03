@@ -27,6 +27,8 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
                                      `insufficient` rule
   src/place.rs                       a place's live settings (kitstart's PlaceLive), checked
                                      field by field; a change and who made it
+  src/pricing.rs                     a brand's price list (kitstart's PricingModel): checked,
+                                     priced to the cent; tests/fixtures/pricing vendored by sha
 crates/panel/                        the engine
   src/lib.rs                         the `Panel` facade: ingest, sources, PII, rebuild
   src/wire.rs                        protojson → the core: one event decoded and checked; the
@@ -46,6 +48,9 @@ crates/panel/                        the engine
   src/place.rs                       a place's settings changed (optimistic concurrency, revert,
                                      withdraw) and what a site is answered
   src/store/places.rs                places, place_settings, the place_changes history
+  src/pricing.rs                     a brand's pricing saved or removed (optimistic concurrency),
+                                     the preview, and what a site is answered
+  src/store/pricing.rs               pricing, pricing_changes, brand_locales
   src/store/metrics.rs               daily_location_metrics, daily_experiment_metrics, the
                                      import's lease
   src/live.rs                        the in-process bus of what changed, published after each
@@ -66,6 +71,8 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
                                      changed
   src/places.rs                      a place's settings: the editor's routes, and the sites'
                                      GET /api/internal/…, which has no session
+  src/pricing.rs                     a brand's pricing: the editor's routes, the preview, and
+                                     the sites' GET /api/internal/brands/{brand}/pricing
   src/telegram.rs                    the Bot API (reqwest), the bot's background work in
                                      `serve`, and /api/v1/telegram
   src/posthog.rs                     PostHog's query API (reqwest) and the import's schedule
@@ -349,6 +356,7 @@ closes              4401 the session ended   4403 the role is gone   1001 the se
 | `leads` | a lead came in (`lead.created`: ingest, or typed in) | its brand | the lead | every role |
 | `lead` | a stage, a call, a payment of one lead (the API or a Telegram button) | its brand | the lead | every role |
 | `places` | a place's settings set, reverted, withdrawn, restored, or the place registered | its brand | the slug | every role |
+| `pricing` | a brand's pricing saved or removed, or its locales set | its brand | — | every role |
 | `sources` | a source key minted or revoked | — | — | admins |
 | `metrics` | a PostHog count of stages 3–4 written | its brand | — | every role |
 | `experiments` | a PostHog count of an experiment written | its brand | — | every role |
@@ -366,7 +374,7 @@ closes              4401 the session ended   4403 the role is gone   1001 the se
   its transaction has committed — ingest, the operator API, the Telegram buttons and the
   PostHog import alike, so none of them can forget to. A duplicate, a refused event or an
   unregistered type changed no read and says nothing. Outside the journal: a place's change
-  (`place.rs`, after its transaction), the sources (`Panel::add_source`,
+  (`place.rs`, after its transaction), a brand's pricing (`pricing.rs`, the same), the sources (`Panel::add_source`,
   `Panel::revoke_source`), the Telegram link (`telegram.rs`: `/start`, `/stop`, the profile's
   unlink, a chat found blocked, the rules). A write that changes nothing publishes nothing.
 - **The bus is in-process** (`tokio::sync::broadcast`, one pod). Publishing never waits and
@@ -442,6 +450,74 @@ POST /places                                  {brand, slug} → 201 as GET; 409 
 - **History is append-only, places never deleted**: triggers refuse any UPDATE or DELETE of
   `place_changes`, a DELETE of `places` or `place_settings` (cleared is `{}`), and any UPDATE
   of `places` but `withdrawn`.
+
+## Pricing
+
+A landing prices its `estimate` and `fixed` needs by a brand's price list (kitstart's
+`PricingModel`, FORM-VARIANTS-SPEC, lib#178), baked into its build and replaced by what the
+panel answers for the brand (`createPricingSource`: every 10 minutes at most, 3 s, the baked
+model on any failure or on a model it refuses). **The model is kitstart's**: its shape, its
+rules and its arithmetic are normative in kitstart's fixture README,
+`crates/panel_core/tests/fixtures/pricing/README.md` (format 1, EUR TTC, integer cents,
+basis points, every intermediate product rounded half up to the cent, the total to
+`roundToCents`, then `minimumCents`; a `fixed` need as is). `panel_core::pricing` is a port of
+`validate.ts` and `price.ts`, held to the same fixtures.
+
+- **Vendored by sha.** `crates/panel_core/tests/fixtures/pricing/` is a copy of kitstart's
+  `ts/kitstart/test/fixtures/pricing` at the commit `SOURCE` names; `tests/pricing_fixtures.rs`
+  accepts every `valid/*.json` (and reads it back unchanged), refuses every `invalid/*.json` at
+  the field its name says, and prices every `cases.json` to the cent, `null` included. kitstart
+  changing a fixture changes the contract: copy the directory of the new commit over this one,
+  write its sha in `SOURCE`, make the tests pass (adding the line a new invalid fixture needs),
+  and ship the panel before the sites rely on it.
+- **A brand's locales.** Every input's and option's label must be in each locale the brand's
+  sites speak, or a site refuses the whole model; the panel refuses to save one (kitstart's
+  `pricingProblemsFor`). The locales are `fr,en` unless set by `panel pricing locales <brand>
+  fr,en` (`brand_locales`); a model saved before a locale was added is kept for the editor but
+  not served (`{}`) until saved with the labels.
+- **Paths.** A refusal names the first problem at kitstart's path without its `model.` root:
+  `needs.standard.inputs[2]`, `inputs[0].options[1].labels`. JSON objects are read sorted here
+  and in insertion order there, so with several problems the first named may differ; whether
+  there is one never does. Saved, a model is stored in kitstart's shape (its maps' keys sorted).
+
+```text
+GET    /api/internal/brands/{brand}/pricing?locale   no session; with the locations' read ≤ 32
+       at once (shed: `{}`), 2.5 s (then `{}`); `locale` ignored, every locale's labels sent
+       200 the model; {} for none, for a brand id that cannot be one, for a model the brand's
+       locales no longer pass, and on any failure of the store (logged) — never a 404 or 5xx
+```
+
+Under `/api/v1`, CSRF on everything but GET; saving and removing are an admin's and ask
+concierge afresh (`gate_fresh`); reading and the preview are every role's:
+
+```text
+GET    /pricing                       {items: [Item]}: every brand the panel knows (a lead's,
+                                      a place's, a count's, a source key's) or has pricing for
+GET    /pricing/{brand}               Item; a brand never set: model, updated_at, updated_by null
+PUT    /pricing/{brand}     admin     {model, expected_updated_at: RFC 3339 | null} → 200 Item;
+                                      409 {error: "stale", current: Item}; 422 {error, path}
+DELETE /pricing/{brand}     admin     {expected_updated_at} (required) → 200 Item, model null;
+                                      409 as PUT
+POST   /pricing/{brand}/preview       {model, need, inputs: {input: option}} → 200 {cents: n |
+                                      null} (null: kitstart's "no price"); 422 as PUT: the draft
+                                      is held to the brand's locales, as the site would
+GET    /pricing/{brand}/changes       {changes: [{id, at, by, kind: set | remove, valid_from,
+                                      needs, model}]}: the last 50, newest first; `model` the
+                                      one the change left; a removal's three null
+
+Item: {brand_id, locales, model | null, updated_at | null, updated_by | null}
+```
+
+- **A change is one write transaction**, as a place's: the current model and the brand's
+  locales read under the write lock, `expected_updated_at` compared, the model checked and
+  written, the change journaled (`pricing_changes`: before, after — NULL for none —, who, when).
+  A removal keeps the row with `model` NULL and its own `updated_at`, which the next save names;
+  `updated_at` only grows, a microsecond at least per change. Saving the model there is, or
+  removing none, writes nothing and tells nobody.
+- **The CLI**: `panel pricing show|history|set <brand> <file|->|remove|locales`, `by = cli`,
+  over whatever is there when its transaction begins.
+- **Append-only**: triggers refuse any UPDATE or DELETE of `pricing_changes` and a DELETE of
+  `pricing`.
 
 ## Telegram (§8)
 
@@ -649,7 +725,7 @@ journaled        site.metrics / contact.metrics / experiment.metrics, source.kin
   list of required variables and the binary's `--print-required-vars` disagree.
 
 - **`/api/internal` stays inside the cluster.** The landings read their places' settings
-  there by service DNS; it has no session, so the IngressRoute must exclude the prefix
+  and their brand's pricing there by service DNS; it has no session, so the IngressRoute must exclude the prefix
   (`excludePathPrefixes`) and the NetworkPolicy admit only the landings' pods.
 - **Ingest stays inside the cluster.** Its sources (the landings, review_archive) reach it
   by service DNS (§3.3); the IngressRoute that publishes `sa.evinvest.ltd` must not route

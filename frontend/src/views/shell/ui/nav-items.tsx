@@ -1,5 +1,5 @@
 import { NavDot, type NavGroup, type NavItem } from "@evinvest/uikit";
-import { ArrowUpRight, BarChart3, Ellipsis, FlaskConical, Inbox, KeyRound, LayoutGrid, MapPin } from "lucide-react";
+import { ArrowUpRight, BarChart3, Ellipsis, FlaskConical, Inbox, KeyRound, LayoutGrid, MapPin, Tags } from "lucide-react";
 
 import { type Role, managesSources } from "@/entities/session";
 import { ROUTES } from "@/shared/config/routes";
@@ -14,7 +14,8 @@ export interface PanelNav {
 
 /**
  * The rail (spec §10, hybrid 1+2) in groups, and the phone's four tabs: the
- * three daily screens, and More standing in for the rest. Marks ride on both:
+ * three daily screens, and More standing in for the rest (Pricing among them:
+ * an admin edits it, an operator reads it, neither daily). Marks ride on both:
  * a count where there is one, a dot where "something changed" is all there is.
  */
 export function panelNav(t: T, role: Role, marks: Marks): PanelNav {
@@ -23,6 +24,7 @@ export function panelNav(t: T, role: Role, marks: Marks): PanelNav {
   const overview: NavItem = { id: "overview", href: ROUTES.overview, label: t("nav.overview"), icon: BarChart3 };
   const leads: NavItem = { id: "leads", href: ROUTES.leads, label: t("nav.leads"), icon: Inbox, badge: marks.leads };
   const places: NavItem = { id: "places", href: ROUTES.places, label: t("nav.places"), icon: MapPin, badge: marks.places };
+  const pricing: NavItem = { id: "pricing", href: ROUTES.pricing, label: t("nav.pricing"), icon: Tags };
   const experiments: NavItem = { id: "experiments", href: ROUTES.experiments, label: t("nav.experiments"), icon: FlaskConical, ...(marks.experiments ? { badge: dot(false) } : {}) };
   const sources: NavItem = { id: "sources", href: ROUTES.sources, label: t("nav.sources"), icon: KeyRound, ...(marks.sources ? { badge: dot(false) } : {}) };
   const grafana: NavItem = {
@@ -40,12 +42,12 @@ export function panelNav(t: T, role: Role, marks: Marks): PanelNav {
     href: ROUTES.more,
     label: t("nav.more"),
     icon: Ellipsis,
-    also: admin ? [ROUTES.experiments, ROUTES.sources] : [ROUTES.experiments],
+    also: admin ? [ROUTES.pricing, ROUTES.experiments, ROUTES.sources] : [ROUTES.pricing, ROUTES.experiments],
     ...(elsewhere ? { badge: dot(true) } : {}),
   };
 
   const groups: NavGroup[] = [
-    { id: "work", label: t("nav.group.work"), items: [overview, leads, places] },
+    { id: "work", label: t("nav.group.work"), items: [overview, leads, places, pricing] },
     { id: "analysis", label: t("nav.group.analysis"), items: [experiments, grafana] },
   ];
   if (admin) groups.push({ id: "admin", label: t("nav.group.admin"), items: [sources] });

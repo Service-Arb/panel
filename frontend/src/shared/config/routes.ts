@@ -2,6 +2,7 @@ export const ROUTES = {
   overview: "/overview",
   leads: "/leads",
   places: "/places",
+  pricing: "/pricing",
   experiments: "/experiments",
   sources: "/sources",
   more: "/more",

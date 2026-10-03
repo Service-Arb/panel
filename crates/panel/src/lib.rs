@@ -12,7 +12,7 @@
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
 //! bot's notifications and buttons; [`posthog`] the hourly import of the site's counts, and
 //! [`counts`] what the screens read of them; [`place`] the places' live settings the sites
-//! read and the panel edits; [`live`] the bus that tells the server's sockets what changed,
+//! read and the panel edits; [`pricing`] the brands' price lists, the same; [`live`] the bus that tells the server's sockets what changed,
 //! published here after each commit.
 
 pub mod counts;
@@ -20,6 +20,7 @@ pub mod live;
 pub mod operator;
 pub mod place;
 pub mod posthog;
+pub mod pricing;
 pub mod seal;
 pub mod session;
 pub mod store;

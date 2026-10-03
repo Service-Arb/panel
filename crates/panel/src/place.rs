@@ -63,17 +63,17 @@ pub enum PlaceError {
 }
 
 /// A timestamp at the database's precision, so what the editor is given back compares equal.
-fn micros(t: Timestamp) -> eyre::Result<Timestamp> {
+pub(crate) fn micros(t: Timestamp) -> eyre::Result<Timestamp> {
 	Timestamp::from_microsecond(t.as_microsecond()).wrap_err("a timestamp")
 }
 
-fn new_change_id(now: Timestamp) -> Uuid {
+pub(crate) fn new_change_id(now: Timestamp) -> Uuid {
 	let nanos = u32::try_from(now.subsec_nanosecond().rem_euclid(1_000_000_000)).unwrap_or(0);
 	let secs = u64::try_from(now.as_second()).unwrap_or(0);
 	Uuid::new_v7(uuid::Timestamp::from_unix(uuid::NoContext, secs, nanos))
 }
 
-fn by(editor: &Editor) -> By<'_> {
+pub(crate) fn by(editor: &Editor) -> By<'_> {
 	By {
 		label: editor.label(),
 		user: editor.user_id(),

@@ -12,6 +12,7 @@ pub mod http;
 pub mod live;
 pub mod places;
 pub mod posthog;
+pub mod pricing;
 pub mod signin;
 pub mod telegram;
 pub mod web;

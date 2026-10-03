@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Item, ItemActions, ItemContent, ItemGroup, ItemTitle, NavDot } from "@evinvest/uikit";
-import { ArrowUpRight, FlaskConical, KeyRound, LayoutGrid, type LucideIcon } from "lucide-react";
+import { ArrowUpRight, FlaskConical, KeyRound, LayoutGrid, type LucideIcon, Tags } from "lucide-react";
 import Link from "next/link";
 
 import { DevSignInBadge, managesSources, useMe } from "@/entities/session";
@@ -29,6 +29,7 @@ export function MoreView() {
         <LiveStatusIndicator className="mt-1" />
       </section>
       <ItemGroup className="gap-2">
+        <MoreLink href={ROUTES.pricing} icon={Tags} label="nav.pricing" />
         <MoreLink href={ROUTES.experiments} icon={FlaskConical} label="nav.experiments" />
         {managesSources(me.role) && <MoreLink href={ROUTES.sources} icon={KeyRound} label="nav.sources" />}
         <Item variant="outline" size="sm" asChild>

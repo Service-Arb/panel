@@ -79,6 +79,15 @@ impl Role {
 		}
 	}
 
+	/// A brand's price list (what its sites quote customers), and taking it off the sites.
+	/// Every role reads it and previews a price.
+	pub fn edits_pricing(self) -> bool {
+		match self {
+			Self::Operator => false,
+			Self::Admin => true,
+		}
+	}
+
 	pub fn grafana(self) -> GrafanaRole {
 		match self {
 			Self::Operator => GrafanaRole::Viewer,
@@ -117,6 +126,7 @@ mod tests {
 				"{role:?}"
 			);
 			assert_eq!(role.grafana(), grafana);
+			assert_eq!(role.edits_pricing(), places, "pricing is edited by whoever edits places");
 			assert_eq!(role.as_str().parse::<Role>().unwrap(), role);
 		}
 		assert!("viewer".parse::<Role>().is_err(), "the owner dropped it (2026-09-30)");

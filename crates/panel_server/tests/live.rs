@@ -342,6 +342,39 @@ async fn told_only_what_one_may_read() {
 	assert_eq!((first["topic"].as_str(), first["id"].as_str()), (Some("leads"), Some("L-2")), "{first}");
 }
 
+/// A brand's pricing saved by an admin over the API: every role's screens are told.
+#[tokio::test]
+async fn a_pricing_save_is_told_to_every_role() {
+	let db = TestDb::create().await;
+	let panel = panel(&db).await;
+	let (admin_app, _) = serve(panel.clone(), Role::Admin, Limits::default()).await;
+	let (op_app, op_addr) = serve(panel.clone(), Role::Operator, Limits::default()).await;
+	let mut op = open(op_addr, &signed_in(&op_app).await).await;
+	let admin = signed_in(&admin_app).await;
+
+	let model: Value = serde_json::from_str(include_str!("../../panel_core/tests/fixtures/pricing/valid/cleaning.json")).unwrap();
+	let mut req = Request::builder()
+		.method(Method::PUT)
+		.uri("/api/v1/pricing/vifnet")
+		.header(header::CONTENT_TYPE, "application/json")
+		.header(header::COOKIE, admin.cookie().unwrap());
+	if let Some(t) = admin.jar.get("sa_csrf") {
+		req = req.header("x-sa-csrf", t);
+	}
+	let body = Body::from(json!({"model": model, "expected_updated_at": null}).to_string());
+	let res = admin_app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+	assert_eq!(res.status(), StatusCode::OK);
+	let saved: Value = serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+
+	let told = op.text().await;
+	assert_eq!(
+		(told["type"].as_str(), told["topic"].as_str(), told["brand_id"].as_str()),
+		(Some("changed"), Some("pricing"), Some("vifnet")),
+		"{told}"
+	);
+	assert_eq!(told["at"], saved["updated_at"], "when it committed: the version the item names");
+}
+
 #[tokio::test]
 async fn signing_out_closes_the_socket() {
 	let db = TestDb::create().await;

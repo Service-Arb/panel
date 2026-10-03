@@ -17,6 +17,8 @@
   /* A variant's rate: label and share on a line, the comparison under them on a phone, beside from md up. */
   --grid-exp-rate: 1fr auto;
   --grid-exp-rate-md: 9rem 5rem 1fr;
+  /* Pricing: the editor, and beside it the preview, JSON and history column. */
+  --grid-pricing: minmax(0, 1fr) 24rem;
 }
 
 html,
@@ -114,4 +116,12 @@ html {
   [data-flash="new"] {
     animation-name: panel-glow-odd;
   }
+}
+
+/* The kit's overlays stay mounted through their exit fade, still covering the
+   page: a click on Save right after a dialog closes landed on the fading
+   overlay. The leaving content already drops pointer events; its overlay must too.
+   Belongs in @evinvest/uikit (DialogOverlay & co.); drop this once it ships there. */
+[data-slot$="-overlay"][data-state="closed"] {
+  pointer-events: none;
 }

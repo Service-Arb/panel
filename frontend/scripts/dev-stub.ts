@@ -9,12 +9,14 @@
  *   STUB_MIN_SAMPLE=2 npm run dev:stub  # percents (and bars) from 2 leads, not 30
  *   STUB_POSTHOG=off npm run dev:stub   # no PostHog import yet: no day counts, no experiments
  *   STUB_PLACES_CONFLICT=1 npm run dev:stub  # every place-settings save answers 409
+ *   STUB_PRICING_CONFLICT=1 npm run dev:stub # every pricing save and removal answers 409
+ *   STUB_PRICING_INVALID=inputs.zone.labels.en npm run dev:stub  # every pricing save and preview answers 422 there
  *   STUB_LIVE=off npm run dev:stub     # no /api/v1/live socket: the panel polls instead (4401 | 4403: close at once)
  *   STUB_LIVE_EVERY=5 npm run dev:stub # live activity every 5 s rather than every 20–40 s
  *
  * Live: every write above is announced on the socket, and someone else is busy
  * too — a new lead every 20–40 s, now and then a lead moved on, a place saved,
- * an experiment re-imported.
+ * vifnet's pricing saved, an experiment re-imported.
  *
  * then `npm run dev` in another shell. Data is made up and says so ("stub").
  */
@@ -25,6 +27,7 @@ import type { Duplex } from "node:stream";
 import { changed, every, liveUpgrade } from "./stub-live.ts";
 import { type StubDeal, dealDto, estimate, fixed, flowParam, quote, seedDeals } from "./stub-deals.ts";
 import { addedPlaces, placeFlags, placeSettingsRoute, touchPlace } from "./stub-places.ts";
+import { pricingRoute, touchPricing } from "./stub-pricing.ts";
 
 const PORT = Number(process.env.STUB_PORT ?? 3121);
 const ROLE = process.env.STUB_ROLE === "admin" ? "admin" : "operator";
@@ -324,6 +327,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     }
     if (reply) return send(res, reply.status, reply.body);
   }
+  if (path.startsWith("/pricing")) {
+    const reply = pricingRoute(req.method ?? "GET", path, write ? await readJson(req) : {}, ROLE, `stub-${ROLE}@example.test`);
+    if (reply?.changed) changed("pricing", reply.changed);
+    if (reply) return send(res, reply.status, reply.body);
+  }
   if (path === "/leads/counts") return send(res, 200, counts(url.searchParams.get("brand"), url.searchParams.get("location")));
   if (path === "/leads" && req.method === "GET") {
     const q = url.searchParams;
@@ -436,6 +444,10 @@ every(LIVE_EVERY === null ? 90 : LIVE_EVERY * 3, () => {
   changed("places", "aquafix", "lyon-3");
 });
 every(LIVE_EVERY === null ? 120 : LIVE_EVERY * 4, () => changed("experiments"));
+every(LIVE_EVERY === null ? 180 : LIVE_EVERY * 6, () => {
+  touchPricing("colleague@example.test (stub)");
+  changed("pricing", "vifnet");
+});
 
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
