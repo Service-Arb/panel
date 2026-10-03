@@ -339,6 +339,23 @@ pub enum OperatorAction {
 	Close(Closed),
 }
 
+/// `as_str` and `parse` for a fieldless enum spelled on the wire as snake-case words.
+macro_rules! wire_enum {
+	($ty:ident, $refused:literal, { $($variant:ident => $wire:literal),+ $(,)? }) => {
+		impl $ty {
+			pub fn as_str(self) -> &'static str {
+				match self {
+					$(Self::$variant => $wire,)+
+				}
+			}
+
+			pub fn parse(raw: &str) -> Result<Self, Invalid> {
+				[$(Self::$variant),+].into_iter().find(|v| v.as_str() == raw).ok_or_else(|| Invalid::new($refused))
+			}
+		}
+	};
+}
+
 /// When in the day the visitor would like their slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DayPart {
@@ -347,22 +364,11 @@ pub enum DayPart {
 	Evening,
 }
 
-impl DayPart {
-	pub fn as_str(self) -> &'static str {
-		match self {
-			Self::Morning => "morning",
-			Self::Afternoon => "afternoon",
-			Self::Evening => "evening",
-		}
-	}
-
-	pub fn parse(raw: &str) -> Result<Self, Invalid> {
-		[Self::Morning, Self::Afternoon, Self::Evening]
-			.into_iter()
-			.find(|p| p.as_str() == raw)
-			.ok_or_else(|| Invalid::new("properties.preferred_part is not one of morning, afternoon, evening"))
-	}
-}
+wire_enum!(DayPart, "properties.preferred_part is not one of morning, afternoon, evening", {
+	Morning => "morning",
+	Afternoon => "afternoon",
+	Evening => "evening",
+});
 
 /// How a provider's booking was joined to its lead.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -375,22 +381,11 @@ pub enum BookingMatch {
 	Manual,
 }
 
-impl BookingMatch {
-	pub fn as_str(self) -> &'static str {
-		match self {
-			Self::Ref => "ref",
-			Self::Contact => "contact",
-			Self::Manual => "manual",
-		}
-	}
-
-	pub fn parse(raw: &str) -> Result<Self, Invalid> {
-		[Self::Ref, Self::Contact, Self::Manual]
-			.into_iter()
-			.find(|m| m.as_str() == raw)
-			.ok_or_else(|| Invalid::new("match is not one of ref, contact, manual"))
-	}
-}
+wire_enum!(BookingMatch, "match is not one of ref, contact, manual", {
+	Ref => "ref",
+	Contact => "contact",
+	Manual => "manual",
+});
 
 /// A lead's booking now.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
