@@ -9,7 +9,8 @@
 //! ```text
 //! Panel::journal        every event journaled and projected: ingest, the operator's actions,
 //!                       the Telegram buttons, a landing's experiments,
-//!                       an admin's experiment settings                 → leads | lead | experiments
+//!                       an admin's experiment settings, the booking adapters
+//!                                                   → leads | lead | experiments | bookings
 //! Panel::rebuild_…      the projections replaced whole                 → resync
 //! place::edit, register a place's settings, withdrawn, registered      → places
 //! pricing               a brand's model saved or removed, its locales  → pricing
@@ -55,6 +56,8 @@ pub enum Topic {
 	Experiments,
 	/// One user's Telegram link and rules: that user only.
 	Telegram,
+	/// The providers' bookings without a lead: one came, changed, or was joined to a lead.
+	Bookings,
 }
 
 impl Topic {
@@ -67,6 +70,7 @@ impl Topic {
 			Self::Sources => "sources",
 			Self::Experiments => "experiments",
 			Self::Telegram => "telegram",
+			Self::Bookings => "bookings",
 		}
 	}
 }
@@ -86,12 +90,12 @@ pub struct Change {
 
 impl Change {
 	/// Whether `user`, of `role`, may be told of it: exactly when they may read what changed.
-	/// Every admitted role reads leads, places, pricing and the experiments, for every brand (spec §5.4: the
+	/// Every admitted role reads leads, places, pricing, the experiments and the bookings, for every brand (spec §5.4: the
 	/// panel's grant is `allocation:service_arb`, with no narrower scope); sources are an
 	/// admin's; a Telegram link is its own user's.
 	pub fn visible_to(&self, user: Uuid, role: Role) -> bool {
 		match self.topic {
-			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Experiments => true,
+			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Experiments | Topic::Bookings => true,
 			Topic::Sources => role.manages_sources(),
 			Topic::Telegram => self.user == Some(user),
 		}
@@ -109,7 +113,14 @@ impl Change {
 			| Fact::JobCompleted
 			| Fact::PaymentReceived { .. }
 			| Fact::CallAttempted
-			| Fact::CallLogged { .. } => (Topic::Lead, lead()),
+			| Fact::CallLogged { .. }
+			| Fact::BookingRequested { .. }
+			| Fact::BookingCreated { .. }
+			| Fact::BookingCanceled { .. }
+			| Fact::BookingSet { .. }
+			| Fact::BookingStatusChanged(_)
+			| Fact::BookingCleared
+			| Fact::BookingAttached { .. } => (Topic::Lead, lead()),
 			Fact::ExperimentsDeclared(_) => (Topic::Experiments, None),
 			Fact::ExperimentConfigured { patch, .. } => (Topic::Experiments, Some(patch.key.clone())),
 			Fact::RetiredCount => return None,
@@ -121,6 +132,38 @@ impl Change {
 			user: None,
 			at,
 		})
+	}
+}
+
+impl Change {
+	/// What journaling `event` changed, once projected: as [`Self::of_event`], but a booking
+	/// event tells every lead it changed (a provider's booking may leave one lead and join
+	/// another), and the list of bookings without a lead when that changed — and nothing of a
+	/// lead it did not change.
+	pub fn of_applied(event: &Recorded, applied: &crate::store::projections::Applied, at: Timestamp) -> Vec<Self> {
+		let lead = |l: &panel_core::ids::LeadId| Self {
+			topic: Topic::Lead,
+			brand: Some(event.subject.brand_id.clone()),
+			id: Some(l.as_str().to_owned()),
+			user: None,
+			at,
+		};
+		match &event.fact {
+			Fact::BookingCreated { .. } | Fact::BookingCanceled { .. } | Fact::BookingAttached { .. } => {
+				let mut out: Vec<Self> = applied.leads.iter().map(lead).collect();
+				if applied.unmatched {
+					out.push(Self {
+						topic: Topic::Bookings,
+						brand: Some(event.subject.brand_id.clone()),
+						id: None,
+						user: None,
+						at,
+					});
+				}
+				out
+			}
+			_ => Self::of_event(event, at).into_iter().collect(),
+		}
 	}
 }
 
@@ -209,7 +252,7 @@ mod tests {
 	#[test]
 	fn who_is_told() {
 		let (ann, bob) = (Uuid::from_u128(1), Uuid::from_u128(2));
-		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Pricing, Topic::Experiments] {
+		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Pricing, Topic::Experiments, Topic::Bookings] {
 			assert!(change(topic, None).visible_to(ann, Role::Operator), "{topic:?}");
 			assert!(change(topic, None).visible_to(ann, Role::Admin), "{topic:?}");
 		}

@@ -3,9 +3,11 @@ import type { Lead } from "@/entities/lead";
 /** A row's identity across reads: brand and lead. */
 export const leadKey = (lead: Pick<Lead, "brand" | "lead_id">) => `${lead.brand}/${lead.lead_id}`;
 
-/** What a person would notice changed on a row: the stage, a new event (a call, a payment), a loss reason. */
+/** What a person would notice changed on a row: the stage, a new event (a call, a payment), a loss reason, the booking. */
 export function differs(a: Lead, b: Lead): boolean {
-  return a.stage !== b.stage || a.last_event_at !== b.last_event_at || a.lost_reason !== b.lost_reason || a.paid_at !== b.paid_at;
+  const moved = a.stage !== b.stage || a.last_event_at !== b.last_event_at || a.lost_reason !== b.lost_reason || a.paid_at !== b.paid_at;
+  // A provider's booking changes the row without a lead event of its own.
+  return moved || a.booking.status !== b.booking.status || a.booking.start_at !== b.booking.start_at;
 }
 
 /** Rows on screen with each update put in place — never moved, never added. */

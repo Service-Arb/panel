@@ -39,13 +39,7 @@ export function removeHoursRow(rows: readonly HoursDraftRow[], rowKey: number): 
   return rows.filter((r) => r.key !== rowKey);
 }
 
-/** "8:00", "0800", "8h00", "8.00" → "08:00"; anything else stays as typed, for the problem to show. */
-export function normaliseTime(raw: string): string {
-  const m = /^\s*(\d{1,2})\s*[:h.]?\s*(\d{2})\s*$/i.exec(raw);
-  if (!m) return raw.trim();
-  const t = `${(m[1] ?? "").padStart(2, "0")}:${m[2] ?? ""}`;
-  return minutesOf(t) === null ? raw.trim() : t;
-}
+export { normaliseTime } from "@/shared/lib/clock";
 
 /** The minutes a row covers on each of its days, past midnight split onto the next. */
 function spans(row: HoursDraftRow): { day: Day; from: number; to: number }[] {

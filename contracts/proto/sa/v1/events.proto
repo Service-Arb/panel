@@ -45,8 +45,9 @@ message Event {
 }
 
 message Source {
-  // site | review_archive | gbp | posthog | panel | sheet | telephony. Must be the kind the
-  // signing key is registered for.
+  // site | review_archive | gbp | posthog | panel | sheet | telephony | booking. Must be the
+  // kind the signing key is registered for. `booking` is the panel's own booking adapters
+  // (a provider's webhook or its periodic pull): no key is ever issued for it.
   string kind = 1;
   // Which one. For a signed batch, the key id it is signed with ("aquafix-site"); anything
   // else is rejected.
@@ -79,7 +80,8 @@ message EventResult {
   uint32 index = 1;
   // The event's id as sent; empty when it had none.
   string id = 2;
-  // accepted | duplicate | rejected
+  // accepted | duplicate | rejected | deferred (not journaled yet: it names what has not
+  // arrived; the whole batch is answered 409, to be sent again)
   string status = 3;
   // Why it was rejected; for an accepted event of an unregistered type, that it was stored
   // without being projected.
@@ -268,3 +270,73 @@ message ExperimentMetricsV1 {
   uint32 revision = 10;
 }
 
+
+// ── booking (FORM-VARIANTS-SPEC, "Booking providers contract") ──────────────────────────
+//
+// Provider: manual | link | google_calendar | cal_com, a closed vocabulary. Instants are
+// RFC 3339 strings with an offset ("2026-10-06T14:30:00+02:00").
+
+// booking.requested@1 — from a site (source.kind site), after the lead's lead.created: the
+// visitor asked for a slot through `provider`, with an optional wish. No free text, no null.
+// subject.lead_id required, and `lead_ref` is that same id: kitstart's leadRef,
+// `lead-<row>-<8 lowercase hex>`, row ≥ 1. Rules normative in kitstart's
+// test/fixtures/booking/README.md. Arriving before its lead.created, the batch is answered
+// 409 (`deferred`) for the outbox to send again.
+message BookingRequestedV1 {
+  string lead_ref = 1;
+  string provider = 2;
+  // "YYYY-MM-DD", a real day, 2 days back to 366 ahead of its arrival; `manual` only.
+  optional string preferred_date = 3;
+  // morning | afternoon | evening; `manual` only.
+  optional string preferred_part = 4;
+}
+
+// booking.created@1 — a provider says a slot is booked, or moved (the same external_ref with
+// another start): written by the panel's adapters only (source.kind booking, source.id the
+// provider). subject.lead_id: the lead it was matched to, absent while unmatched. The
+// attendee's name, email and phone go in `pii`, never here.
+message BookingCreatedV1 {
+  // google_calendar | cal_com: a provider with an adapter.
+  string provider = 1;
+  // The provider's id of the booking (Google: the calendar event's id). 1–1024 of
+  // [A-Za-z0-9._:-].
+  string external_ref = 2;
+  string start_at = 3;
+  optional string end_at = 4;
+  // ref | contact: how subject.lead_id was found; set exactly when it is.
+  optional string match = 5;
+  // The provider's revision of the booking (Google: the event's etag), 1–256 printable
+  // ASCII: the same revision seen twice is one event.
+  string version = 6;
+  // When the customer booked, as the provider says (Google: the event's `created`).
+  optional string booked_at = 7;
+}
+
+// booking.canceled@1 — a provider says a booking it reported is canceled. As booking.created.
+message BookingCanceledV1 {
+  string provider = 1;
+  string external_ref = 2;
+  string version = 3;
+}
+
+// booking.set@1 — an operator put the lead's slot in by hand (or moved it): it is booked.
+// source.kind panel; subject.lead_id required.
+message BookingSetV1 {
+  string start_at = 1;
+  optional string end_at = 2;
+}
+
+// booking.status_changed@1 — an operator closed a booked slot: done | no_show | canceled.
+message BookingStatusChangedV1 {
+  string status = 1;
+}
+
+// booking.cleared@1 — an operator took the lead's slot away: no booking any more.
+message BookingClearedV1 {}
+
+// booking.attached@1 — an operator joined a provider's booking to the lead (subject.lead_id):
+// one the panel could not match, or one matched by contact that they confirm or correct.
+message BookingAttachedV1 {
+  string provider = 1;
+  string external_ref = 2;
+}

@@ -16,6 +16,8 @@ export interface Marks {
   places: number;
   experiments: boolean;
   sources: boolean;
+  /** Bookings without a lead came since the leads screen was last open. */
+  bookings: boolean;
 }
 
 function readSeen(userId: string): number | null {
@@ -75,7 +77,7 @@ export function useMarks(userId: string, pathname: string): Marks {
     };
   }, [recount]);
   useLiveSignal(["leads", "lead"], () => setRecount((n) => n + 1), 400);
-  useLiveSignal(["places", "experiments", "sources"], (signals) => {
+  useLiveSignal(["places", "experiments", "sources", "bookings"], (signals) => {
     const events = signals.flatMap((s): ChangedEvent[] => (s.kind === "changed" ? [s.event] : []));
     if (events.length > 0) setUnseen((u) => noteChanges(u, events, at));
   });
@@ -86,5 +88,6 @@ export function useMarks(userId: string, pathname: string): Marks {
     places: unseen.places.length,
     experiments: unseen.experiments,
     sources: unseen.sources,
+    bookings: unseen.bookings,
   };
 }

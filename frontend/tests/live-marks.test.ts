@@ -32,7 +32,15 @@ describe("the nav's badges", () => {
 
   it("mark experiments and sources with a dot, and nothing for the other topics", () => {
     const s = noteChanges(NOTHING_UNSEEN, [ev("experiments"), ev("sources"), ev("telegram"), ev("pricing")], "overview");
-    expect(s).toEqual({ places: [], experiments: true, sources: true });
+    expect(s).toEqual({ places: [], experiments: true, sources: true, bookings: false });
+  });
+
+  it("mark bookings without a lead with a dot on Leads, cleared by opening Leads", () => {
+    const s = noteChanges(NOTHING_UNSEEN, [ev("bookings")], "overview");
+    expect(s.bookings).toBe(true);
+    expect(noteChanges(NOTHING_UNSEEN, [ev("bookings")], "leads")).toBe(NOTHING_UNSEEN);
+    expect(visit(s, "leads").bookings).toBe(false);
+    expect(visit(s, "places")).toBe(s);
   });
 
   it("do not mark the screen that is open", () => {
@@ -41,8 +49,8 @@ describe("the nav's badges", () => {
   });
 
   it("clear when their screen opens, and only theirs", () => {
-    const s = { places: ["aquafix/lyon-3"], experiments: true, sources: true };
-    expect(visit(s, "places")).toEqual({ places: [], experiments: true, sources: true });
+    const s = { places: ["aquafix/lyon-3"], experiments: true, sources: true, bookings: false };
+    expect(visit(s, "places")).toEqual({ places: [], experiments: true, sources: true, bookings: false });
     expect(visit(s, "experiments").experiments).toBe(false);
     expect(visit(s, "more")).toBe(s);
   });

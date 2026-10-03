@@ -203,6 +203,24 @@ pub async fn of_lead(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId
 	.collect()
 }
 
+/// The registered events of a provider's booking (`booking_events` names them).
+pub async fn of_booking(conn: &mut SqliteConnection, brand: &BrandId, provider: &str, external_ref: &str) -> eyre::Result<Vec<Stored>> {
+	sqlx::query_as::<_, Row>(
+		"SELECT e.id, e.type, e.type_version, e.occurred_at, e.received_at, e.source_kind, e.brand_id, e.location_id, e.lead_id, e.job_id, \
+		 e.properties, e.status, e.status_reason FROM booking_events b JOIN events e ON e.id = b.event_id \
+		 WHERE b.brand_id = $1 AND b.provider = $2 AND b.external_ref = $3 AND e.status = 'registered' ORDER BY e.occurred_at, e.id",
+	)
+	.bind(brand.as_str())
+	.bind(provider)
+	.bind(external_ref)
+	.fetch_all(&mut *conn)
+	.await
+	.wrap_err_with(|| format!("reading the events of booking {brand}/{provider}/{external_ref}"))?
+	.into_iter()
+	.map(Stored::try_from)
+	.collect()
+}
+
 /// A brand's registered experiment events.
 pub async fn of_experiments(conn: &mut SqliteConnection, brand: &BrandId) -> eyre::Result<Vec<Stored>> {
 	sqlx::query_as::<_, Row>(concat!(

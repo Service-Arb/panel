@@ -1,0 +1,8 @@
+{
+  "default": "link",
+  "providers": {
+    "link": {
+      "url": "https://0x7f000001/vifnet"
+    }
+  }
+}

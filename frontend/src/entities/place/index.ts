@@ -18,3 +18,6 @@ export { ChangeEntry } from "./ui/change-entry";
 export { ConflictAlert } from "./ui/conflict-alert";
 export { StaleAlert } from "./ui/stale-alert";
 export { followsPlace, savedSince } from "./lib/live";
+export { CAL_COM_HOSTS, MAX_BOOKING_URL, bookingConfigOf, checkBookingConfig, checkBookingUrl } from "./model/booking";
+export type { BookingConfig, BookingProblem, ConfigProblem, UrlProblem } from "./model/booking";
+export { bookingText } from "./lib/booking";

@@ -89,7 +89,7 @@
             src = lib.cleanSource ./frontend;
             filter = path: _type: !(builtins.elem (baseNameOf path) [ "node_modules" ".next" "out" ]);
           };
-          npmDepsHash = "sha256-jCWYwYI6K/jtLSodP4Yyfh379j/QtoeyBbhL7zn7pIM=";
+          npmDepsHash = "sha256-DGxunUg6/lto6u47Xgmk9oz1cSZY/0kXrQQgq8cthes=";
           env = {
             NEXT_TELEMETRY_DISABLED = "1";
           };
@@ -124,25 +124,54 @@
           # PANEL_DB_PATH is the container's own env (below); the rest the deploy supplies.
           requiredEnv = [ "PANEL_DB_PATH" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
           # from the sops-backed Secret, never literal env
-          secretEnv = [ "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" ];
+          secretEnv = [
+            "PANEL_DATA_KEY"
+            "SENTRY_DSN"
+            "RP_CLIENT_SECRET_SA"
+            "TELEGRAM_BOT_TOKEN"
+            "GOOGLE_OAUTH_CLIENT_SECRET"
+            "GOOGLE_CALENDAR_REFRESH_TOKEN_AQUAFIX"
+            "GOOGLE_CALENDAR_REFRESH_TOKEN_VIFNET"
+          ];
           # POSTHOG_PROJECT_API_KEY (phc_, public like the landings', not a secret; + POSTHOG_HOST):
           # serve sends the leads' life to PostHog; unset, nothing is sent (serve warns).
           # POSTHOG_PROJECT_ID (+ POSTHOG_APP_HOST): the experiments link to their funnels in
           # PostHog; unset, no links. Links are opened by the browser: no egress for them.
-          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" "POSTHOG_PROJECT_API_KEY" "POSTHOG_HOST" "POSTHOG_PROJECT_ID" "POSTHOG_APP_HOST" ];
+          # Google Calendar booking pull (docs/ARCHITECTURE.md, Booking): the OAuth client both or
+          # neither; a brand's calendar is pulled only with its refresh token
+          # (`panel booking google-authorize <brand>` makes one); its calendar id defaults to
+          # `primary`. A token without the client fails the boot.
+          optionalEnv = [
+            "SENTRY_DSN"
+            "TELEGRAM_BOT_TOKEN"
+            "TELEGRAM_BOT_USERNAME"
+            "TELEGRAM_LOCALE"
+            "POSTHOG_PROJECT_API_KEY"
+            "POSTHOG_HOST"
+            "POSTHOG_PROJECT_ID"
+            "POSTHOG_APP_HOST"
+            "GOOGLE_OAUTH_CLIENT_ID"
+            "GOOGLE_OAUTH_CLIENT_SECRET"
+            "GOOGLE_CALENDAR_SYNC_MINUTES"
+            "GOOGLE_CALENDAR_REFRESH_TOKEN_AQUAFIX"
+            "GOOGLE_CALENDAR_ID_AQUAFIX"
+            "GOOGLE_CALENDAR_REFRESH_TOKEN_VIFNET"
+            "GOOGLE_CALENDAR_ID_VIFNET"
+          ];
           ingress = {
             # in-cluster only, by service DNS: the landings' ingest and place reads
             # (docs/ARCHITECTURE.md, Deploy requirements)
             excludePathPrefixes = [ "/api/ingest" "/api/internal" ];
-            # per client IP at the edge; the panel bounds concurrency, not who calls
-            rateLimitPathPrefixes = [ "/auth" ];
+            # per client IP at the edge; the panel bounds concurrency, not who calls. /api/hooks:
+            # the booking providers' webhooks (public, signature-checked; none registered yet)
+            rateLimitPathPrefixes = [ "/auth" "/api/hooks" ];
           };
           egress = {
             # concierge's gRPC, at the address CONCIERGE_GRPC_ADDR names
             grpcEnv = [ "CONCIERGE_GRPC_ADDR" ];
             # the Bot API; PostHog's capture host (POSTHOG_HOST's default — follow it if it is
-            # pointed elsewhere)
-            hosts = [ "api.telegram.org:443" "us.i.posthog.com:443" ];
+            # pointed elsewhere); Google's token endpoint and Calendar API for the booking pull
+            hosts = [ "api.telegram.org:443" "us.i.posthog.com:443" "oauth2.googleapis.com:443" "www.googleapis.com:443" ];
           };
         };
 

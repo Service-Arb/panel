@@ -1,5 +1,6 @@
 import type { EditedFields, PlaceSettings } from "@/entities/place";
 
+import { type BookingDraft, bookingDraftOf, bookingDraftProblems, bookingOf } from "./booking-draft";
 import { type HoursDraftRow, hoursDraftOf, hoursOf, hoursValid } from "./hours-draft";
 
 /** The form's state: text as typed. An empty field means "the site's own". */
@@ -8,10 +9,17 @@ export interface SettingsDraft {
   whatsapp: string;
   hours: HoursDraftRow[];
   serviceArea: string[];
+  booking: BookingDraft;
 }
 
 export function draftOf(edited: EditedFields): SettingsDraft {
-  return { phone: edited.phone ?? "", whatsapp: edited.whatsapp ?? "", hours: hoursDraftOf(edited.hours), serviceArea: [...(edited.serviceArea ?? [])] };
+  return {
+    phone: edited.phone ?? "",
+    whatsapp: edited.whatsapp ?? "",
+    hours: hoursDraftOf(edited.hours),
+    serviceArea: [...(edited.serviceArea ?? [])],
+    booking: bookingDraftOf(edited.booking),
+  };
 }
 
 /** "+33 6 12-34.56 (78)" → "+33612345678": what people paste, as E.164 has it. */
@@ -50,6 +58,8 @@ export function editedOf(draft: SettingsDraft): EditedFields {
   if (whatsapp) out.whatsapp = whatsapp;
   if (hours) out.hours = hours;
   if (draft.serviceArea.length > 0) out.serviceArea = [...draft.serviceArea];
+  const booking = bookingOf(draft.booking);
+  if (booking) out.booking = booking;
   return out;
 }
 
@@ -59,7 +69,7 @@ export function settingsOf(draft: SettingsDraft, base: PlaceSettings): PlaceSett
 }
 
 export function draftValid(draft: SettingsDraft): boolean {
-  return hoursValid(draft.hours);
+  return hoursValid(draft.hours) && bookingDraftProblems(draft.booking).size === 0;
 }
 
 export function draftChanged(draft: SettingsDraft, base: PlaceSettings): boolean {

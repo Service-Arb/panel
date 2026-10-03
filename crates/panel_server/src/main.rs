@@ -25,7 +25,7 @@ use panel_server::{
 	DEFAULT_BIND,
 	capture::{self, CaptureApi},
 	concierge::{Concierge, DevIdentity},
-	http,
+	google_calendar, http,
 	signin::{SignIn, SignInConfig},
 	telegram::{self, BotApi, BotName},
 	web::{self, Files},
@@ -62,8 +62,32 @@ enum Cmd {
 	/// A brand's pricing, what the sites price estimates and fixed jobs by.
 	#[command(subcommand)]
 	Pricing(PricingCmd),
+	/// Booking: a provider's calendar, pulled.
+	#[command(subcommand)]
+	Booking(BookingCmd),
 	/// Print a fresh PANEL_DATA_KEY.
 	GenDataKey,
+}
+
+#[derive(Subcommand)]
+enum BookingCmd {
+	/// The brand owner's consent to read their Google Calendar, on this machine: prints the
+	/// URL to open, waits for Google's redirect on 127.0.0.1, and prints the refresh token
+	/// once — for the brand's GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND> secret.
+	GoogleAuthorize {
+		brand: String,
+		/// The loopback port Google redirects to (a Desktop OAuth client takes any).
+		#[arg(long, default_value_t = 8765)]
+		port: u16,
+	},
+	/// Pull the brand's Google Calendar now and journal its bookings — what `serve` does every
+	/// GOOGLE_CALENDAR_SYNC_MINUTES.
+	GoogleSync {
+		brand: String,
+		/// From nothing (the last 7 days), whatever the sync token.
+		#[arg(long)]
+		full: bool,
+	},
 }
 
 #[derive(Subcommand)]
@@ -124,7 +148,8 @@ enum SourceCmd {
 	Add {
 		/// Lowercase slug, e.g. aquafix-site.
 		key_id: String,
-		/// site | review_archive | gbp | posthog | panel | sheet | telephony
+		/// site | review_archive | gbp | posthog | sheet | telephony (panel and booking are the
+		/// panel's own, with no key)
 		#[arg(long)]
 		kind: String,
 		/// A brand it may write for; repeat for several.
@@ -209,8 +234,9 @@ async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSign
 			let telegram = settings.telegram()?;
 			let front_end = settings.web()?;
 			let capture = settings.capture()?.map(|c| CaptureApi::new(&c.host, &c.key)).transpose()?;
+			let google = google(&settings)?;
 			let panel = connect().await?.with_capture(capture.is_some());
-			serve(panel, sign_in, telegram, capture, front_end, bind).await
+			serve(panel, sign_in, telegram, capture, google, front_end, bind).await
 		}
 		Cmd::RebuildProjections => {
 			let r = connect().await?.rebuild_projections().await?;
@@ -223,6 +249,45 @@ async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSign
 		Cmd::Source(cmd) => source(&connect().await?, cmd).await,
 		Cmd::Place(cmd) => place(&connect().await?, cmd).await,
 		Cmd::Pricing(cmd) => pricing(&connect().await?, cmd).await,
+		Cmd::Booking(BookingCmd::GoogleAuthorize { brand, port }) => {
+			let brand = BrandId::parse(&brand)?;
+			let (id, secret) = settings
+				.google_client()?
+				.ok_or_else(|| eyre::eyre!("GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET must be set"))?;
+			let consent = google_calendar::authorize(&id, &secret, port, google_calendar::TOKEN_URL).await?;
+			let var = format!("{}{}", settings::GOOGLE_REFRESH_PREFIX, brand.as_str().to_ascii_uppercase());
+			// Shown once, here only: it goes into the brand's secret (devops add-secrets).
+			println!("{var}={}", *consent.refresh_token);
+			Ok(())
+		}
+		Cmd::Booking(BookingCmd::GoogleSync { brand, full }) => {
+			let brand = BrandId::parse(&brand)?;
+			let (api, every) = google(&settings)?.ok_or_else(|| eyre::eyre!("no Google calendar is configured: GOOGLE_OAUTH_CLIENT_* and a GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>"))?;
+			eyre::ensure!(
+				api.brands().contains(&brand),
+				"{brand} has no {}{}",
+				settings::GOOGLE_REFRESH_PREFIX,
+				brand.as_str().to_ascii_uppercase()
+			);
+			let done = connect()
+				.await?
+				.sync_bookings(&api, &brand, uuid::Uuid::now_v7(), jiff::Timestamp::now(), every, true, full)
+				.await?
+				.ok_or_else(|| eyre::eyre!("the sync was not leased"))?;
+			let i = done.ingested;
+			println!(
+				"{}: {} written ({} matched, {} without a lead), {} duplicate, {} unchanged, {} ignored, {} refused",
+				if done.full { "full pull" } else { "since the last pull" },
+				i.written,
+				i.matched,
+				i.unmatched,
+				i.duplicate,
+				i.unchanged,
+				i.ignored,
+				i.refused
+			);
+			Ok(())
+		}
 		Cmd::GenDataKey => {
 			println!("{}", DataKey::generate_hex()?);
 			Ok(())
@@ -405,6 +470,14 @@ async fn pricing(panel: &Panel, cmd: PricingCmd) -> eyre::Result<()> {
 	print_pricing(&view)
 }
 
+/// The Google Calendar adapter and how often it pulls, when configured.
+fn google(settings: &Settings) -> eyre::Result<Option<(google_calendar::GoogleCalendar, jiff::SignedDuration)>> {
+	let Some(g) = settings.google(std::env::vars())? else { return Ok(None) };
+	let every = jiff::SignedDuration::from_mins(i64::from(g.every_minutes));
+	let api = google_calendar::GoogleCalendar::new(google_calendar::TOKEN_URL, google_calendar::API_BASE, &g.client_id, &g.client_secret, g.calendars)?;
+	Ok(Some((api, every)))
+}
+
 /// Who signs people in.
 enum Identity {
 	Concierge(settings::SignInSettings),
@@ -417,6 +490,7 @@ async fn serve(
 	sign_in: Option<Identity>,
 	telegram: Option<settings::TelegramSettings>,
 	sender: Option<CaptureApi>,
+	google: Option<(google_calendar::GoogleCalendar, jiff::SignedDuration)>,
 	front_end: Option<Files>,
 	bind: SocketAddr,
 ) -> eyre::Result<()> {
@@ -431,6 +505,18 @@ async fn serve(
 		}
 		None => {
 			tracing::warn!("POSTHOG_PROJECT_API_KEY unset: nothing is sent to PostHog");
+			None
+		}
+	};
+	// Held, and awaited at shutdown, like the sender's.
+	let booking_work = match google {
+		Some((api, every)) => {
+			let brands: Vec<String> = api.brands().iter().map(|b| b.as_str().to_owned()).collect();
+			tracing::info!(?brands, minutes = every.as_mins(), "google calendar booking pull on; brands without a refresh token are off");
+			Some(tokio::spawn(google_calendar::run(panel.clone(), api, every, stopped.clone())))
+		}
+		None => {
+			tracing::warn!("GOOGLE_OAUTH_CLIENT_* or every GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND> unset: no Google Calendar bookings pulled");
 			None
 		}
 	};
@@ -519,6 +605,11 @@ async fn serve(
 		&& let Err(e) = work.await
 	{
 		panel_server::report(&eyre::eyre!(e), "the posthog sender panicked");
+	}
+	if let Some(work) = booking_work
+		&& let Err(e) = work.await
+	{
+		panel_server::report(&eyre::eyre!(e), "the google calendar sync panicked");
 	}
 	served
 }

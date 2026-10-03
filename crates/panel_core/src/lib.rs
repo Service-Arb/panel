@@ -12,9 +12,12 @@
 //! - [`place`]: a place's live settings (phones, hours, …), checked as the sites read them;
 //! - [`pricing`]: a brand's price list, checked and priced as kitstart does, to the cent;
 //! - [`analytics`]: what PostHog is told of a lead's life, without PII;
-//! - [`notify`]: the Telegram rules, their messages and buttons, and how a delivery is retried.
+//! - [`notify`]: the Telegram rules, their messages and buttons, and how a delivery is retried;
+//! - [`booking`]: the booking providers and a place's choice of them, and a lead's booking
+//!   folded from its facts; [`phone`]: a phone number as the sites normalize it.
 
 pub mod analytics;
+pub mod booking;
 pub mod event;
 pub mod experiment;
 pub mod fact;
@@ -22,6 +25,7 @@ pub mod funnel;
 pub mod ids;
 pub mod lead;
 pub mod notify;
+pub mod phone;
 pub mod place;
 pub mod pricing;
 pub mod role;

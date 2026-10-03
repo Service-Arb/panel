@@ -22,7 +22,9 @@ export function panelNav(t: T, role: Role, marks: Marks): PanelNav {
   const admin = managesSources(role);
   const dot = (corner: boolean) => <NavDot corner={corner} label={t("nav.changed")} />;
   const overview: NavItem = { id: "overview", href: ROUTES.overview, label: t("nav.overview"), icon: BarChart3 };
-  const leads: NavItem = { id: "leads", href: ROUTES.leads, label: t("nav.leads"), icon: Inbox, badge: marks.leads };
+  // New leads are counted; bookings without one only say "something waits", and a count says it already.
+  const leadsBadge = marks.leads > 0 || !marks.bookings ? marks.leads : <NavDot corner={false} label={t("nav.unmatched")} />;
+  const leads: NavItem = { id: "leads", href: ROUTES.leads, label: t("nav.leads"), icon: Inbox, badge: leadsBadge };
   const places: NavItem = { id: "places", href: ROUTES.places, label: t("nav.places"), icon: MapPin, badge: marks.places };
   const pricing: NavItem = { id: "pricing", href: ROUTES.pricing, label: t("nav.pricing"), icon: Tags };
   const experiments: NavItem = { id: "experiments", href: ROUTES.experiments, label: t("nav.experiments"), icon: FlaskConical, ...(marks.experiments ? { badge: dot(false) } : {}) };

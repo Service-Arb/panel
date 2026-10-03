@@ -4,13 +4,13 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger, Label, Switch, but
 import { ChevronDown } from "lucide-react";
 import { useId } from "react";
 
-import { FLOWS, type LeadCounts, type LeadFilter, STAGES } from "@/entities/lead";
+import { BOOKING_STATUSES, FLOWS, type LeadCounts, type LeadFilter, STAGES } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
 import { FilterSelect } from "@/shared/ui/filter-select";
 import { useButtonSize } from "@/shared/ui/touch";
 
-import { flowFilterOf, narrows, stageOrNull, suspectFilterOf } from "../model/params";
+import { bookingFilterOf, flowFilterOf, narrows, stageOrNull, suspectFilterOf } from "../model/params";
 import { StageSegments } from "./stage-segments";
 
 type Props = { filter: LeadFilter; brands: string[]; locations: string[]; counts: LeadCounts | null; onChange: (patch: Partial<LeadFilter>) => void };
@@ -41,7 +41,7 @@ export function LeadFilters(props: Props) {
     );
   }
 
-  const more = narrows(filter, ["brand", "location", "overdue", "suspect", "flow"]);
+  const more = narrows(filter, ["brand", "location", "overdue", "suspect", "flow", "booking"]);
   return (
     <div className="flex flex-col gap-2">
       <StageSegments stage={filter.stage} counts={props.counts} onChange={(stage) => onChange({ stage })} />
@@ -81,6 +81,13 @@ function SecondaryFilters({ filter, brands, locations, onChange }: Props) {
         value={filter.flow}
         options={FLOWS.map((f) => ({ value: f, label: t(`flow.${f}`) }))}
         onChange={(v) => onChange({ flow: flowFilterOf(v) })}
+      />
+      <FilterSelect
+        label={t("filter.booking")}
+        allLabel={t("filter.booking.all")}
+        value={filter.booking}
+        options={BOOKING_STATUSES.map((s) => ({ value: s, label: t(`booking.status.${s}`) }))}
+        onChange={(v) => onChange({ booking: bookingFilterOf(v) })}
       />
       <div className="flex items-center gap-2 px-1 max-md:min-h-11">
         <Switch id={`${id}-overdue`} checked={filter.overdue} onCheckedChange={(overdue) => onChange({ overdue })} />

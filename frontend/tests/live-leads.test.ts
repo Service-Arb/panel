@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Lead } from "@/entities/lead";
+import { NO_BOOKING } from "@/entities/lead/model/booking";
 import { nextKnown, updatedElsewhere } from "@/views/leads/model/card-updates";
 import { addWaiting, applyUpdates, arrivals, leadKey, leftFilter, pendingOf, reveal } from "@/views/leads/model/live-merge";
 import { flashAttr } from "@/views/leads/ui/flash";
@@ -30,6 +31,7 @@ function lead(id: string, created: string, patch: Partial<Lead> = {}): Lead {
     quoted_cents: null,
     pricing_valid_from: null,
     estimate_inputs: null,
+    booking: NO_BOOKING,
     ...patch,
   };
 }

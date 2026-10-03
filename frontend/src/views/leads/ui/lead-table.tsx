@@ -2,7 +2,7 @@
 
 import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, cn } from "@evinvest/uikit";
 
-import { DealSummary, type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
+import { BookingLine, DealSummary, type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
 import { useLocale, useT } from "@/shared/i18n";
 import { formatDateTime } from "@/shared/lib/format";
 import { EDGE_CELL, TABLE_HEAD } from "@/shared/ui/table";
@@ -32,6 +32,7 @@ export function LeadTable({ leads, flash, selected, onOpen }: LeadTableProps) {
           <TableHead className={HEAD}>{t("leads.col.need")}</TableHead>
           <TableHead className={HEAD}>{t("leads.col.where")}</TableHead>
           <TableHead className={HEAD}>{t("leads.col.stage")}</TableHead>
+          <TableHead className={HEAD}>{t("leads.col.booking")}</TableHead>
           <TableHead className={cn(HEAD, "text-right")}>{t("leads.col.price")}</TableHead>
           <TableHead className={HEAD}>{t("leads.col.waiting")}</TableHead>
           <TableHead className={cn(HEAD, "text-right")}>{t("leads.col.created")}</TableHead>
@@ -75,6 +76,10 @@ export function LeadTable({ leads, flash, selected, onOpen }: LeadTableProps) {
                   <StageBadge stage={lead.stage} />
                   <SuspectBadge suspect={lead.suspect} short />
                 </span>
+              </TableCell>
+              {/* The slot wraps under its badge rather than pushing the last columns out of the card. */}
+              <TableCell className={cn(EDGE_CELL, "max-w-56 whitespace-normal")}>
+                <BookingLine booking={lead.booking} />
               </TableCell>
               <TableCell className={cn(EDGE_CELL, "[&>span]:justify-end")}>
                 <DealSummary lead={lead} />

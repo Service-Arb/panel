@@ -50,6 +50,7 @@ const places = new Map<string, StubPlace>([
           { days: ["Saturday"], opens: "09:00", closes: "12:00" },
         ],
         serviceArea: ["Lyon 3e", "Villeurbanne", "Bron"],
+        booking: { default: "google_calendar", providers: { google_calendar: { url: "https://calendar.app.google/StubLyon3" }, link: { url: "https://book.example.fr/lyon-3" } } },
         address: { street: "12 rue Paul Bert", postalCode: "69003", locality: "Lyon" },
       },
       updated_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
@@ -99,9 +100,23 @@ function invalid(s: Json): Record<string, string> {
       if (!TIME.test(String(r.closes))) out[`hours[${i}].closes`] = "must be HH:MM";
     });
   }
+  Object.assign(out, invalidBooking(s.booking));
   if (s.serviceArea !== undefined && !(Array.isArray(s.serviceArea) && s.serviceArea.length > 0 && s.serviceArea.every((n) => typeof n === "string" && n.trim()))) {
     out.serviceArea = "must be a non-empty list of commune names";
   }
+  return out;
+}
+
+/** Roughly the backend's booking rules: enough for the panel's 422 on a booking field to be seen. */
+function invalidBooking(b: unknown): Record<string, string> {
+  if (b === undefined) return {};
+  if (typeof b !== "object" || b === null) return { booking: "must be {\"default\": …, \"providers\": {…}}" };
+  const { default: def, providers = {} } = b as { default?: unknown; providers?: Record<string, { url?: unknown }> };
+  const out: Record<string, string> = {};
+  for (const [p, conf] of Object.entries(providers)) {
+    if (typeof conf?.url !== "string" || !conf.url.startsWith("https://")) out[`booking.providers.${p}.url`] = "must start with https://";
+  }
+  if (def !== "manual" && !(typeof def === "string" && def in providers)) out["booking.default"] = "must be manual or one of the providers set";
   return out;
 }
 

@@ -19,6 +19,7 @@ import { useButtonSize } from "@/shared/ui/touch";
 
 import { LeadCardPanel } from "./lead-card-panel";
 import { LeadQueue } from "./lead-queue";
+import { UnmatchedBookings } from "./unmatched-bookings";
 
 export function LeadsView() {
   const t = useT();
@@ -58,6 +59,7 @@ export function LeadsView() {
     <CallFlowProvider onLogged={changed}>
       <ScreenFrame title={t("leads.title")} actions={create}>
         <LeadFilters filter={filter} brands={brands} locations={locations} counts={counts.status === "ok" ? counts.data : null} onChange={setFilter} />
+        <UnmatchedBookings brand={filter.brand} version={version} onAttached={changed} />
         <LeadQueue
           filter={filter}
           version={version}

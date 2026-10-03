@@ -1,14 +1,15 @@
 "use client";
 
-import { Button, Field, FieldDescription, FieldError, FieldLabel, Input, ToggleGroup, ToggleGroupItem } from "@evinvest/uikit";
+import { Button, FieldDescription, FieldError, ToggleGroup, ToggleGroupItem } from "@evinvest/uikit";
 import { X } from "lucide-react";
 import { useId } from "react";
 
 import { DAYS, formatDays } from "@/entities/place";
 import { type T, useT } from "@/shared/i18n";
+import { TimeInput } from "@/shared/ui/time-input";
 import { useButtonSize, useControlSize } from "@/shared/ui/touch";
 
-import { type HoursDraftRow, type RowProblem, normaliseTime, rowNotes, rowProblems } from "../model/hours-draft";
+import { type HoursDraftRow, type RowProblem, rowNotes, rowProblems } from "../model/hours-draft";
 
 function problemText(p: RowProblem, t: T): string {
   switch (p.kind) {
@@ -59,8 +60,8 @@ export function HoursRowEditor({ rows, row, onChange, onRemove }: HoursRowProps)
         ))}
       </ToggleGroup>
       <div className="flex items-end gap-2">
-        <TimeInput id={`${id}-opens`} label={t("placeSettings.hours.opens")} value={row.opens} size={size} onChange={(opens) => onChange({ opens })} />
-        <TimeInput id={`${id}-closes`} label={t("placeSettings.hours.closes")} value={row.closes} size={size} onChange={(closes) => onChange({ closes })} />
+        <TimeInput id={`${id}-opens`} label={t("placeSettings.hours.opens")} value={row.opens} onChange={(opens) => onChange({ opens })} />
+        <TimeInput id={`${id}-closes`} label={t("placeSettings.hours.closes")} value={row.closes} onChange={(closes) => onChange({ closes })} />
         <Button type="button" variant="ghost" size={button("md")} className="ml-auto" aria-label={t("placeSettings.hours.remove")} onClick={onRemove}>
           <X aria-hidden="true" />
         </Button>
@@ -70,15 +71,5 @@ export function HoursRowEditor({ rows, row, onChange, onRemove }: HoursRowProps)
         <FieldError key={r}>{r}</FieldError>
       ))}
     </fieldset>
-  );
-}
-
-/** Text, not `type="time"`: the browser's own picker ignores the kit's tokens and differs per OS. */
-function TimeInput({ id, label, value, size, onChange }: { id: string; label: string; value: string; size: "md" | "lg"; onChange: (v: string) => void }) {
-  return (
-    <Field className="flex flex-col gap-1">
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Input id={id} size={size} className="w-24 tabular-nums" inputMode="numeric" maxLength={5} placeholder="08:00" value={value} onChange={(e) => onChange(e.target.value)} onBlur={(e) => onChange(normaliseTime(e.target.value))} />
-    </Field>
   );
 }

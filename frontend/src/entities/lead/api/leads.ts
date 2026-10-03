@@ -1,6 +1,7 @@
 import { http, ignoreBody } from "@/shared/api";
 import { object, str } from "@/shared/lib/parse";
 
+import type { BookingStatus } from "../model/booking";
 import type { Flow } from "../model/pricing";
 import { type LeadCard, type LeadCounts, type LeadPage, type LeadRef, type Stage, leadCardParser, leadCountsParser, leadPageParser, leadPath } from "../model/lead";
 
@@ -16,6 +17,8 @@ export interface LeadFilter {
   suspect: "only" | "exclude" | null;
   /** The form variant; null is every lead, those without one included. */
   flow: Flow | null;
+  /** Where the lead's booking stands (`none` included); null is every lead. */
+  booking: BookingStatus | null;
 }
 
 export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50): Promise<LeadPage> {
@@ -28,6 +31,7 @@ export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50
     created_to: filter.createdTo,
     suspect: filter.suspect,
     flow: filter.flow,
+    booking: filter.booking,
     cursor,
     limit,
   });

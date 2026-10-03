@@ -13,10 +13,12 @@
  *   STUB_PRICING_INVALID=inputs.zone.labels.en npm run dev:stub  # every pricing save and preview answers 422 there
  *   STUB_LIVE=off npm run dev:stub     # no /api/v1/live socket: the panel polls instead (4401 | 4403: close at once)
  *   STUB_LIVE_EVERY=5 npm run dev:stub # live activity every 5 s rather than every 20–40 s
+ *   STUB_BOOKING_CONFLICT=1 npm run dev:stub # every booking write answers 409
  *
  * Live: every write above is announced on the socket, and someone else is busy
  * too — a new lead every 20–40 s, now and then a lead moved on, a place saved,
- * vifnet's pricing saved, a landing re-declaring its experiments.
+ * vifnet's pricing saved, a landing re-declaring its experiments, a booking
+ * without a lead, a provider moving a booked slot.
  *
  * then `npm run dev` in another shell. Data is made up and says so ("stub").
  */
@@ -24,6 +26,7 @@ import { randomUUID } from "node:crypto";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { Duplex } from "node:stream";
 
+import { BOOKING_STATUSES, arriveUnmatched, bookingDto, bookingWrite, bookingsRoute, providerMoves } from "./stub-bookings.ts";
 import { changed, every, liveUpgrade } from "./stub-live.ts";
 import { type StubDeal, dealDto, estimate, fixed, flowParam, quote, seedDeals } from "./stub-deals.ts";
 import { addedPlaces, placeFlags, placeSettingsRoute, touchPlace } from "./stub-places.ts";
@@ -105,6 +108,7 @@ function leadDto(l: StubLead): Json {
     sla: waiting ? { waiting_since: since, waiting_seconds: secs, overdue: secs > 30 * 60 } : null,
     pii: l.pii,
     ...dealDto(l.deal),
+    booking: bookingDto(l.brand, l.lead_id),
   };
 }
 
@@ -229,9 +233,12 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if (suspect !== null && suspect !== "only" && suspect !== "exclude") return send(res, 400, { error: "suspect is not one of only, exclude" });
     const flow = flowParam(q.get("flow"));
     if (flow === false) return send(res, 400, { error: "flow is not one of quote, estimate, fixed" });
+    const booking = q.get("booking");
+    if (booking !== null && !BOOKING_STATUSES.includes(booking)) return send(res, 400, { error: "booking status is not one of none, requested, booked, canceled, done, no_show" });
     const list = leads
       .filter((l) => (suspect !== "only" || l.suspect !== null) && (suspect !== "exclude" || l.suspect === null))
       .filter((l) => flow === null || l.deal?.flow === flow)
+      .filter((l) => booking === null || bookingDto(l.brand, l.lead_id).status === booking)
       .filter((l) => (!q.get("stage") || l.stage === q.get("stage")) && (!q.get("brand") || l.brand === q.get("brand")) && (!q.get("location") || l.location === q.get("location")))
       .map(leadDto)
       .filter((l) => q.get("overdue") !== "true" || (l.sla as Json | null)?.overdue === true)
@@ -266,6 +273,14 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     return send(res, 204);
   }
 
+  if (path.startsWith("/bookings/")) {
+    const reply = bookingsRoute(req.method ?? "GET", path, url.searchParams, write ? await readJson(req) : {}, (brand, id) => !!find(brand, id));
+    if (reply) {
+      res.once("finish", () => res.statusCode < 300 && reply.told?.forEach(([topic, brand, id]) => changed(topic, brand, id)));
+      return send(res, reply.status, reply.body);
+    }
+  }
+
   const m = path.match(/^\/leads\/([^/]+)\/([^/]+)(\/.*)?$/);
   const lead = m ? find(decodeURIComponent(m[1]!), decodeURIComponent(m[2]!)) : undefined;
   if (!m || !lead) return send(res, 404, { error: "not found" });
@@ -273,6 +288,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (rest === "" && req.method === "GET") return send(res, 200, { lead: leadDto(lead), events: lead.events });
   // Every route below writes to the lead: announced once the reply is out, as after a commit.
   res.once("finish", () => res.statusCode < 300 && changed("lead", lead.brand, lead.lead_id));
+  if (rest === "/booking" || rest === "/booking/status") {
+    const key = req.headers["idempotency-key"];
+    const reply = bookingWrite(lead.brand, lead.lead_id, rest, await readJson(req), typeof key === "string" ? key : undefined);
+    return send(res, reply.status, reply.body);
+  }
   if (rest === "/stage") {
     const b = await readJson(req);
     const stage = String(b.stage);
@@ -334,6 +354,11 @@ every(LIVE_EVERY === null ? 90 : LIVE_EVERY * 3, () => {
   changed("places", "aquafix", "lyon-3");
 });
 every(LIVE_EVERY === null ? 120 : LIVE_EVERY * 4, () => changed("experiments"));
+every(LIVE_EVERY === null ? 75 : LIVE_EVERY * 3, () => changed("bookings", arriveUnmatched()));
+every(LIVE_EVERY === null ? 100 : LIVE_EVERY * 5, () => {
+  const moved = providerMoves();
+  if (moved) changed("lead", ...moved);
+});
 every(LIVE_EVERY === null ? 180 : LIVE_EVERY * 6, () => {
   touchPricing("colleague@example.test (stub)");
   changed("pricing", "vifnet");

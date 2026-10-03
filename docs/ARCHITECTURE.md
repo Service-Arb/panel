@@ -30,6 +30,9 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
                                      field by field; a change and who made it
   src/pricing.rs                     a brand's price list (kitstart's PricingModel): checked,
                                      priced to the cent; tests/fixtures/pricing vendored by sha
+  src/booking.rs                     providers, a place's booking config and its URL rule, a
+                                     lead's booking folded; tests/fixtures/booking vendored by sha
+  src/phone.rs                       kitstart's normalizePhone, ported (E.164)
 crates/panel/                        the engine
   src/lib.rs                         the `Panel` facade: ingest, sources, PII, rebuild
   src/wire.rs                        protojson → the core: one event decoded and checked; the
@@ -53,6 +56,9 @@ crates/panel/                        the engine
   src/pricing.rs                     a brand's pricing saved or removed (optimistic concurrency),
                                      the preview, and what a site is answered
   src/store/pricing.rs               pricing, pricing_changes, brand_locales
+  src/booking.rs                     operators' slots, the providers' seam (PushSource,
+                                     PullSource), matching, the leased pull
+  src/store/bookings.rs              booking_events, bookings, booking_sync
   src/store/experiments.rs           experiments, each brand's folded from its events
   src/store/posthog.rs               posthog_outbox
   src/live.rs                        the in-process bus of what changed, published after each
@@ -80,6 +86,9 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
   src/experiments.rs                 /api/v1/experiments and the sites' GET
                                      /api/internal/brands/{brand}/experiments
   src/capture.rs                     PostHog's capture API (reqwest) and the sender in `serve`
+  src/booking.rs                     /api/v1 booking routes, POST /api/hooks/booking/…
+  src/google_calendar.rs             the google_calendar pull adapter (reqwest), its schedule,
+                                     the CLI's OAuth consent
   src/web.rs                         the front end's static export (PANEL_WEB_DIR), behind
                                      every other route
   src/settings.rs                    the environment (ev_lib `settings!`)
@@ -337,6 +346,10 @@ closes              4401 the session ended   4403 the role is gone   1001 the se
 | `sources` | a source key minted or revoked | — | — | admins |
 | `experiments` | a landing's declaration, or an admin's change | its brand | the key (a change) | every role |
 | `telegram` | the user's link made, undone or found blocked; their rules | — | — | that user |
+| `bookings` | a provider's booking without a lead came, changed, or was attached | its brand | — | every role |
+
+A booking event tells `lead` for every lead it changed — a provider's booking attached
+elsewhere tells the lead it left and the one it joined.
 
 `at` is when the write committed. `resync` comes when the socket fell behind (below) and after
 `panel rebuild-projections` in the serving process.
@@ -499,7 +512,10 @@ Item: {brand_id, locales, model | null, updated_at | null, updated_by | null}
 
 A bot (`TELEGRAM_BOT_TOKEN`; without it, or without the sign-in, none of this runs) writes to
 each user in a private chat. Rules: `new_lead` and `contact_overdue` (every role, on by
-default), `payment_received` and `source_silent` (admins, off by default). A 3★ review, a
+default), `payment_received` and `source_silent` (admins, off by default), `booked` (every
+role, on by default: a slot booked, moved or canceled — "Бронь: <slot> (Paris)", "Бронь
+перенесена", "Бронь отменена", "… без заявки" for one without a lead; not to the operator who
+set or closed it themselves; no buttons). A 3★ review, a
 funnel drop and Grafana alerts are variants to come, once their sources exist.
 
 ```text
@@ -629,18 +645,25 @@ funnel there (`panel_core::analytics`):
 ```text
 queued       Panel::journal, in the event's own transaction, when POSTHOG_PROJECT_API_KEY is
              set: a new lead.created (the one that counts), lead.contacted, lead.quoted,
-             job.won, lead.lost, job.completed, payment.received, call.logged → posthog_outbox
+             job.won, lead.lost, job.completed, payment.received, call.logged, every booking.*
+             → posthog_outbox
              never: the rebuild (it projects without passing there), a duplicate, a second
-             lead.created, call.attempted, what names no lead
-event        sa_ + the type, dots made underscores (sa_lead_created, sa_payment_received, …)
+             lead.created, call.attempted, what names no lead (a provider's booking.created or
+             booking.canceled no lead was matched to)
+event        sa_ + the type, dots made underscores (sa_lead_created, sa_payment_received, …);
+             booking.status_changed is sa_booking_closed
 uuid         the journal's event id: PostHog deduplicates a resend
 timestamp    occurred_at
 distinct_id  the lead's analytics_id (lead.created's, the landing beacon's distinct_id), else
              sa-lead:<brand>:<lead>
 properties   brand_id, location_id, manual; channel, flow, quoted_cents, suspect (created);
              channel (contacted); amount_cents, currency (quoted); reason (lost — the slug,
-             never the note); billed_cents, commission_cents, currency (paid); outcome (call).
-             No PII: no need, name, phone, note
+             never the note); billed_cents, commission_cents, currency (paid); outcome (call);
+             provider, preferred_date, preferred_part (booking requested); provider, match,
+             lead_time_hours (booking created: start_at − booked_at, else − occurred_at);
+             provider (canceled); lead_time_hours (set); closed (closed); provider, match =
+             manual (attached); nothing more (cleared).
+             No PII: no need, name, phone, note, attendee; no external_ref, version or slot
 sent (5 s)   ≤ 100 due rows → POST {POSTHOG_HOST}/batch/ → deleted; 5xx, 429, no answer: each
              row again from 10 s, doubling to 15 min; another 4xx: a batch is retried row by
              row, a row refused alone dropped (warned); a row failing for 7 days dropped (warned)
@@ -648,8 +671,8 @@ sent (5 s)   ≤ 100 due rows → POST {POSTHOG_HOST}/batch/ → deleted; 5xx, 4
 
 Without `POSTHOG_PROJECT_API_KEY` nothing is queued and nothing sent; `serve` warns and starts.
 The key is the project's `phc_` key — public like the landings' — not a personal one (`phx_` is
-refused at boot). Bookings (`sa_booking_*`), once they are facts, are an arm of
-`panel_core::analytics::capture_of` each.
+refused at boot). A booking's slot is told as `lead_time_hours` alone: its weekday and part of
+the day would need the place's time zone, which a fact does not carry.
 
 ### The retired import
 
@@ -658,6 +681,119 @@ Up to v0.3 an hourly HogQL import journaled `site.metrics`, `contact.metrics` an
 their `reporting_*` views, the `posthog_import` lease). The import and those tables are gone
 (migration `20261005100000`); the three types stay registered, checked as before and projected
 into nothing, so a journal holding them still passes and rebuilds.
+
+## Booking
+
+FORM-VARIANTS-SPEC, "Booking providers contract" (2026-10-04). Providers, a closed set:
+`manual | link | google_calendar | cal_com` (`calendly` next, same seams). kitstart's booking
+fixtures are vendored by sha in `crates/panel_core/tests/fixtures/booking` (`SOURCE`), their
+README normative; `tests/booking_fixtures.rs` holds the config validator to `valid/` and
+`invalid/`, `crates/panel/tests/booking.rs` the registry to `requested/`. `choose.json` and
+`hrefs.json` are the site's (the panel neither picks a provider nor builds a link).
+
+**A place's `booking`** (place settings, `PlaceLive.booking` in `/api/internal/…/locations`):
+`{"default": <provider>, "providers": {<provider>: {"url"}}}`. `manual` is always available and
+never a key of `providers`; `default` is `manual` or a key of it. URL rule (every page): ≤ 2048
+printable ASCII, literal `https://`, no `#` nor `\`, no `@`/`:`/`[` in the authority, a dotted
+DNS name whose last label is not a number; query allowed. `google_calendar`:
+`calendar.app.google/…` or `calendar.google.com/calendar/appointments/…`; `cal_com`:
+`cal.evinvest.ltd` or `cal.com`, path exactly `/<user>/<event>`; `link`: any host. A 422 names
+`booking.default`, `booking.providers.<p>.url`, ….
+
+**Journal types**
+
+```text
+booking.requested@1      site    {lead_ref = subject.lead_id (lead-<row>-<8hex>), provider,
+                                 preferred_date?, preferred_part? (manual only)}; no null, no
+                                 free text; the date 2 days back – 366 ahead of arrival (checked
+                                 at ingest, not by the registry: a rebuild never re-judges it).
+                                 Before its lead's lead.created: verdict `deferred`, the batch
+                                 answered 409 + Retry-After 30 (kitstart retries 409/425 on it)
+booking.created@1        booking {provider (with an adapter), external_ref, start_at, end_at?,
+                                 match? (ref|contact, exactly with subject.lead_id), version,
+                                 booked_at?}; the attendee in pii, sealed
+booking.canceled@1       booking {provider, external_ref, version}
+booking.set@1            panel   {start_at, end_at?}             → booked
+booking.status_changed@1 panel   {status: done|no_show|canceled} → only from booked
+booking.cleared@1        panel   {}                              → none
+booking.attached@1       panel   {provider, external_ref}, subject.lead_id the lead
+```
+
+`source.kind = booking` is one kind for every adapter (the provider in the properties); no key
+is ever issued for it (nor for `panel`). Migration `20261005090000_booking_source_kind` widened
+the journal's CHECK by making `events` again: `-- no-transaction`, `PRAGMA foreign_keys = OFF`
+outside a `BEGIN IMMEDIATE` copy, every row, index, trigger and `reporting_ingest_daily` made
+again; its test checks the copy byte for byte, `foreign_key_check`, the triggers, and the way
+down (refused while a `booking` event exists).
+
+**Projections.** `booking_events` (a row per booking event), `bookings` (a provider's booking:
+`(brand, provider, external_ref)`, its id derived from them; its slot, booked or canceled, its
+lead and `match` — NULL while unmatched), and a lead's `booking_*` columns, folded
+(`panel_core::booking::fold`) from its own booking facts and the events of the providers'
+bookings joined to it now. Statuses `none | requested | booked | canceled | done | no_show`;
+an operator's action not allowed from where it stands is a 409, and the fold passes over it
+too, so a race lands where the first left it. A provider's change does not reopen a booking
+an operator closed. A provider's booking is joined by: the latest `booking.attached`, else the
+match its first event that named a lead was journaled with.
+
+**The seam** (`panel::booking`). Push: `PushSource::verify(PushRequest{brand, headers, body,
+now}) → Vec<BookingEvent>`, routed at `POST /api/hooks/booking/{provider}/{brand}` (no
+session; 256 KiB, 8 at once, 10 s; 401 refused, 400 unreadable, 200 `{written, duplicate,
+unchanged, ignored, refused}`); **no push provider is registered** — every provider answers 404
+there. Pull: `PullSource::pull(brand, cursor, now) → {events, cursor}`, run by
+`Panel::sync_bookings` under a lease per (provider, brand) in `booking_sync` (5 min; retried
+after 1 min on failure); the cursor moves only once what it covers is journaled; a cursor the
+provider dropped (`CursorExpired`) is a full pull. `Panel::ingest_bookings` journals each
+`BookingEvent` with an id derived from (provider, brand, ref, type, revision): a revision seen
+again is a duplicate; a slot as it stands already is `unchanged`; a cancellation of a booking
+the panel never had is ignored.
+
+**Matching**, once per booking (later events keep its lead): a `lead_ref` naming a lead of the
+brand → `ref`; else the attendee's phone (E.164, kitstart's rule) or email (lowercase) against
+the `phone` / `email` of the creation PII of the brand's leads created from 14 days before the
+booking to 10 minutes after; one lead → `contact`, none or several → unmatched. The leads' PII
+is opened under `PANEL_DATA_KEY` only to compare.
+
+**google_calendar, pulled** (`panel_server::google_calendar`). Every minute, each brand with a
+refresh token whose sync is due (`GOOGLE_CALENDAR_SYNC_MINUTES`, 5): the refresh token → an
+access token (`oauth2.googleapis.com/token`, cached until a minute before it expires) →
+`GET www.googleapis.com/calendar/v3/calendars/{id}/events?singleEvents=true&showDeleted=true`,
+first `timeMin` = now − 7 days, then `syncToken`; pages followed (≤ 40 of 250); 410 → full
+pull. An event is a booking (`looks_like_booking`, conservative, **unconfirmed against a real
+appointment-schedule event**): timed, single (no recurrence), `eventType` default, a guest
+with an email who is not `self`, the organizer or a room, not declining, and a marker in the
+description — "Booked by" / "Réservé par", a schedule link, or a phone label ("Téléphone",
+"Phone number", …; the schedule's form must ask for it). The phone is the line after (or
+beside) its label. Version: the event's `etag`; moved: the same id with a new start; a
+`cancelled` item is passed on by id (a sync gives its id alone).
+
+**Secrets and CLI.** `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` (one client,
+Desktop kind; both or neither), `GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>` (secret, scope
+`calendar.events.readonly`) and `GOOGLE_CALENDAR_ID_<BRAND>` (optional, `primary`); a brand
+without a token is not pulled; a token without the client fails the boot. `panel booking
+google-authorize <brand> [--port 8765]`: prints Google's consent URL (offline, prompt=consent,
+PKCE, state), waits on `127.0.0.1:<port>` for the redirect, prints
+`GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>=…` once, for add-secrets. `panel booking google-sync
+<brand> [--full]`: one pull now.
+
+**API** (`/api/v1`, CSRF on writes; writes `edits_leads`, every role today):
+
+```text
+POST /leads/{brand}/{lead}/booking         {action: "set", start_at, end_at?} | {action: "clear"}
+                                           → 201 {event_id} (200 on an Idempotency-Key retry);
+                                           400 bad instant; 404; 409 not from where it stands
+POST /leads/{brand}/{lead}/booking/status  {status: done | no_show | canceled} → 201; 409 unless booked
+GET  /bookings/unmatched?brand&limit       {bookings: [Booking]}, the next slot first, ≤ 200
+POST /bookings/{id}/attach                 {lead} → 201 {event_id}; 404 no booking / no such lead
+                                           of its brand; 409 attached to it by hand already
+GET  /leads?booking=<status>               the leads whose booking stands there (none included)
+
+Lead.booking: {status, provider, start_at, end_at, external_ref, match, preferred_date,
+               preferred_part}
+Booking:      {id, brand, provider, external_ref, status: booked | canceled, start_at, end_at,
+               booked_at, last_event_at, lead_id: null, match: null,
+               contact?: {name?, email?, phone?} (for a role that sees PII)}
+```
 
 ## Invariants
 
@@ -719,7 +855,8 @@ into nothing, so a journal holding them still passes and rebuilds.
   is let be: that is a rollback onto a schema moved on. Timestamps are INTEGER microseconds
   since the epoch, days `YYYY-MM-DD` text, UUIDs 16-byte blobs, JSON text that must parse.
 - **Secrets come from the environment only** (`PANEL_DATA_KEY`, `SENTRY_DSN`,
-  `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`),
+  `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+  `GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>`),
   through `ev_lib::settings`; with `APP_ENV=production`, `PANEL_DB_PATH`, `PANEL_DATA_KEY` and
   the four sign-in variables are required at boot (`panel --print-required-vars` lists them).
 
@@ -760,6 +897,9 @@ into nothing, so a journal holding them still passes and rebuilds.
   `us.i.posthog.com:443` (or wherever `POSTHOG_HOST` points). The key is the project's public
   `phc_` key, not a secret. The experiments' links (`POSTHOG_PROJECT_ID`, `POSTHOG_APP_HOST`)
   are opened by the browser: no egress for them.
+- **Google, outbound only.** With the booking pull configured the pods need egress to
+  `oauth2.googleapis.com:443` and `www.googleapis.com:443`. `/api/hooks/booking` is public
+  (no push provider is registered yet: 404s) and rate-limited per IP at the edge.
 - **`/api/v1/live` through the public IngressRoute, as a WebSocket.** Traefik proxies the
   upgrade as is; nothing in front of it may buffer the response or strip `Upgrade` /
   `Connection` / `Origin`, and an idle timeout on the way must be longer than the 25 s ping

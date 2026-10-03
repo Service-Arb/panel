@@ -106,8 +106,8 @@ export async function failureOf(res: Response): Promise<ApiFailure> {
 
 export interface Http {
   get<T>(path: string, parser: Parser<T>, query?: Query): Promise<T>;
-  /** Every write carries the CSRF header; the backend refuses one without it. */
-  send<T>(method: "POST" | "PUT" | "DELETE", path: string, body: unknown, parser: Parser<T>): Promise<T>;
+  /** Every write carries the CSRF header; the backend refuses one without it. `headers` adds others (an Idempotency-Key). */
+  send<T>(method: "POST" | "PUT" | "DELETE", path: string, body: unknown, parser: Parser<T>, headers?: Readonly<Record<string, string>>): Promise<T>;
 }
 
 export function createHttp(deps: HttpDeps): Http {
@@ -129,8 +129,8 @@ export function createHttp(deps: HttpDeps): Http {
 
   return {
     get: (path, parser, query) => call(withQuery(path, query), { method: "GET", headers: { accept: "application/json" } }, parser),
-    send: (method, path, body, parser) => {
-      const headers: Record<string, string> = { accept: "application/json" };
+    send: (method, path, body, parser, extra) => {
+      const headers: Record<string, string> = { ...extra, accept: "application/json" };
       const csrf = readCsrf(deps.cookie());
       if (csrf) headers[CSRF_HEADER] = csrf;
       const init: RequestInit = { method, headers };

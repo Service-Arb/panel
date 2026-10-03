@@ -1,6 +1,7 @@
 //! What PostHog is owed: queued in the journal's transaction for new lead events only — never
 //! by a rebuild, a duplicate or a second creation — under the landing's analytics id, and sent,
-//! retried and given up as `panel::capture` says.
+//! retried and given up as `panel::capture` says. A booking is told under its lead, and a
+//! provider's booking no lead was matched to is not told at all.
 
 use std::sync::Mutex;
 
@@ -12,6 +13,7 @@ use panel::{
 	testing::{TestDb, event, panel, sign},
 };
 use panel_core::{
+	booking::{BookingEvent, Change, Contact, Provider},
 	event::SourceKind,
 	ids::{BrandId, LeadId},
 };
@@ -101,6 +103,74 @@ async fn only_a_fresh_commit_queues_and_never_the_rebuild() {
 	let l2 = LeadId::parse("L-2").unwrap();
 	off.move_lead(by, &brand, &l2, StageMove::Contacted { channel: None }, now).await.unwrap();
 	assert_eq!(outbox(&panel).await.len(), 3, "capture off: nothing queued");
+}
+
+#[tokio::test]
+async fn a_booking_is_told_under_its_lead_and_never_without_one() {
+	let db = TestDb::create().await;
+	let panel = panel(&db).await.with_capture(true);
+	let secret = site(&panel).await;
+	let now = Timestamp::now();
+	let visit = "0192f1c2-7d1e-7b3a-9c4d-1a2b3c4d5e6f";
+	panel
+		.ingest(
+			sign("aquafix-site", &secret, &[created("L-1", now - SignedDuration::from_mins(3), Some(visit))], now).batch(),
+			now,
+		)
+		.await
+		.unwrap();
+
+	let brand = BrandId::parse("aquafix").unwrap();
+	let later = now + SignedDuration::from_mins(1);
+	let booking = |external_ref: &str, lead_ref: Option<&str>| BookingEvent {
+		provider: Provider::GoogleCalendar,
+		external_ref: external_ref.into(),
+		version: "etag-rev-7".into(),
+		at: later,
+		change: Change::Booked {
+			start: later + SignedDuration::from_hours(48),
+			end: None,
+			booked_at: Some(later),
+		},
+		lead_ref: lead_ref.map(str::to_owned),
+		contact: Contact {
+			name: Some("Jean Dupont".into()),
+			email: Some("jean@example.com".into()),
+			phone: Some("+33700000000".into()),
+		},
+	};
+	// One no lead matches (L-1 left no phone or email), one the booking page carried L-1 back on.
+	let got = panel
+		.ingest_bookings(&brand, vec![booking("evt-lone", None), booking("evt-ref-secret", Some("L-1"))], later)
+		.await
+		.unwrap();
+	assert_eq!(got.written, 2, "{got:?}");
+	let by = Actor(uuid::Uuid::now_v7());
+	let l1 = LeadId::parse("L-1").unwrap();
+	panel.close_booking_once(by, &brand, &l1, "done", later + SignedDuration::from_mins(1), None).await.unwrap();
+
+	let queued = outbox(&panel).await;
+	let names: Vec<(&str, &str)> = queued.iter().map(|(e, d, _)| (e.as_str(), d.as_str())).collect();
+	assert_eq!(
+		names,
+		[("sa_lead_created", visit), ("sa_booking_created", visit), ("sa_booking_closed", visit)],
+		"the unmatched booking is journaled, not told"
+	);
+	let told = queued[1].2.as_object().unwrap();
+	assert_eq!(
+		told.keys().filter(|k| *k != "location_id").map(String::as_str).collect::<Vec<_>>(),
+		["brand_id", "lead_time_hours", "manual", "match", "provider"],
+		"no ref, revision, slot or attendee"
+	);
+	assert_eq!((&told["lead_time_hours"], &told["match"], &told["manual"]), (&json!(48), &json!("ref"), &json!(false)));
+	let dump = format!("{queued:?}");
+	for home in ["evt-ref-secret", "etag-rev-7", "Jean", "jean@", "+337"] {
+		assert!(!dump.contains(home), "{home} reached the outbox: {dump}");
+	}
+	assert_eq!(queued[2].2["closed"], "done");
+
+	panel.rebuild_projections().await.unwrap();
+	assert_eq!(outbox(&panel).await, queued, "the rebuild tells PostHog nothing of bookings either");
 }
 
 #[tokio::test]

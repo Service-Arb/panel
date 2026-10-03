@@ -183,7 +183,8 @@ impl Panel {
 		match self.write_own(raw, now).await?.map_err(ExperimentError::Invalid)?.0 {
 			crate::Outcome::Accepted { .. } => {}
 			crate::Outcome::Duplicate => return Err(ExperimentError::Internal(eyre::eyre!("a fresh event id was taken"))),
-			crate::Outcome::Rejected(e) => return Err(ExperimentError::Invalid(e)),
+			// Deferred is ingest's, for a source's booking ahead of its lead; never the panel's own.
+			crate::Outcome::Rejected(e) | crate::Outcome::Deferred(e) => return Err(ExperimentError::Invalid(e)),
 		}
 		tracing::info!(source_id, %brand, key = patch.key, "experiment configured");
 		let state = self.experiment(brand, &patch.key).await?.ok_or_else(|| eyre::eyre!("an experiment configured and gone"))?;

@@ -1,5 +1,6 @@
 import { type Infer, arrayOf, bool, cents, dictOf, isoDay, nullable, num, object, oneOf, record, recordOf, str } from "@/shared/lib/parse";
 
+import { leadBookingParser } from "./booking";
 import { FLOWS } from "./pricing";
 
 /** `panel_core::lead::Stage`, in its order; `lost` can be reached from any of them. */
@@ -43,6 +44,8 @@ export const leadParser = object({
   pricing_valid_from: nullable(isoDay),
   /** `estimate` only: input id → value id, as the site's model names them (no labels yet). */
   estimate_inputs: nullable(dictOf(str)),
+  /** Where the lead's booking stands: `status: none` when it has none. */
+  booking: leadBookingParser,
 });
 export type Lead = Infer<typeof leadParser>;
 

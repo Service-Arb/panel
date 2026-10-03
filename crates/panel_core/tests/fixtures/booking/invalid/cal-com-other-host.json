@@ -1,0 +1,8 @@
+{
+  "default": "cal_com",
+  "providers": {
+    "cal_com": {
+      "url": "https://book.example.fr/vifnet/menage"
+    }
+  }
+}
