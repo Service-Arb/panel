@@ -6,6 +6,8 @@ import { type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf, extrasOf } fr
 import { lostReasonLabel } from "@/features/move-stage";
 import { useT } from "@/shared/i18n";
 
+import { FactList } from "./card-section";
+
 /** Who and what: the customer as they left it, where, and how long they have waited. */
 export function LeadDetails({ lead }: { lead: Lead }) {
   const t = useT();
@@ -39,14 +41,7 @@ export function LeadDetails({ lead }: { lead: Lead }) {
       {shown.length === 0 ? (
         <p className="text-sm text-ink-soft">{t("card.noPii")}</p>
       ) : (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-          {shown.map(({ label, value, mono }) => (
-            <div key={label} className="contents">
-              <dt className={mono ? "font-mono text-xs text-ink-soft" : "text-ink-soft"}>{label}</dt>
-              <dd className="min-w-0 wrap-anywhere text-ink">{value}</dd>
-            </div>
-          ))}
-        </dl>
+        <FactList rows={shown} />
       )}
     </div>
   );

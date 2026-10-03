@@ -1,4 +1,4 @@
-import { type LeadCounts, type LeadFilter, STAGES, type Stage } from "@/entities/lead";
+import { FLOWS, type LeadCounts, type LeadFilter, STAGES, type Stage } from "@/entities/lead";
 import type { MessageKey, T } from "@/shared/i18n";
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -15,6 +15,7 @@ export function leadFilterFrom(params: URLSearchParams): LeadFilter {
     createdFrom: day(params.get("created_from")),
     createdTo: day(params.get("created_to")),
     suspect: suspectFilterOf(params.get("suspect")),
+    flow: flowFilterOf(params.get("flow")),
   };
 }
 
@@ -28,12 +29,25 @@ export function paramsWith(params: URLSearchParams, patch: Partial<LeadFilter>):
   if ("createdFrom" in patch) set("created_from", patch.createdFrom ?? null);
   if ("createdTo" in patch) set("created_to", patch.createdTo ?? null);
   if ("suspect" in patch) set("suspect", patch.suspect ?? null);
+  if ("flow" in patch) set("flow", patch.flow ?? null);
   return next;
 }
 
 /** The URL's word, if it is one the API takes (anything else answers 400): "every lead" otherwise. */
 export function suspectFilterOf(v: string | null): LeadFilter["suspect"] {
   return v === "only" || v === "exclude" ? v : null;
+}
+
+/** Whether any of `keys` narrows the list (every key of the filter by default). */
+export function narrows(filter: LeadFilter, keys: readonly (keyof LeadFilter)[] = FILTER_KEYS): boolean {
+  return keys.some((k) => filter[k] !== null && filter[k] !== false);
+}
+
+const FILTER_KEYS: readonly (keyof LeadFilter)[] = ["stage", "brand", "location", "overdue", "createdFrom", "createdTo", "suspect", "flow"];
+
+/** As with suspect: a word the API does not take would answer 400, so it reads as "every lead". */
+export function flowFilterOf(v: string | null): LeadFilter["flow"] {
+  return FLOWS.find((f) => f === v) ?? null;
 }
 
 export function stageOrNull(v: string | null): Stage | null {

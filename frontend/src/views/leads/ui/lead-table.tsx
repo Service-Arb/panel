@@ -2,7 +2,7 @@
 
 import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@evinvest/uikit";
 
-import { type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
+import { DealSummary, type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
 import { useLocale, useT } from "@/shared/i18n";
 import { formatDateTime } from "@/shared/lib/format";
 
@@ -21,6 +21,7 @@ export function LeadTable({ leads, flash, onOpen }: { leads: Lead[]; flash: Read
           <TableHead>{t("leads.col.need")}</TableHead>
           <TableHead>{t("leads.col.where")}</TableHead>
           <TableHead>{t("leads.col.stage")}</TableHead>
+          <TableHead>{t("leads.col.price")}</TableHead>
           <TableHead>{t("leads.col.waiting")}</TableHead>
           <TableHead className="text-right">{t("leads.col.created")}</TableHead>
         </TableRow>
@@ -46,6 +47,9 @@ export function LeadTable({ leads, flash, onOpen }: { leads: Lead[]; flash: Read
                 </span>
               </TableCell>
               <TableCell>
+                <DealSummary lead={lead} />
+              </TableCell>
+              <TableCell>
                 <SlaBadge sla={lead.sla} />
               </TableCell>
               <TableCell className="text-right tabular-nums text-ink-soft">{lead.created_at ? formatDateTime(lead.created_at, locale) : "—"}</TableCell>
@@ -56,3 +60,4 @@ export function LeadTable({ leads, flash, onOpen }: { leads: Lead[]; flash: Read
     </Table>
   );
 }
+

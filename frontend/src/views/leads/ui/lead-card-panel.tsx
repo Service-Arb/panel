@@ -14,6 +14,8 @@ import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
 
 import { type Known, nextKnown, updatedElsewhere } from "../model/card-updates";
+import { CardSection } from "./card-section";
+import { PricingBlock } from "./deal-blocks";
 import { EventList } from "./event-list";
 import { LeadDetails } from "./lead-details";
 import { UpdatedNote } from "./updated-note";
@@ -49,24 +51,22 @@ function CardBody({ card, leadRef, elsewhere, onChanged }: { card: LeadCard; lea
     <div className="flex flex-col gap-4">
       {elsewhere && <UpdatedNote key={lead.last_event_at} at={lead.last_event_at} type={events.at(-1)?.type ?? null} />}
       <LeadDetails lead={lead} />
+      <PricingBlock lead={lead} />
       {phone && <CallButton leadRef={leadRef} phone={phone} />}
       {hasMoves(lead.stage) && (
-        <section className="flex flex-col gap-2">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-ink-soft">{t("card.actions")}</h3>
+        <CardSection title={t("card.actions")}>
           <StageActions lead={lead} onMoved={onChanged} />
-        </section>
+        </CardSection>
       )}
       {takesPayment(lead.stage) && (
-        <section className="flex flex-col gap-2">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-ink-soft">{t("payment.title")}</h3>
+        <CardSection title={t("payment.title")}>
           <PaymentForm lead={lead} onSaved={onChanged} />
-        </section>
+        </CardSection>
       )}
       <Separator />
-      <section className="flex flex-col gap-2">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-ink-soft">{t("card.events")}</h3>
+      <CardSection title={t("card.events")}>
         {events.length > 0 ? <EventList events={events} /> : <EmptyState className="p-4" title={t("card.events.empty")} />}
-      </section>
+      </CardSection>
     </div>
   );
 }

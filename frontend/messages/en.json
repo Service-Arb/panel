@@ -322,5 +322,20 @@
   "filter.suspect.all": "All leads",
   "filter.suspect.only": "Suspect only",
   "filter.suspect.exclude": "Without suspect",
-  "leads.live.suspect": "(suspect: {n})"
+  "leads.live.suspect": "(suspect: {n})",
+  "flow.quote": "Quote request",
+  "flow.estimate": "Estimate",
+  "flow.fixed": "Fixed price",
+  "flow.short.quote": "Quote",
+  "flow.short.estimate": "Estimate",
+  "flow.short.fixed": "Fixed",
+  "filter.flow": "Form variant",
+  "filter.flow.all": "All variants",
+  "leads.col.price": "Price",
+  "card.pricing": "Pricing",
+  "card.pricing.flow": "Variant",
+  "card.pricing.price": "Price, incl. VAT",
+  "card.pricing.onQuote": "on quote",
+  "card.pricing.validFrom": "Price model of",
+  "card.pricing.inputs": "What the visitor chose"
 }

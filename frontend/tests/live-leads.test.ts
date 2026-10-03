@@ -26,6 +26,10 @@ function lead(id: string, created: string, patch: Partial<Lead> = {}): Lead {
     last_event_at: `2026-10-03T${created}:00Z`,
     sla: null,
     pii: null,
+    flow: null,
+    quoted_cents: null,
+    pricing_valid_from: null,
+    estimate_inputs: null,
     ...patch,
   };
 }

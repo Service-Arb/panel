@@ -8,7 +8,7 @@ import { type LeadFilter, type LeadRef, decodeRef, encodeRef, fetchLeadCounts } 
 import { brandsOf, locationsOf, usePlaces } from "@/entities/place";
 import { CallFlowProvider, OutcomeSheet } from "@/features/call-lead";
 import { CreateLeadButton } from "@/features/create-lead";
-import { LeadFilters, leadFilterFrom, paramsWith } from "@/features/lead-filters";
+import { LeadFilters, leadFilterFrom, narrows, paramsWith } from "@/features/lead-filters";
 import { useT } from "@/shared/i18n";
 import { useResource } from "@/shared/lib/use-resource";
 import { EmptyState } from "@/shared/ui/empty-state";
@@ -42,7 +42,7 @@ export function LeadsView() {
     changed();
     openLead(ref);
   };
-  const filtered = filter.stage !== null || filter.brand !== null || filter.location !== null || filter.overdue || filter.createdFrom !== null || filter.createdTo !== null || filter.suspect !== null;
+  const filtered = narrows(filter);
   const where = `${filter.brand ?? ""}/${filter.location ?? ""}`;
   const counts = useResource(`counts:${where}:${version}`, () => fetchLeadCounts(filter), `counts:${where}`, { live: ["leads", "lead"] });
 

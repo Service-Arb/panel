@@ -322,5 +322,20 @@
   "filter.suspect.all": "Все заявки",
   "filter.suspect.only": "Только подозрительные",
   "filter.suspect.exclude": "Без подозрительных",
-  "leads.live.suspect": "(подозрительных: {n})"
+  "leads.live.suspect": "(подозрительных: {n})",
+  "flow.quote": "Запрос цены",
+  "flow.estimate": "Расчёт",
+  "flow.fixed": "Фиксированная цена",
+  "flow.short.quote": "Запрос",
+  "flow.short.estimate": "Расчёт",
+  "flow.short.fixed": "Фикс",
+  "filter.flow": "Вариант формы",
+  "filter.flow.all": "Все варианты",
+  "leads.col.price": "Цена",
+  "card.pricing": "Расчёт",
+  "card.pricing.flow": "Вариант",
+  "card.pricing.price": "Цена с НДС",
+  "card.pricing.onQuote": "по запросу",
+  "card.pricing.validFrom": "Тарифы от",
+  "card.pricing.inputs": "Что выбрал посетитель"
 }
