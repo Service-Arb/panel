@@ -20,7 +20,7 @@ use uuid::Uuid;
 pub type FieldErrors = BTreeMap<String, String>;
 
 /// Every field a place's settings may set, by its wire name.
-pub const FIELDS: [&str; 9] = ["phone", "whatsapp", "hours", "serviceArea", "address", "geo", "storefrontPhoto", "landmark", "rating"];
+pub const FIELDS: [&str; 10] = ["phone", "whatsapp", "hours", "serviceArea", "address", "geo", "storefrontPhoto", "landmark", "rating", "booking"];
 
 /// kitstart's `DayOfWeek`, in week order.
 pub const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -64,6 +64,8 @@ impl PlaceSettings {
 				"storefrontPhoto" => whole(https_url(value)),
 				"landmark" => whole(landmark(value)),
 				"rating" => whole(rating(value)),
+				// The providers the place offers and its default (`crate::booking`).
+				"booking" => crate::booking::check_config(value),
 				_ => whole(Err(format!("is not a setting; one of {}", FIELDS.join(", ")))),
 			};
 			match checked {
@@ -515,6 +517,14 @@ mod tests {
 		] {
 			assert_eq!(err(body.clone()).len(), 1, "{body}");
 		}
+	}
+
+	#[test]
+	fn booking_is_a_setting_named_by_its_path() {
+		let booking = json!({"default": "google_calendar", "providers": {"google_calendar": {"url": "https://calendar.app.google/x1"}}});
+		assert_eq!(PlaceSettings::parse(&json!({ "booking": booking })).unwrap().get("booking"), Some(&booking));
+		let e = err(json!({"booking": {"default": "link", "providers": {"google_calendar": {"url": "https://calendar.google.com/x"}}}}));
+		assert_eq!(e.keys().collect::<Vec<_>>(), ["booking.default", "booking.providers.google_calendar.url"]);
 	}
 
 	#[test]

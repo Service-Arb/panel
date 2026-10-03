@@ -29,10 +29,13 @@ pub enum Rule {
 	PaymentReceived,
 	/// A source sent nothing for [`SOURCE_SILENCE`]: at most once a day.
 	SourceSilent,
+	/// A slot was booked, moved or canceled — by the customer through a provider, or by an
+	/// operator.
+	Booked,
 }
 
 impl Rule {
-	pub const ALL: [Self; 4] = [Self::NewLead, Self::ContactOverdue, Self::PaymentReceived, Self::SourceSilent];
+	pub const ALL: [Self; 5] = [Self::NewLead, Self::ContactOverdue, Self::PaymentReceived, Self::SourceSilent, Self::Booked];
 
 	pub fn as_str(self) -> &'static str {
 		match self {
@@ -40,13 +43,14 @@ impl Rule {
 			Self::ContactOverdue => "contact_overdue",
 			Self::PaymentReceived => "payment_received",
 			Self::SourceSilent => "source_silent",
+			Self::Booked => "booked",
 		}
 	}
 
 	/// On for a user who never chose.
 	pub fn on_by_default(self) -> bool {
 		match self {
-			Self::NewLead | Self::ContactOverdue => true,
+			Self::NewLead | Self::ContactOverdue | Self::Booked => true,
 			Self::PaymentReceived | Self::SourceSilent => false,
 		}
 	}
@@ -55,7 +59,7 @@ impl Rule {
 	/// the sources are the admins'.
 	pub fn open_to(self, role: Role) -> bool {
 		match self {
-			Self::NewLead | Self::ContactOverdue => role.edits_leads(),
+			Self::NewLead | Self::ContactOverdue | Self::Booked => role.edits_leads(),
 			Self::PaymentReceived | Self::SourceSilent => role.manages_sources(),
 		}
 	}
@@ -74,7 +78,7 @@ impl FromStr for Rule {
 		Self::ALL
 			.into_iter()
 			.find(|r| r.as_str() == s)
-			.ok_or_else(|| Invalid::new(format!("{s:?} is not one of new_lead, contact_overdue, payment_received, source_silent")))
+			.ok_or_else(|| Invalid::new(format!("{s:?} is not one of new_lead, contact_overdue, payment_received, source_silent, booked")))
 	}
 }
 
@@ -224,6 +228,23 @@ pub enum Note {
 	Backlog {
 		count: i64,
 	},
+	/// A slot booked, moved or canceled. `lead` is `None` for a provider's booking no lead was
+	/// found for ("without a lead"); `slot` is already in the place's time.
+	Booking {
+		change: BookingChange,
+		brand: String,
+		lead: Option<LeadNote>,
+		slot: Option<String>,
+		provider: String,
+	},
+}
+
+/// What became of a slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BookingChange {
+	Booked,
+	Moved,
+	Canceled,
 }
 
 impl Note {
@@ -233,6 +254,7 @@ impl Note {
 			Self::ContactOverdue { .. } => Rule::ContactOverdue,
 			Self::PaymentReceived { .. } => Rule::PaymentReceived,
 			Self::SourceSilent { .. } => Rule::SourceSilent,
+			Self::Booking { .. } => Rule::Booked,
 		}
 	}
 
@@ -240,7 +262,7 @@ impl Note {
 	pub fn buttons(&self) -> &'static [Button] {
 		match self {
 			Self::NewLead(_) | Self::SuspectLead { .. } | Self::ContactOverdue { .. } => &[Button::Take, Button::NoAnswer],
-			Self::PaymentReceived { .. } | Self::SourceSilent { .. } | Self::Backlog { .. } => &[],
+			Self::PaymentReceived { .. } | Self::SourceSilent { .. } | Self::Backlog { .. } | Self::Booking { .. } => &[],
 		}
 	}
 
@@ -306,6 +328,35 @@ impl Note {
 				});
 				out.code(key_id);
 				out.push(&format!(" ({kind}): {since}"));
+			}
+			Self::Booking {
+				change,
+				brand,
+				lead,
+				slot,
+				provider,
+			} => {
+				let head = match (change, ru) {
+					(BookingChange::Booked, true) => "Бронь",
+					(BookingChange::Booked, false) => "Slot booked",
+					(BookingChange::Moved, true) => "Бронь перенесена",
+					(BookingChange::Moved, false) => "Booking moved",
+					(BookingChange::Canceled, true) => "Бронь отменена",
+					(BookingChange::Canceled, false) => "Booking canceled",
+				};
+				let head = match (slot, lead.is_none(), ru) {
+					(Some(slot), false, _) => format!("{head}: {slot}"),
+					(Some(slot), true, true) => format!("{head} без заявки: {slot}"),
+					(Some(slot), true, false) => format!("{head}, no lead: {slot}"),
+					(None, false, _) => head.to_owned(),
+					(None, true, true) => format!("{head} без заявки"),
+					(None, true, false) => format!("{head}, no lead"),
+				};
+				match lead {
+					Some(lead) => lead_text(&mut out, &head, lead, locale),
+					None => out.push(&format!("{head}\n{brand}")),
+				}
+				out.push(&format!("\n{} {provider}", if ru { "Через:" } else { "Via:" }));
 			}
 			Self::Backlog { count } => out.push(&if ru {
 				format!("{count} новых заявок ждут звонка. Откройте панель.")
@@ -599,7 +650,8 @@ mod tests {
 			assert_eq!(r.as_str().parse::<Rule>().unwrap(), r);
 		}
 		assert!("review_low".parse::<Rule>().is_err(), "not yet");
-		assert_eq!(Rule::ALL.iter().filter(|r| r.on_by_default()).count(), 2);
+		assert_eq!(Rule::ALL.iter().filter(|r| r.on_by_default()).count(), 3);
+		assert!(Rule::Booked.on_by_default() && Rule::Booked.open_to(Role::Operator));
 		assert!(Rule::NewLead.open_to(Role::Operator) && Rule::ContactOverdue.open_to(Role::Operator));
 		assert!(!Rule::PaymentReceived.open_to(Role::Operator) && !Rule::SourceSilent.open_to(Role::Operator));
 		assert!(Rule::ALL.iter().all(|r| r.open_to(Role::Admin)));
@@ -671,6 +723,31 @@ mod tests {
 			"Источник молчит больше суток\naquafix-site (site): последнее событие 2026-09-29 08:15 UTC"
 		);
 		assert_eq!(money(-5), "-0.05");
+		let booked = Note::Booking {
+			change: BookingChange::Booked,
+			brand: "aquafix".into(),
+			lead: Some(LeadNote {
+				brand: "aquafix".into(),
+				location: Some("royat".into()),
+				phone: Some("+33612345678".into()),
+				..LeadNote::default()
+			}),
+			slot: Some("2026-10-06 14:30 (Paris)".into()),
+			provider: "google_calendar".into(),
+		};
+		assert_eq!(
+			booked.text(Locale::Ru),
+			"Бронь: 2026-10-06 14:30 (Paris)\naquafix · royat\nТелефон: +33612345678\nЧерез: google_calendar"
+		);
+		assert_eq!((booked.rule(), booked.buttons()), (Rule::Booked, [].as_slice()));
+		let orphan = Note::Booking {
+			change: BookingChange::Canceled,
+			brand: "vifnet".into(),
+			lead: None,
+			slot: None,
+			provider: "google_calendar".into(),
+		};
+		assert_eq!(orphan.text(Locale::En), "Booking canceled, no lead\nvifnet\nVia: google_calendar");
 	}
 
 	#[test]

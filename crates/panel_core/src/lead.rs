@@ -51,7 +51,18 @@ impl Stage {
 			Fact::JobCompleted => Some(Self::Completed),
 			Fact::PaymentReceived { .. } => Some(Self::Paid),
 			Fact::LeadLost { .. } => Some(Self::Lost),
-			Fact::CallAttempted | Fact::CallLogged { .. } | Fact::Metric(_) => None,
+			// A booking is beside the stages, not one of them: a lead booked and never
+			// contacted is still waiting for its call.
+			Fact::CallAttempted
+			| Fact::CallLogged { .. }
+			| Fact::Metric(_)
+			| Fact::BookingRequested { .. }
+			| Fact::BookingCreated { .. }
+			| Fact::BookingCanceled { .. }
+			| Fact::BookingSet { .. }
+			| Fact::BookingStatusChanged(_)
+			| Fact::BookingCleared
+			| Fact::BookingAttached { .. } => None,
 		}
 	}
 }

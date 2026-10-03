@@ -4,9 +4,15 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use jiff::civil::Date;
+use jiff::{Timestamp, civil::Date};
 
-use crate::{Invalid, event::Subject, ids::is_slug, metrics::DailyMetric};
+use crate::{
+	Invalid,
+	booking::{BookingMatch, Closed, DayPart, Provider},
+	event::Subject,
+	ids::is_slug,
+	metrics::DailyMetric,
+};
 
 /// ISO 4217 code: three uppercase letters.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -307,6 +313,87 @@ pub enum Fact {
 	/// A day's count of an aggregate stage or an experiment's variant (`site.metrics`,
 	/// `contact.metrics`, `experiment.metrics`): about no lead.
 	Metric(DailyMetric),
+	/// The site asked for a slot through `provider` (`booking.requested`).
+	BookingRequested {
+		provider: Provider,
+		preferred_date: Option<Date>,
+		preferred_part: Option<DayPart>,
+	},
+	/// A provider's booking, booked or moved (`booking.created`). `matched` is set exactly
+	/// when the subject names a lead.
+	BookingCreated {
+		provider: Provider,
+		external_ref: String,
+		start_at: Timestamp,
+		end_at: Option<Timestamp>,
+		matched: Option<BookingMatch>,
+		version: String,
+		booked_at: Option<Timestamp>,
+	},
+	/// A provider's booking canceled (`booking.canceled`).
+	BookingCanceled {
+		provider: Provider,
+		external_ref: String,
+		version: String,
+	},
+	/// An operator's slot (`booking.set`).
+	BookingSet {
+		start_at: Timestamp,
+		end_at: Option<Timestamp>,
+	},
+	/// An operator closed a booked slot (`booking.status_changed`).
+	BookingStatusChanged(Closed),
+	/// An operator took the slot away (`booking.cleared`).
+	BookingCleared,
+	/// An operator joined a provider's booking to the subject's lead (`booking.attached`).
+	BookingAttached {
+		provider: Provider,
+		external_ref: String,
+	},
+}
+
+/// An instant with its offset, `2026-10-06T14:30:00+02:00`: RFC 3339, nothing looser.
+pub fn instant(field: &str, raw: &str) -> Result<Timestamp, Invalid> {
+	// jiff takes a few spellings RFC 3339 does not (a space for the `T`); the `T` and a digit
+	// after the seconds' colon are what is asked for.
+	let shaped = raw.len() >= 20 && raw.as_bytes().get(10) == Some(&b'T');
+	shaped
+		.then(|| raw.parse::<Timestamp>().ok())
+		.flatten()
+		.ok_or_else(|| Invalid::new(format!("{field} is not an RFC 3339 instant like \"2026-10-06T14:30:00+02:00\"")))
+}
+
+/// `YYYY-MM-DD`, a real day.
+pub fn day(field: &str, raw: &str) -> Result<Date, Invalid> {
+	rfc3339_date(raw).ok_or_else(|| Invalid::new(format!("{field} is not a date like \"2026-10-06\"")))
+}
+
+impl Fact {
+	/// A slot: an end, if there is one, after its start.
+	pub fn slot(start: &str, end: Option<&str>) -> Result<(Timestamp, Option<Timestamp>), Invalid> {
+		let start = instant("properties.start_at", start)?;
+		let end = end.map(|e| instant("properties.end_at", e)).transpose()?;
+		if end.is_some_and(|e| e <= start) {
+			return Err(Invalid::new("properties.end_at is not after properties.start_at"));
+		}
+		Ok((start, end))
+	}
+
+	/// A provider's booking: an adapter's provider, and its id and revision in their shapes.
+	pub fn external(provider: &str, external_ref: &str, version: Option<&str>) -> Result<(Provider, String, String), Invalid> {
+		let provider = Provider::parse(provider).map_err(|e| Invalid::new(format!("properties.{e}")))?;
+		if !provider.has_adapter() {
+			return Err(Invalid::new("properties.provider is not one with an adapter: google_calendar, cal_com"));
+		}
+		if !crate::booking::is_external_ref(external_ref) {
+			return Err(Invalid::new("properties.external_ref is not 1–1024 of [A-Za-z0-9._:-]"));
+		}
+		let version = version.unwrap_or("-");
+		if !crate::booking::is_version(version) {
+			return Err(Invalid::new("properties.version is not 1–256 printable ASCII"));
+		}
+		Ok((provider, external_ref.to_owned(), version.to_owned()))
+	}
 }
 
 /// Free text a person typed: bounded, so a source cannot park a document in the journal.
@@ -371,6 +458,20 @@ impl Fact {
 			}
 			return Ok(());
 		}
+		match self {
+			// A provider's booking may not be matched to a lead yet; when it is, it says how.
+			Self::BookingCreated { matched, .. } => {
+				if matched.is_some() != subject.lead_id.is_some() {
+					return Err(Invalid::new("properties.match is set exactly when subject.lead_id is"));
+				}
+				if *matched == Some(BookingMatch::Manual) {
+					return Err(Invalid::new("properties.match is ref or contact: an operator attaches with booking.attached"));
+				}
+				return Ok(());
+			}
+			Self::BookingCanceled { .. } => return Ok(()),
+			_ => {}
+		}
 		if subject.lead_id.is_none() {
 			return Err(Invalid::new("subject.lead_id is required for this type"));
 		}
@@ -383,7 +484,14 @@ impl Fact {
 			| Self::PaymentReceived { .. }
 			| Self::CallAttempted
 			| Self::CallLogged { .. }
-			| Self::Metric(_) => false,
+			| Self::Metric(_)
+			| Self::BookingRequested { .. }
+			| Self::BookingCreated { .. }
+			| Self::BookingCanceled { .. }
+			| Self::BookingSet { .. }
+			| Self::BookingStatusChanged(_)
+			| Self::BookingCleared
+			| Self::BookingAttached { .. } => false,
 		};
 		if needs_job && subject.job_id.is_none() {
 			return Err(Invalid::new("subject.job_id is required for this type"));
@@ -470,6 +578,42 @@ mod tests {
 			let e = LeadOffer::parse(Some("estimate"), Some(1), Some("2026-10-01"), [(k.to_owned(), v.to_owned())]).unwrap_err();
 			assert_eq!(e.0, "properties.estimate_inputs keys and values are 1–40 of [a-z0-9_-]", "{k:?} {v:?}");
 		}
+	}
+
+	#[test]
+	fn slots_and_external_bookings() {
+		let (start, end) = Fact::slot("2026-10-06T14:30:00+02:00", Some("2026-10-06T15:30:00+02:00")).unwrap();
+		assert_eq!((start.to_string(), end.unwrap().to_string()), ("2026-10-06T12:30:00Z".into(), "2026-10-06T13:30:00Z".into()));
+		assert!(Fact::slot("2026-10-06T14:30:00+02:00", Some("2026-10-06T14:30:00+02:00")).is_err(), "an end at its start");
+		for bad in ["2026-10-06 14:30:00Z", "2026-10-06", "tomorrow", "2026-10-06T14:30:00"] {
+			assert!(Fact::slot(bad, None).is_err(), "{bad}");
+		}
+		assert!(Fact::external("google_calendar", "abc123", Some("\"etag\"")).is_ok());
+		assert!(Fact::external("link", "abc123", None).is_err(), "a link has no adapter");
+		assert!(Fact::external("google_calendar", "a b", None).is_err());
+
+		let mut subject = Subject {
+			brand_id: BrandId::parse("aquafix").unwrap(),
+			location_id: None,
+			lead_id: None,
+			job_id: None,
+		};
+		let created = |matched| Fact::BookingCreated {
+			provider: Provider::GoogleCalendar,
+			external_ref: "e1".into(),
+			start_at: start,
+			end_at: None,
+			matched,
+			version: "v".into(),
+			booked_at: None,
+		};
+		assert!(created(None).check_subject(&subject).is_ok(), "unmatched");
+		assert!(created(Some(BookingMatch::Contact)).check_subject(&subject).is_err());
+		subject.lead_id = Some(LeadId::parse("L-1").unwrap());
+		assert!(created(Some(BookingMatch::Contact)).check_subject(&subject).is_ok());
+		assert!(created(None).check_subject(&subject).is_err());
+		assert!(created(Some(BookingMatch::Manual)).check_subject(&subject).is_err());
+		assert!(Fact::BookingCleared.check_subject(&subject).is_ok());
 	}
 
 	#[test]

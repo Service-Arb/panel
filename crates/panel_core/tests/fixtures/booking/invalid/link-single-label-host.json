@@ -1,0 +1,8 @@
+{
+  "default": "link",
+  "providers": {
+    "link": {
+      "url": "https://localhost/vifnet"
+    }
+  }
+}
