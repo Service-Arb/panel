@@ -194,7 +194,7 @@ fn init_tracing() -> eyre::Result<()> {
 }
 
 async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSignIn>) -> eyre::Result<()> {
-	let connect = || async { eyre::Ok(Panel::new(Store::open(settings.db_path()?).await?, settings.data_key()?)) };
+	let connect = || async { eyre::Ok(Panel::new(Store::open(settings.db_path()?).await?, settings.data_key()?).with_posthog_project(settings.posthog_project()?)) };
 	match cli.cmd {
 		Cmd::Migrate => {
 			Store::open(settings.db_path()?).await?.pool().close().await;

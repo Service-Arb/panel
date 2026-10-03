@@ -6,7 +6,12 @@ use std::{collections::BTreeMap, fmt};
 
 use jiff::civil::Date;
 
-use crate::{Invalid, event::Subject, ids::is_slug};
+use crate::{
+	Invalid,
+	event::Subject,
+	experiment::{Declaration, Patch},
+	ids::is_slug,
+};
 
 /// ISO 4217 code: three uppercase letters.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -332,6 +337,10 @@ pub enum Fact {
 	/// and a rebuild does not fail on it, but nothing is projected from it. PostHog itself is
 	/// where those counts are looked at now.
 	RetiredCount,
+	/// What a brand's landing declares of its experiments at start: about no lead.
+	ExperimentsDeclared(Vec<Declaration>),
+	/// An admin's change to one experiment of the brand.
+	ExperimentConfigured(Patch),
 }
 
 /// Free text a person typed: bounded, so a source cannot park a document in the journal.
@@ -384,32 +393,35 @@ impl Fact {
 	}
 
 	/// What the fact needs to know about its subject: every lead type is about a lead, and
-	/// the job types about a job too; a count is about no one.
+	/// the job types about a job too; a count is about no one, an experiment about its brand.
 	pub fn check_subject(&self, subject: &Subject) -> Result<(), Invalid> {
-		if let Self::RetiredCount = self {
-			if subject.lead_id.is_some() || subject.job_id.is_some() {
-				return Err(Invalid::new("a count names no lead and no job"));
-			}
-			return Ok(());
+		/// What a type needs of its subject.
+		enum Needs {
+			Lead,
+			LeadAndJob,
+			NoLeadNoJob,
+			BrandOnly,
 		}
-		if subject.lead_id.is_none() {
-			return Err(Invalid::new("subject.lead_id is required for this type"));
-		}
-		let needs_job = match self {
-			Self::JobWon | Self::JobCompleted => true,
+		let needs = match self {
+			Self::JobWon | Self::JobCompleted => Needs::LeadAndJob,
 			Self::LeadCreated { .. }
 			| Self::LeadContacted { .. }
 			| Self::LeadQuoted { .. }
 			| Self::LeadLost { .. }
 			| Self::PaymentReceived { .. }
 			| Self::CallAttempted
-			| Self::CallLogged { .. }
-			| Self::RetiredCount => false,
+			| Self::CallLogged { .. } => Needs::Lead,
+			Self::RetiredCount => Needs::NoLeadNoJob,
+			Self::ExperimentsDeclared(_) | Self::ExperimentConfigured(_) => Needs::BrandOnly,
 		};
-		if needs_job && subject.job_id.is_none() {
-			return Err(Invalid::new("subject.job_id is required for this type"));
+		match needs {
+			Needs::NoLeadNoJob if subject.lead_id.is_some() || subject.job_id.is_some() => Err(Invalid::new("a count names no lead and no job")),
+			Needs::BrandOnly if subject.location_id.is_some() || subject.lead_id.is_some() || subject.job_id.is_some() =>
+				Err(Invalid::new("an experiment is the brand's: subject names no location, lead or job")),
+			Needs::Lead | Needs::LeadAndJob if subject.lead_id.is_none() => Err(Invalid::new("subject.lead_id is required for this type")),
+			Needs::LeadAndJob if subject.job_id.is_none() => Err(Invalid::new("subject.job_id is required for this type")),
+			Needs::Lead | Needs::LeadAndJob | Needs::NoLeadNoJob | Needs::BrandOnly => Ok(()),
 		}
-		Ok(())
 	}
 }
 

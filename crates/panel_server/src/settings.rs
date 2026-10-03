@@ -48,6 +48,11 @@ ev_lib::settings! {
 		/// origin behind the API's routes; the image sets it. Unset: `serve` answers the API
 		/// alone, and says so.
 		panel_web_dir: Option<String>,
+		/// The PostHog project the landings send to (Service-Arb's, a number like 614067): the
+		/// experiments link to their funnels in it. Unset: no links.
+		posthog_project_id: Option<String>,
+		/// The PostHog app's origin, for those links (not the capture host).
+		posthog_app_host: String = "https://us.posthog.com",
 		/// Development only: `admin` or `operator`. Signs whoever opens `/auth/login` in as a
 		/// made-up user of that role, without concierge. Refused at start in any profile but
 		/// `development`, beside any concierge variable, and unless PANEL_PUBLIC_ORIGIN is
@@ -107,6 +112,32 @@ impl Settings {
 			locale: self.telegram_locale.parse()?,
 		}))
 	}
+}
+
+impl Settings {
+	/// The PostHog project the experiments link into; `None` without `POSTHOG_PROJECT_ID`.
+	pub fn posthog_project(&self) -> eyre::Result<Option<panel::experiment::PosthogProject>> {
+		let Some(project) = self.posthog_project_id.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+			return Ok(None);
+		};
+		eyre::ensure!(project.len() <= 32 && project.bytes().all(|b| b.is_ascii_digit()), "POSTHOG_PROJECT_ID is a number, e.g. 614067");
+		Ok(Some(panel::experiment::PosthogProject {
+			app_host: origin("POSTHOG_APP_HOST", &self.posthog_app_host, &self.app_env)?,
+			project_id: project.to_owned(),
+		}))
+	}
+}
+
+/// An origin alone, `https` in production; without its trailing slash.
+fn origin(var: &str, raw: &str, app_env: &str) -> eyre::Result<String> {
+	let raw = raw.trim().trim_end_matches('/');
+	let url = url::Url::parse(raw).map_err(|e| eyre::eyre!("{var} is not a URL: {e}"))?;
+	eyre::ensure!(url.scheme() == "https" || app_env != "production", "{var} must be https in production");
+	eyre::ensure!(
+		matches!(url.scheme(), "http" | "https") && url.path() == "/" && url.query().is_none() && url.fragment().is_none(),
+		"{var} is an origin alone, e.g. https://us.posthog.com"
+	);
+	Ok(raw.to_owned())
 }
 
 /// What signing in needs, all of it or none.
@@ -261,6 +292,8 @@ mod tests {
 				"TELEGRAM_BOT_USERNAME",
 				"TELEGRAM_LOCALE",
 				"PANEL_WEB_DIR",
+				"POSTHOG_PROJECT_ID",
+				"POSTHOG_APP_HOST",
 				"PANEL_DEV_SIGN_IN",
 				"PANEL_DEV_SIGN_IN_EMAIL",
 				"APP_ENV"
@@ -330,6 +363,22 @@ mod tests {
 			Locale::En
 		);
 		assert!(from(&[("TELEGRAM_BOT_TOKEN", token), ("TELEGRAM_LOCALE", "de")]).unwrap().telegram().is_err());
+	}
+
+	#[test]
+	fn the_posthog_links_need_the_project() {
+		assert!(from(&[]).unwrap().posthog_project().unwrap().is_none());
+		let p = from(&[("POSTHOG_PROJECT_ID", "614067")]).unwrap().posthog_project().unwrap().unwrap();
+		assert_eq!((p.app_host.as_str(), p.project_id.as_str()), ("https://us.posthog.com", "614067"));
+		assert!(from(&[("POSTHOG_PROJECT_ID", "../1")]).unwrap().posthog_project().is_err());
+		assert!(
+			from(&[("POSTHOG_PROJECT_ID", "1"), ("POSTHOG_APP_HOST", "https://us.posthog.com/api")])
+				.unwrap()
+				.posthog_project()
+				.is_err()
+		);
+		let eu = from(&[("POSTHOG_PROJECT_ID", "1"), ("POSTHOG_APP_HOST", "https://eu.posthog.com/")]).unwrap();
+		assert_eq!(eu.posthog_project().unwrap().unwrap().app_host, "https://eu.posthog.com");
 	}
 
 	#[test]

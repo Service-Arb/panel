@@ -9,6 +9,7 @@ use panel_contracts::{SCHEMA, v1};
 use panel_core::{
 	Invalid,
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
+	experiment::{Declaration, Patch, check_declared},
 	fact::{AnalyticsId, CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
 };
@@ -239,6 +240,8 @@ pub const REGISTERED: &[(&str, u32, &str)] = &[
 	("site.metrics", 1, "sa.v1.SiteMetricsV1"),
 	("contact.metrics", 1, "sa.v1.ContactMetricsV1"),
 	("experiment.metrics", 1, "sa.v1.ExperimentMetricsV1"),
+	("experiments.declared", 1, "sa.v1.ExperimentsDeclaredV1"),
+	("experiment.configured", 1, "sa.v1.ExperimentConfiguredV1"),
 ];
 
 /// Checks an event's properties against its `type@version`, and what the type needs of its
@@ -289,6 +292,17 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 		("site.metrics", 1) => props::<v1::SiteMetricsV1>(key, properties).map(|_| Fact::RetiredCount),
 		("contact.metrics", 1) => props::<v1::ContactMetricsV1>(key, properties).map(|_| Fact::RetiredCount),
 		("experiment.metrics", 1) => props::<v1::ExperimentMetricsV1>(key, properties).map(|_| Fact::RetiredCount),
+		("experiments.declared", 1) => props::<v1::ExperimentsDeclaredV1>(key, properties).and_then(|p| {
+			let declared = p
+				.experiments
+				.into_iter()
+				.map(|e| Declaration::parse(&e.key, e.variants, e.weights, e.enabled, e.holdout, e.summary))
+				.collect::<Result<Vec<_>, _>>()?;
+			check_declared(&declared)?;
+			Ok(Fact::ExperimentsDeclared(declared))
+		}),
+		("experiment.configured", 1) =>
+			props::<v1::ExperimentConfiguredV1>(key, properties).and_then(|p| Ok(Fact::ExperimentConfigured(Patch::parse(&p.key, p.enabled, p.weights, p.holdout, &p.reset)?))),
 		_ => return Checked::Unregistered,
 	};
 	match fact.and_then(|f| f.check_subject(subject).map(|()| f)) {
@@ -525,6 +539,39 @@ mod tests {
 			panic!("an unknown field passed")
 		};
 		assert!(e.0.contains("clicks"), "the shape is still checked: {e}");
+	}
+
+	#[test]
+	fn experiments_are_the_brands_and_their_writers() {
+		let key = |name| TypeKey::parse(name, 1).unwrap();
+		let mut subject = decode(event(), now()).unwrap().envelope.subject;
+		let declared = json!({"experiments": [{"key": "lead_layout", "variants": ["a", "b"], "weights": [1, 1], "enabled": true, "holdout": 0.1, "summary": "One step converts better"}]});
+		assert!(
+			matches!(check(&key("experiments.declared"), SourceKind::Site, &declared, &subject), Checked::Invalid(_)),
+			"names a lead"
+		);
+		subject.lead_id = None;
+		subject.location_id = None;
+		let Checked::Registered(Fact::ExperimentsDeclared(d)) = check(&key("experiments.declared"), SourceKind::Site, &declared, &subject) else {
+			panic!("a declaration refused")
+		};
+		assert_eq!((d[0].key.as_str(), d[0].weights.as_slice(), d[0].holdout), ("lead_layout", &[1.0, 1.0][..], Some(0.1)));
+		assert_eq!(
+			check(&key("experiments.declared"), SourceKind::Panel, &declared, &subject),
+			Checked::Invalid(Invalid::new("a panel source may not write experiments.declared"))
+		);
+		let nan = json!({"experiments": [{"key": "k", "variants": ["a", "b"], "weights": ["NaN", 1], "enabled": true}]});
+		assert!(matches!(check(&key("experiments.declared"), SourceKind::Site, &nan, &subject), Checked::Invalid(_)));
+		let configured = json!({"key": "lead_layout", "weights": [3, 1], "reset": ["holdout"]});
+		assert!(matches!(
+			check(&key("experiment.configured"), SourceKind::Panel, &configured, &subject),
+			Checked::Registered(Fact::ExperimentConfigured(_))
+		));
+		assert_eq!(
+			check(&key("experiment.configured"), SourceKind::Site, &configured, &subject),
+			Checked::Invalid(Invalid::new("a site source may not write experiment.configured")),
+			"a landing cannot set its own overrides"
+		);
 	}
 
 	#[test]

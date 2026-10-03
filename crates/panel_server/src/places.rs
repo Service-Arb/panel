@@ -65,7 +65,7 @@ pub fn writes() -> Router<Panel> {
 		.route("/places/{brand}/{slug}/restore", post(restore))
 }
 
-/// The sites' reads — a place's settings, a brand's pricing — mounted whether or not signing
+/// The sites' reads — a place's settings, a brand's pricing and experiments — mounted whether or not signing
 /// in is configured. Bounded like ingest, with one budget for both (the same sites call both);
 /// a site answered 503 serves its baked place, so shedding costs a site nothing. The pricing
 /// route is answered `{}` instead of a 503: its contract has no 5xx.
@@ -80,13 +80,19 @@ pub fn internal() -> Router<Panel> {
 	let pricing = ServiceBuilder::new()
 		.layer(HandleErrorLayer::new(|_: BoxError| async { Json(json!({})) }))
 		.load_shed()
+		.layer(GlobalConcurrencyLimitLayer::with_semaphore(permits.clone()));
+	// The same, answering no overrides.
+	let experiments = ServiceBuilder::new()
+		.layer(HandleErrorLayer::new(|_: BoxError| async { Json(json!({ "experiments": {} })) }))
+		.load_shed()
 		.layer(GlobalConcurrencyLimitLayer::with_semaphore(permits));
 	Router::new()
 		.route("/api/internal/brands/{brand}/locations/{slug}", get(live).layer(places))
-		.route("/api/internal/brands/{brand}/pricing", get(crate::pricing::live).layer(pricing))
+		.route("/api/internal/brands/{brand}/pricing", get(crate::pricing::live).layer(pricing.clone()))
+		.route("/api/internal/brands/{brand}/experiments", get(crate::experiments::live).layer(experiments))
 }
 
-/// The sites' reads at once, places and pricing together.
+/// The sites' reads at once, places, pricing and experiments together.
 const INTERNAL_CONCURRENT: usize = 32;
 /// kitstart gives up after 3 s.
 const INTERNAL_TIMEOUT: Duration = Duration::from_secs(3);

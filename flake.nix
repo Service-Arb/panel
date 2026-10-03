@@ -125,7 +125,9 @@
           requiredEnv = [ "PANEL_DB_PATH" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
           # from the sops-backed Secret, never literal env
           secretEnv = [ "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" ];
-          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" ];
+          # POSTHOG_PROJECT_ID (+ POSTHOG_APP_HOST): the experiments link to their funnels in
+          # PostHog; unset, no links. Links are opened by the browser: no egress for them.
+          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" "POSTHOG_PROJECT_ID" "POSTHOG_APP_HOST" ];
           ingress = {
             # in-cluster only, by service DNS: the landings' ingest and place reads
             # (docs/ARCHITECTURE.md, Deploy requirements)

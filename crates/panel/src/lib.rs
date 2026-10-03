@@ -11,9 +11,11 @@
 //! [`operator`] is what a signed-in user does and reads, as events through the same journal;
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
 //! bot's notifications and buttons; [`place`] the places' live settings the sites
-//! read and the panel edits; [`pricing`] the brands' price lists, the same; [`live`] the bus that tells the server's sockets what changed,
+//! read and the panel edits; [`pricing`] the brands' price lists, the same; [`experiment`]
+//! the brands' experiments as configuration; [`live`] the bus that tells the server's sockets what changed,
 //! published here after each commit.
 
+pub mod experiment;
 pub mod live;
 pub mod operator;
 pub mod place;
@@ -163,6 +165,7 @@ pub struct Panel {
 	key: Arc<DataKey>,
 	rotations: Arc<session::Rotations>,
 	live: live::Bus,
+	posthog: Option<experiment::PosthogProject>,
 }
 
 impl Panel {
@@ -172,7 +175,14 @@ impl Panel {
 			key: Arc::new(key),
 			rotations: Arc::default(),
 			live: live::Bus::default(),
+			posthog: None,
 		}
+	}
+
+	/// This panel linking each experiment to its funnel in `project`.
+	pub fn with_posthog_project(mut self, project: Option<experiment::PosthogProject>) -> Self {
+		self.posthog = project;
+		self
 	}
 
 	/// This panel on `bus` instead of its own: a bus of another capacity, or one shared.
@@ -398,6 +408,7 @@ impl Panel {
 		projections::clear(&mut tx).await?;
 		let mut done = Rebuilt::default();
 		let mut leads: BTreeSet<(BrandId, LeadId)> = BTreeSet::new();
+		let mut experiment_brands: BTreeSet<BrandId> = BTreeSet::new();
 		let mut after = None;
 		loop {
 			let page = events::page(&mut tx, after, PAGE).await?;
@@ -431,6 +442,9 @@ impl Panel {
 					fact,
 				};
 				projections::insert_row(&mut tx, &recorded).await?;
+				if projections::is_experiment(&recorded.fact) {
+					experiment_brands.insert(recorded.subject.brand_id.clone());
+				}
 				if let Some(lead) = recorded.subject.lead_id {
 					leads.insert((recorded.subject.brand_id, lead));
 				}
@@ -440,6 +454,9 @@ impl Panel {
 			projections::recompute_lead(&mut tx, brand, lead).await?;
 		}
 		done.leads = leads.len() as u64;
+		for brand in &experiment_brands {
+			store::experiments::recompute(&mut tx, brand).await?;
+		}
 		tx.commit().await.wrap_err("committing the rebuild")?;
 		self.live.publish(live::Signal::Resync);
 		Ok(done)

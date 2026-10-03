@@ -51,7 +51,7 @@ impl Stage {
 			Fact::JobCompleted => Some(Self::Completed),
 			Fact::PaymentReceived { .. } => Some(Self::Paid),
 			Fact::LeadLost { .. } => Some(Self::Lost),
-			Fact::CallAttempted | Fact::CallLogged { .. } | Fact::RetiredCount => None,
+			Fact::CallAttempted | Fact::CallLogged { .. } | Fact::RetiredCount | Fact::ExperimentsDeclared(_) | Fact::ExperimentConfigured(_) => None,
 		}
 	}
 }

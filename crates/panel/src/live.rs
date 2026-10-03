@@ -8,7 +8,8 @@
 //!
 //! ```text
 //! Panel::journal        every event journaled and projected: ingest, the operator's actions,
-//!                       the Telegram buttons                           → leads | lead
+//!                       the Telegram buttons, a landing's experiments,
+//!                       an admin's experiment settings                 → leads | lead | experiments
 //! Panel::rebuild_…      the projections replaced whole                 → resync
 //! place::edit, register a place's settings, withdrawn, registered      → places
 //! pricing               a brand's model saved or removed, its locales  → pricing
@@ -109,6 +110,8 @@ impl Change {
 			| Fact::PaymentReceived { .. }
 			| Fact::CallAttempted
 			| Fact::CallLogged { .. } => (Topic::Lead, lead()),
+			Fact::ExperimentsDeclared(_) => (Topic::Experiments, None),
+			Fact::ExperimentConfigured(p) => (Topic::Experiments, Some(p.key.clone())),
 			Fact::RetiredCount => return None,
 		};
 		Some(Self {

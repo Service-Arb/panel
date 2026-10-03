@@ -11,6 +11,7 @@
 //! outside a transaction is atomic by itself and waits on `busy_timeout` the same way.
 
 pub mod events;
+pub mod experiments;
 pub mod places;
 pub mod pricing;
 pub mod projections;

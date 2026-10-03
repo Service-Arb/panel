@@ -88,6 +88,15 @@ impl Role {
 		}
 	}
 
+	/// A brand's experiments: switching one off, its weights, its holdout (what its sites
+	/// show whom). Every role reads them.
+	pub fn edits_experiments(self) -> bool {
+		match self {
+			Self::Operator => false,
+			Self::Admin => true,
+		}
+	}
+
 	pub fn grafana(self) -> GrafanaRole {
 		match self {
 			Self::Operator => GrafanaRole::Viewer,

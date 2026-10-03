@@ -7,6 +7,7 @@
 pub mod api;
 pub mod concierge;
 pub mod cookies;
+pub mod experiments;
 pub mod http;
 pub mod live;
 pub mod places;
