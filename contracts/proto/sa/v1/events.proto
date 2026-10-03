@@ -4,9 +4,10 @@
 // (`occurredAt`, `typeVersion`; the snake_case names are accepted too), `Timestamp` as an
 // RFC 3339 string, int64 as a JSON string or number.
 //
-// Closed vocabularies (source kinds, call outcomes, lead channels) are strings rather than
-// proto enums so the JSON carries the words the spec uses (`"site"`, `"no_answer"`) and
-// not `SOURCE_KIND_SITE`; the panel checks each against its list and rejects any other.
+// Closed vocabularies (source kinds, call outcomes, lead channels, suspect marks) are
+// strings rather than proto enums so the JSON carries the words the spec uses (`"site"`,
+// `"no_answer"`) and not `SOURCE_KIND_SITE`; the panel checks each against its list and
+// rejects any other.
 //
 // Compatibility: a message here is only ever extended with new optional fields. Anything
 // else — a field removed, retyped or made required — is a new `type_version`, a new
@@ -93,6 +94,12 @@ message LeadCreatedV1 {
   string channel = 1;
   // Who typed it in, for leads entered by hand (a panel user id).
   optional string entered_by = 2;
+  // rate_limited | too_fast. Set by a landing whose antispam flagged the submission but
+  // kept it, since it may still be a real person: `rate_limited` — the visitor's address
+  // sent more than the landing allows in its window; `too_fast` — the form was sent sooner
+  // after it was shown than a person types. Absent for a lead nothing flagged. A submission
+  // caught by the honeypot is dropped by the landing and never sent.
+  optional string suspect = 3;
   // What the customer said they need is their words, so it goes in `pii` (as `need`),
   // not here: properties are stored in the clear, `pii` encrypted.
 }

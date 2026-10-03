@@ -325,7 +325,13 @@ impl Panel {
 		let mut queued = 0;
 		for c in &new {
 			let lead = Some((c.brand_id.as_str(), c.lead_id.as_str()));
-			let note = |role| Ok(Note::NewLead(self.lead_note(c, role)?));
+			let note = |role| {
+				let lead = self.lead_note(c, role)?;
+				Ok(match c.suspect {
+					None => Note::NewLead(lead),
+					Some(suspect) => Note::SuspectLead { lead, suspect },
+				})
+			};
 			// Whoever typed the lead in knows of it already.
 			queued += self
 				.fan_out_one(&mut conn, Rule::NewLead, c.event_id, lead, c.entered_by, note, confirmed_since, now, locale)

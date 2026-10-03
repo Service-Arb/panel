@@ -169,10 +169,11 @@ every request is a new event (`201`).
 
 ```text
 GET    /me                                        {user_id, role, email, preferred_name, dev_sign_in}
-GET    /leads?stage&brand&location&overdue&created_from&created_to&cursor&limit
+GET    /leads?stage&brand&location&overdue&suspect&created_from&created_to&cursor&limit
                                                   {leads: [Lead], next_cursor}; newest created
                                                   first, limit ≤ 200 (default 50); created_*
-                                                  UTC days, both included
+                                                  UTC days, both included; suspect=only |
+                                                  exclude (absent: every lead)
 GET    /leads/counts?brand&location               {stages: {created: n, …, lost: n} (every
                                                   stage, 0 included), overdue, total}
 POST   /leads                                     {brand, location, need, phone?} → 201
@@ -255,11 +256,41 @@ intervals, has none of these faults. The tests check it against the paper's publ
 examples. It treats page views as independent trials, which they only approximately are; no
 correction is made for several variants against one control.
 
-`Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`, …)
+`Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`,
+`suspect` — null, `"rate_limited"` or `"too_fast"`, see [Suspect leads](#suspect-leads) —, …)
 plus `sla` while it waits for its first contact — `{waiting_since, waiting_seconds,
 overdue}`, overdue after 30 minutes — and `pii` (the customer's name, phone, need) for the
 roles that see it. A share is `{n, of, percent, small_sample}`; `percent` is null while `of`
 is under `min_sample` (§10.1), so the front end can only draw "n of of".
+
+## Suspect leads
+
+A landing's antispam sorts what its form receives three ways. A submission the honeypot
+caught is a bot: the landing drops it and the panel never hears of it. One that is plausible
+but doubtful is sent as an ordinary `lead.created` with `properties.suspect` set — it may be a
+person, so it is kept rather than lost:
+
+```text
+suspect absent    an ordinary lead
+"rate_limited"    the visitor's address sent more than the landing allows in its window
+"too_fast"        the form came back sooner after it was shown than a person types
+anything else     the event is rejected, like any word outside a closed vocabulary
+```
+
+The field is an extension of `LeadCreatedV1` (optional, `type_version` stays 1). A build
+before it knows no such field and rejects an event carrying one, so the landings send it only
+once the panel that takes it is live. The mark is the counted creation's (the first
+journaled), so a later clean `lead.created` does not clear it, and progress does not either:
+a suspect lead that is called and won is still one the antispam doubted.
+
+Where it shows: `leads.suspect` (`TEXT`, NULL or one of the two words by CHECK), recomputed
+like every column of the row, so the rebuild restores it from the journal; `suspect` on
+`Lead` in `/api/v1` and the `suspect=only|exclude` filter of `GET /leads`; a `changed{topic:
+leads}` like any new lead. `reporting_leads` carries the column; `reporting_funnel_daily`
+still counts a suspect lead in `leads` and every stage it reaches, and counts it apart in
+`suspect`, so a report that wants them out subtracts. Telegram tells of one under `new_lead`,
+headed as suspect with its reason and with the usual buttons, and does not remind of it past
+the contact SLA: nobody promised to call it back within 30 minutes.
 
 ## Live updates, `/api/v1/live`
 
@@ -396,8 +427,10 @@ POST /api/v1/telegram/link  GetMe asked afresh; 256 random bits, base64url; SHA-
                             token kept; the reply names the panel account
 /stop, DELETE …/link        unlinked; what the outbox still owed them is dropped
 fan-out (2 s)               new leads (their counted creation ≤ 1 h old, still `created`;
-                            not to whoever typed one in),
-                            leads created 30 min – 6.5 h ago never contacted (once each),
+                            not to whoever typed one in; a suspect one headed "Suspect lead
+                            (antispam: …)" instead of "New lead"),
+                            leads created 30 min – 6.5 h ago never contacted, suspect ones
+                            not (once each),
                             payments (≤ 24 h), sources silent ≥ 24 h (once per full day of
                             it) → telegram_fanout claims (rule, event) once, and in the same
                             transaction one outbox row per recipient, UNIQUE (rule, event, chat)

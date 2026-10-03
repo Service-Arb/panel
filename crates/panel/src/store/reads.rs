@@ -23,6 +23,9 @@ pub struct LeadRow {
 	pub job_id: Option<String>,
 	pub stage: Stage,
 	pub channel: Option<String>,
+	/// Why the landing's antispam doubted it (`rate_limited`, `too_fast`); `None` for an
+	/// ordinary lead.
+	pub suspect: Option<String>,
 	pub manual: bool,
 	pub created_at: Option<Timestamp>,
 	pub contacted_at: Option<Timestamp>,
@@ -54,6 +57,7 @@ struct Row {
 	job_id: Option<String>,
 	stage: String,
 	channel: Option<String>,
+	suspect: Option<String>,
 	manual: bool,
 	created_at: Option<i64>,
 	contacted_at: Option<i64>,
@@ -95,6 +99,7 @@ impl TryFrom<Row> for LeadRow {
 			location_id: r.location_id,
 			job_id: r.job_id,
 			channel: r.channel,
+			suspect: r.suspect,
 			manual: r.manual,
 			lost_reason: r.lost_reason,
 		})
@@ -104,7 +109,7 @@ impl TryFrom<Row> for LeadRow {
 // Macros, not consts, so every query stays a literal (`concat!`) that sqlx takes as audited.
 macro_rules! lead_select {
 	() => {
-		"SELECT l.brand_id, l.lead_id, l.location_id, l.job_id, l.stage, l.channel, l.manual, \
+		"SELECT l.brand_id, l.lead_id, l.location_id, l.job_id, l.stage, l.channel, l.suspect, l.manual, \
 		 l.created_at, l.contacted_at, l.quoted_at, l.won_at, l.completed_at, l.paid_at, l.lost_at, l.lost_reason, l.last_event_at, \
 		 COALESCE(l.created_at, l.last_event_at) AS sort_at, \
 		 c.id AS creation_id, c.pii_sealed, c.data_key_fp \
@@ -129,6 +134,8 @@ pub struct LeadFilter {
 	pub created_from: Option<Timestamp>,
 	/// Only leads created before this.
 	pub created_before: Option<Timestamp>,
+	/// Only the leads the antispam doubted (`Some(true)`), or only the others (`Some(false)`).
+	pub suspect: Option<bool>,
 	/// The last lead of the page before: `(sort_at, brand, lead)`.
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: i64,
@@ -146,6 +153,7 @@ pub async fn leads(conn: &mut SqliteConnection, f: &LeadFilter) -> eyre::Result<
 		 AND ($4 IS NULL OR (l.stage = 'created' AND l.contacted_at IS NULL AND l.created_at < $4)) \
 		 AND ($5 IS NULL OR (COALESCE(l.created_at, l.last_event_at), l.brand_id, l.lead_id) < ($5, $6, $7)) \
 		 AND ($9 IS NULL OR l.created_at >= $9) AND ($10 IS NULL OR l.created_at < $10) \
+		 AND ($11 IS NULL OR (l.suspect IS NOT NULL) = $11) \
 		 ORDER BY sort_at DESC, l.brand_id DESC, l.lead_id DESC LIMIT $8"
 	))
 	.bind(f.stage.map(Stage::as_str))
@@ -158,6 +166,7 @@ pub async fn leads(conn: &mut SqliteConnection, f: &LeadFilter) -> eyre::Result<
 	.bind(f.limit)
 	.bind(f.created_from.map(to_db))
 	.bind(f.created_before.map(to_db))
+	.bind(f.suspect)
 	.fetch_all(&mut *conn)
 	.await
 	.wrap_err("listing leads")?

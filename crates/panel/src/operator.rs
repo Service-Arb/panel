@@ -154,8 +154,21 @@ pub struct LeadQuery {
 	pub created_from: Option<Timestamp>,
 	/// Only those created before this.
 	pub created_before: Option<Timestamp>,
+	pub suspect: SuspectFilter,
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: u32,
+}
+
+/// Which leads to list by the antispam's doubt ([`panel_core::fact::LeadSuspect`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SuspectFilter {
+	/// Every lead, doubted or not.
+	#[default]
+	All,
+	/// Only those the antispam doubted.
+	Only,
+	/// Only those it did not.
+	Exclude,
 }
 
 /// How the funnel is cut.
@@ -414,6 +427,11 @@ impl Panel {
 			waiting_since_before: q.overdue.then(|| now - funnel::CONTACT_SLA),
 			created_from: q.created_from,
 			created_before: q.created_before,
+			suspect: match q.suspect {
+				SuspectFilter::All => None,
+				SuspectFilter::Only => Some(true),
+				SuspectFilter::Exclude => Some(false),
+			},
 			after: q.after.clone(),
 			limit: i64::from(limit) + 1,
 		};

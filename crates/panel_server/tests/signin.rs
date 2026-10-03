@@ -512,6 +512,73 @@ async fn the_screens_read_places_counts_slices_and_payments() {
 	assert_eq!(b.get(&app, "/api/v1/leads?created_from=yesterday").await.status, StatusCode::BAD_REQUEST);
 }
 
+/// A lead the landing's antispam doubted comes back marked, in the list and on its card, and
+/// the list is filtered on the mark.
+#[tokio::test]
+async fn suspect_leads_are_marked_and_filtered() {
+	let db = TestDb::create().await;
+	let (app, fake, panel) = setup(&db).await;
+	fake.with(|f| {
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
+	});
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+
+	let secret = panel
+		.add_source("aquafix-site", SourceKind::Site, [BrandId::parse("aquafix").unwrap()].into())
+		.await
+		.unwrap()
+		.unwrap()
+		.secret
+		.to_string();
+	let now = Timestamp::now();
+	let created = |lead: &str, minutes: i64, properties: Value| {
+		event(
+			"lead.created",
+			now - SignedDuration::from_mins(minutes),
+			"site",
+			json!({"brandId": "aquafix", "locationId": "paris-11", "leadId": lead}),
+			properties,
+		)
+	};
+	let events = [
+		created("L-1", 3, json!({"channel": "form"})),
+		created("L-2", 2, json!({"channel": "form", "suspect": "rate_limited"})),
+		created("L-3", 1, json!({"channel": "callback", "suspect": "too_fast"})),
+	];
+	let got = panel.ingest(sign("aquafix-site", &secret, &events, now).batch(), now).await.unwrap();
+	assert!(got.iter().all(|v| v.outcome == panel::Outcome::Accepted { unregistered: false }), "{got:?}");
+
+	async fn listed(b: &mut Browser, app: &Router, query: &str) -> Vec<(String, Value)> {
+		let r = b.get(app, &format!("/api/v1/leads{query}")).await;
+		assert_eq!(r.status, StatusCode::OK, "{query}: {}", r.body);
+		r.body["leads"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|l| (l["lead_id"].as_str().unwrap().to_owned(), l["suspect"].clone()))
+			.collect()
+	}
+	let all = listed(&mut b, &app, "").await;
+	assert_eq!(
+		all,
+		[("L-3".to_owned(), json!("too_fast")), ("L-2".to_owned(), json!("rate_limited")), ("L-1".to_owned(), Value::Null)],
+		"every lead by default, the field always present"
+	);
+	assert_eq!(listed(&mut b, &app, "?suspect=only").await, all[..2]);
+	assert_eq!(listed(&mut b, &app, "?suspect=exclude").await, all[2..]);
+	assert_eq!(listed(&mut b, &app, "?suspect=only&stage=created").await.len(), 2, "with the other filters");
+	let bad = b.get(&app, "/api/v1/leads?suspect=maybe").await;
+	assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.body);
+
+	let card = b.get(&app, "/api/v1/leads/aquafix/L-2").await;
+	assert_eq!(card.status, StatusCode::OK, "{}", card.body);
+	assert_eq!(card.body["lead"]["suspect"], "rate_limited");
+	let card = b.get(&app, "/api/v1/leads/aquafix/L-1").await;
+	assert_eq!(card.body["lead"]["suspect"], Value::Null);
+}
+
 #[tokio::test]
 async fn the_counts_beside_the_funnel_and_the_experiments() {
 	let db = TestDb::create().await;
