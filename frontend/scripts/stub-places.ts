@@ -121,6 +121,13 @@ export function placeFlags(brand: string, location: string): { has_settings: boo
   return { has_settings: !!p && Object.keys(p.settings).length > 0, withdrawn: p?.withdrawn ?? false };
 }
 
+/** Someone else saves the place (the live stub's doing): its phone flips between two numbers. */
+export function touchPlace(brand: string, slug: string, by: string): void {
+  write(`${brand}/${slug}`, by, (p) => {
+    p.settings = { ...p.settings, phone: p.settings.phone === "+33478000003" ? "+33478000033" : "+33478000003" };
+  });
+}
+
 export function addedPlaces(): { brand: string; location: string }[] {
   return added;
 }

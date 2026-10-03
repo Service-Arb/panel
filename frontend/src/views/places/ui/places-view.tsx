@@ -1,6 +1,6 @@
 "use client";
 
-import { Skeleton } from "@evinvest/uikit";
+import { Settled, Skeleton } from "@evinvest/uikit";
 import { useState } from "react";
 
 import { fetchFunnelByLocation } from "@/entities/funnel";
@@ -12,8 +12,8 @@ import { useT } from "@/shared/i18n";
 import { useResource } from "@/shared/lib/use-resource";
 import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
-import { PageHeader } from "@/shared/ui/page-header";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
+import { ScreenFrame } from "@/shared/ui/screen-frame";
 
 import { type PlaceRow, placeRows } from "../model/rows";
 import { PlaceCard } from "./place-card";
@@ -33,6 +33,7 @@ export function PlacesView() {
   const [version, setVersion] = useState(0);
   const [open, setOpen] = useState<PlaceKey | null>(null);
   const refresh = () => setVersion((v) => v + 1);
+  // The cards count leads, and say whether a place has live data or is withdrawn.
   const data = useResource(
     `places:${range.from}:${range.to}:${version}`,
     async () => {
@@ -40,12 +41,14 @@ export function PlacesView() {
       return { rows: placeRows(funnel.locations, places), minSample: funnel.min_sample, brands: brandsOf(places) };
     },
     `places:${range.from}:${range.to}`,
+    { live: ["places", "leads", "lead", "metrics"] },
   );
 
   return (
-    <div className="flex flex-col gap-4 p-4 md:p-6">
-      <PageHeader title={t("places.title")}>
-        {managesPlaces(role) && data.status === "ok" && (
+    <ScreenFrame
+      title={t("places.title")}
+      actions={
+        managesPlaces(role) && data.status === "ok" ? (
           <AddPlaceButton
             brands={data.data.brands}
             onAdded={(key) => {
@@ -53,12 +56,14 @@ export function PlacesView() {
               setOpen(key);
             }}
           />
-        )}
-      </PageHeader>
-      {data.status === "loading" && <Skeleton className="h-48 w-full" />}
-      {data.status === "error" && <ErrorState failure={data.failure} onRetry={data.reload} />}
-      {data.status === "ok" && <p className="text-sm text-ink-soft">{t("places.window", { days: WINDOW_DAYS, min: data.data.minSample })}</p>}
-      {data.status === "ok" && <PlaceGrid rows={data.data.rows} onOpen={setOpen} />}
+        ) : undefined
+      }
+    >
+      <Settled loading={data.status === "loading"} skeleton={<Skeleton className="h-48 w-full" />} className="flex flex-col gap-4">
+        {data.status === "error" && <ErrorState failure={data.failure} onRetry={data.reload} />}
+        {data.status === "ok" && <p className="text-sm text-ink-soft">{t("places.window", { days: WINDOW_DAYS, min: data.data.minSample })}</p>}
+        {data.status === "ok" && <PlaceGrid rows={data.data.rows} onOpen={setOpen} />}
+      </Settled>
       <PanelOverlay
         open={open !== null}
         onOpenChange={(o) => !o && setOpen(null)}
@@ -68,7 +73,7 @@ export function PlacesView() {
       >
         {open && <PlaceSettingsPanel key={`${open.brand}/${open.slug}`} place={open} onChanged={refresh} />}
       </PanelOverlay>
-    </div>
+    </ScreenFrame>
   );
 }
 

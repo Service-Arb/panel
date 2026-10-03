@@ -1,9 +1,9 @@
 "use client";
 
 import { Alert, AlertDescription, Button } from "@evinvest/uikit";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { ChannelPreview, ConflictAlert, type PlaceSettingsView } from "@/entities/place";
+import { ChannelPreview, ConflictAlert, type PlaceSettingsView, StaleAlert } from "@/entities/place";
 import { useT } from "@/shared/i18n";
 import { useButtonSize } from "@/shared/ui/touch";
 
@@ -19,13 +19,20 @@ export interface SettingsFormProps {
   onSaved: (view: PlaceSettingsView) => void;
   /** After a 409: read the place again, dropping this form's edits. */
   onReload: () => void;
+  /** The place as saved by someone else since this form was read; null while nobody has. */
+  fresher: PlaceSettingsView | null;
+  /** Start the form again from `fresher`. */
+  onTakeFresh: () => void;
 }
 
 /**
  * The editor of a place's live data. Re-mount it (key on `updated_at`) when the
  * place changes, so the draft starts from what was saved.
+ *
+ * Someone else's save arriving live never replaces what is typed here: with no
+ * edits the form simply takes it, with edits it says so and waits for the person.
  */
-export function SettingsForm({ place, onSaved, onReload }: SettingsFormProps) {
+export function SettingsForm({ place, onSaved, onReload, fresher, onTakeFresh }: SettingsFormProps) {
   const t = useT();
   const button = useButtonSize();
   const base = place.settings;
@@ -33,6 +40,9 @@ export function SettingsForm({ place, onSaved, onReload }: SettingsFormProps) {
   const { state, errors, save } = useSave(place, place.updated_at, onSaved);
   const set = (patch: Partial<SettingsDraft>) => setDraft((d) => ({ ...d, ...patch }));
   const changed = draftChanged(draft, base);
+  useEffect(() => {
+    if (fresher && !changed) onTakeFresh();
+  }, [fresher, changed, onTakeFresh]);
 
   return (
     <form
@@ -43,6 +53,7 @@ export function SettingsForm({ place, onSaved, onReload }: SettingsFormProps) {
       }}
     >
       {state.kind === "conflict" && <ConflictAlert onReload={onReload} />}
+      {fresher && changed && state.kind !== "conflict" && <StaleAlert fresher={fresher} onLoad={onTakeFresh} />}
       {state.kind === "invalid" && (
         <Alert variant="destructive">
           <AlertDescription>
@@ -60,7 +71,7 @@ export function SettingsForm({ place, onSaved, onReload }: SettingsFormProps) {
       <KeptFields rest={base.rest} />
       <ChannelPreview fields={editedOf(draft)} />
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" size={button()} disabled={!changed || !draftValid(draft) || state.kind === "saving" || state.kind === "conflict"}>
+        <Button type="submit" size={button()} disabled={!changed || !draftValid(draft) || state.kind === "saving" || state.kind === "conflict" || fresher !== null}>
           {t("placeSettings.save")}
         </Button>
         <Button type="button" variant="ghost" size={button()} disabled={!changed || state.kind === "saving"} onClick={() => setDraft(draftOf(base.edited))}>

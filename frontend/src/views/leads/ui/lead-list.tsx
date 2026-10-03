@@ -2,18 +2,22 @@
 
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@evinvest/uikit";
 
-import { type Lead, SlaBadge, StageBadge, contactOf } from "@/entities/lead";
+import { type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 
+import { leadKey } from "../model/live-merge";
+import type { Flash } from "../model/use-lead-list";
+import { flashAttr } from "./flash";
+
 /** Phone: the queue as a list; a tap opens the lead in a bottom sheet. */
-export function LeadList({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lead) => void }) {
+export function LeadList({ leads, flash, onOpen }: { leads: Lead[]; flash: ReadonlyMap<string, Flash>; onOpen: (lead: Lead) => void }) {
   const t = useT();
   return (
     <ItemGroup className="gap-2">
       {leads.map((lead) => {
         const c = contactOf(lead.pii);
         return (
-          <Item key={`${lead.brand}/${lead.lead_id}`} variant="outline" size="sm" asChild>
+          <Item key={leadKey(lead)} data-flash={flashAttr(flash.get(leadKey(lead)))} variant="outline" size="sm" asChild>
             <button type="button" className="w-full text-left" onClick={() => onOpen(lead)}>
               <ItemContent className="min-w-0">
                 <ItemTitle className="w-full truncate">{c.need ?? c.name ?? t("leads.noNeed")}</ItemTitle>
@@ -24,6 +28,7 @@ export function LeadList({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lead
               </ItemContent>
               <ItemActions className="flex-col items-end gap-1">
                 {lead.sla ? <SlaBadge sla={lead.sla} /> : <StageBadge stage={lead.stage} />}
+                <SuspectBadge suspect={lead.suspect} short />
               </ItemActions>
             </button>
           </Item>

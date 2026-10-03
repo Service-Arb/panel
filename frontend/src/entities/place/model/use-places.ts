@@ -13,6 +13,6 @@ const NONE: Place[] = [];
  * a new location, and the screen's own read reports a backend that is down.
  */
 export function usePlaces(version = 0): Place[] {
-  const places = useResource(`places:${version}`, fetchPlaces, "places");
+  const places = useResource(`places:${version}`, fetchPlaces, "places", { live: ["places"] });
   return places.status === "ok" ? places.data : NONE;
 }

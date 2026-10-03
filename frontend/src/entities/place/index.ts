@@ -16,3 +16,5 @@ export type { LocalTime } from "./lib/hours";
 export { ChannelPreview } from "./ui/channel-preview";
 export { ChangeEntry } from "./ui/change-entry";
 export { ConflictAlert } from "./ui/conflict-alert";
+export { StaleAlert } from "./ui/stale-alert";
+export { followsPlace, savedSince } from "./lib/live";

@@ -9,13 +9,21 @@
  *   STUB_MIN_SAMPLE=2 npm run dev:stub  # percents (and bars) from 2 leads, not 30
  *   STUB_POSTHOG=off npm run dev:stub   # no PostHog import yet: no day counts, no experiments
  *   STUB_PLACES_CONFLICT=1 npm run dev:stub  # every place-settings save answers 409
+ *   STUB_LIVE=off npm run dev:stub     # no /api/v1/live socket: the panel polls instead (4401 | 4403: close at once)
+ *   STUB_LIVE_EVERY=5 npm run dev:stub # live activity every 5 s rather than every 20–40 s
+ *
+ * Live: every write above is announced on the socket, and someone else is busy
+ * too — a new lead every 20–40 s, now and then a lead moved on, a place saved,
+ * an experiment re-imported.
  *
  * then `npm run dev` in another shell. Data is made up and says so ("stub").
  */
 import { randomUUID } from "node:crypto";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
+import type { Duplex } from "node:stream";
 
-import { addedPlaces, placeFlags, placeSettingsRoute } from "./stub-places.ts";
+import { changed, every, liveUpgrade } from "./stub-live.ts";
+import { addedPlaces, placeFlags, placeSettingsRoute, touchPlace } from "./stub-places.ts";
 
 const PORT = Number(process.env.STUB_PORT ?? 3121);
 const ROLE = process.env.STUB_ROLE === "admin" ? "admin" : "operator";
@@ -24,6 +32,8 @@ const CSRF = "stub-csrf";
 const MIN_SAMPLE = Number(process.env.STUB_MIN_SAMPLE ?? 30);
 const POSTHOG = process.env.STUB_POSTHOG !== "off";
 const MIN_EXPOSURES = 100;
+const LIVE_EVERY = process.env.STUB_LIVE_EVERY ? Number(process.env.STUB_LIVE_EVERY) : null;
+const USER_ID = "00000000-0000-7000-8000-000000000001";
 const Z95 = 1.959963984540054;
 
 type Json = Record<string, unknown>;
@@ -39,6 +49,8 @@ interface StubLead {
   manual: boolean;
   times: Record<string, string>;
   lost_reason: string | null;
+  /** The landing's antispam doubted it: "rate_limited" | "too_fast". */
+  suspect: string | null;
   pii: Json;
   events: Json[];
   payments: { billed: number; commission: number; currency: string }[];
@@ -49,7 +61,7 @@ function makeLead(i: number, stage: string, minutes: number, pii: Json, location
   const order = ["created", "contacted", "quoted", "won", "completed", "paid"];
   const times: Record<string, string> = { created_at: created };
   for (const s of order.slice(1, order.indexOf(stage) + 1)) times[`${s}_at`] = minsAgo(minutes - 10);
-  return { brand, lead_id: `stub-${i}`, location, stage, manual: false, times, lost_reason: null, pii, events: [event("lead.created", { channel: "form" }, "site", created)], payments: [] };
+  return { brand, lead_id: `stub-${i}`, location, stage, manual: false, times, lost_reason: null, suspect: null, pii, events: [event("lead.created", { channel: "form" }, "site", created)], payments: [] };
 }
 
 function event(type: string, properties: Json, kind = "panel", at = iso(now())): Json {
@@ -67,6 +79,9 @@ const leads: StubLead[] = [
   makeLead(8, "paid", 60 * 300, { name: "Jules (stub)", need: "New water heater" }),
   makeLead(9, "contacted", 60 * 30, { need: "Called without saying where" }, null),
 ];
+// Two the antispam doubted: one sender too often, one form back too soon.
+leads.push({ ...makeLead(10, "created", 12, { name: "Bot? (stub)", phone: "+33 6 00 00 00 10", need: "hot_water" }), suspect: "rate_limited" });
+leads.push({ ...makeLead(11, "contacted", 60 * 5, { need: "asdf (stub)", locality: "69003", bedrooms: 2 }, "paris-11", "vifnet"), suspect: "too_fast" });
 leads[5]!.payments.push({ billed: 23_100, commission: 2_310, currency: "EUR" });
 leads[7]!.payments.push({ billed: 208_000, commission: 20_800, currency: "EUR" }, { billed: 9_050, commission: 0, currency: "GBP" });
 
@@ -80,7 +95,7 @@ function leadDto(l: StubLead): Json {
   return {
     brand: l.brand, lead_id: l.lead_id, location: l.location, job_id: null, stage: l.stage, channel: "form", manual: l.manual,
     created_at: t("created_at"), contacted_at: t("contacted_at"), quoted_at: t("quoted_at"), won_at: t("won_at"),
-    completed_at: t("completed_at"), paid_at: t("paid_at"), lost_at: t("lost_at"), lost_reason: l.lost_reason,
+    completed_at: t("completed_at"), paid_at: t("paid_at"), lost_at: t("lost_at"), lost_reason: l.lost_reason, suspect: l.suspect,
     last_event_at: String(l.events.at(-1)?.occurred_at ?? since),
     sla: waiting ? { waiting_since: since, waiting_seconds: secs, overdue: secs > 30 * 60 } : null,
     pii: l.pii,
@@ -291,18 +306,26 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (ME_FAILURE === "503") return send(res, 503, { error: "sign-in is unavailable, try again" });
   if (ME_FAILURE === "401" || !signedIn(req)) return send(res, 401, { error: "sign in" }, { "set-cookie": "sa_session=; Path=/; Max-Age=0" });
 
-  if (path === "/me") return send(res, 200, { user_id: "00000000-0000-7000-8000-000000000001", role: ROLE, email: "stub@example.test", preferred_name: `Stub ${ROLE}` });
+  // The stub signs anyone in, as the backend's dev sign-in does: it says so.
+  if (path === "/me") return send(res, 200, { user_id: USER_ID, role: ROLE, email: "stub@example.test", preferred_name: `Stub ${ROLE}`, dev_sign_in: true });
   if (path === "/funnel") return send(res, 200, funnel(url.searchParams.get("brand"), url.searchParams.get("by")));
   if (path === "/experiments") return send(res, 200, experiments(url.searchParams.get("brand")));
   if (path === "/places" && req.method === "GET") return send(res, 200, places());
   if (path.startsWith("/places")) {
     const reply = placeSettingsRoute(req.method ?? "GET", path, write ? await readJson(req) : {}, ROLE, `stub-${ROLE}@example.test`);
+    if (reply && write && reply.status < 300) {
+      const [, , brand = null, slug = null] = path.split("/").map(decodeURIComponent);
+      changed("places", brand, slug);
+    }
     if (reply) return send(res, reply.status, reply.body);
   }
   if (path === "/leads/counts") return send(res, 200, counts(url.searchParams.get("brand"), url.searchParams.get("location")));
   if (path === "/leads" && req.method === "GET") {
     const q = url.searchParams;
+    const suspect = q.get("suspect");
+    if (suspect !== null && suspect !== "only" && suspect !== "exclude") return send(res, 400, { error: "suspect is not one of only, exclude" });
     const list = leads
+      .filter((l) => (suspect !== "only" || l.suspect !== null) && (suspect !== "exclude" || l.suspect === null))
       .filter((l) => (!q.get("stage") || l.stage === q.get("stage")) && (!q.get("brand") || l.brand === q.get("brand")) && (!q.get("location") || l.location === q.get("location")))
       .map(leadDto)
       .filter((l) => q.get("overdue") !== "true" || (l.sla as Json | null)?.overdue === true)
@@ -316,6 +339,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     l.lead_id = `p-${randomUUID()}`;
     l.manual = true;
     leads.push(l);
+    changed("leads", l.brand, l.lead_id);
     return send(res, 201, { brand: l.brand, lead_id: l.lead_id, event_id: randomUUID() });
   }
   if (path === "/sources" && ROLE !== "admin") return send(res, 403, { error: "your role may not do this" });
@@ -324,6 +348,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const b = await readJson(req);
     if (sources.some((s) => s.key_id === b.key_id)) return send(res, 409, { error: `a source ${String(b.key_id)} exists already` });
     sources.push({ key_id: b.key_id, kind: b.kind, brands: b.brands, created_at: iso(now()), revoked_at: null });
+    changed("sources");
     return send(res, 201, { key_id: b.key_id, secret: `stub-secret-${randomUUID()}` });
   }
   const revoke = path.match(/^\/sources\/([^/]+)$/);
@@ -331,6 +356,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const s = sources.find((x) => x.key_id === decodeURIComponent(revoke[1]!));
     if (!s) return send(res, 404, { error: "not found" });
     s.revoked_at = iso(now());
+    changed("sources");
     return send(res, 204);
   }
 
@@ -339,6 +365,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (!m || !lead) return send(res, 404, { error: "not found" });
   const rest = m[3] ?? "";
   if (rest === "" && req.method === "GET") return send(res, 200, { lead: leadDto(lead), events: lead.events });
+  // Every route below writes to the lead: announced once the reply is out, as after a commit.
+  res.once("finish", () => res.statusCode < 300 && changed("lead", lead.brand, lead.lead_id));
   if (rest === "/stage") {
     const b = await readJson(req);
     const stage = String(b.stage);
@@ -369,7 +397,37 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   return send(res, 404, { error: "not found" });
 }
 
-createServer((req, res) => {
+// ---- someone else at work --------------------------------------------------------------
+
+const NEEDS = ["Dripping tap (stub)", "No hot water (stub)", "Clogged kitchen sink (stub)", "Toilet runs all night (stub)", "Window cleaning, 3 floors (stub)"];
+const WHERE: [string, string][] = [["aquafix", "lyon-3"], ["aquafix", "lyon-7"], ["vifnet", "paris-11"]];
+const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)] as T;
+
+every(LIVE_EVERY, () => {
+  const [brand, location] = pick(WHERE);
+  const l = makeLead(leads.length + 1, "created", 0, { name: "Walk-in (stub)", phone: "+33 6 00 00 00 99", need: pick(NEEDS) }, location, brand);
+  l.lead_id = `live-${randomUUID().slice(0, 8)}`;
+  // Now and then the antispam doubts one, as a landing would mark it.
+  if (Math.random() < 0.3) l.suspect = pick(["rate_limited", "too_fast"]);
+  leads.push(l);
+  changed("leads", l.brand, l.lead_id);
+});
+every(LIVE_EVERY === null ? 45 : LIVE_EVERY * 2, () => {
+  const waiting = leads.filter((l) => l.stage === "created");
+  if (waiting.length === 0) return;
+  const l = pick(waiting);
+  l.stage = "contacted";
+  l.times.contacted_at = iso(now());
+  l.events.push(event("lead.contacted", { channel: "phone" }));
+  changed("lead", l.brand, l.lead_id);
+});
+every(LIVE_EVERY === null ? 90 : LIVE_EVERY * 3, () => {
+  touchPlace("aquafix", "lyon-3", "colleague@example.test (stub)");
+  changed("places", "aquafix", "lyon-3");
+});
+every(LIVE_EVERY === null ? 120 : LIVE_EVERY * 4, () => changed("experiments"));
+
+const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   if (url.pathname === "/auth/login") {
     // No concierge: signing in is instant. Plain names, as the backend uses over http.
@@ -384,4 +442,10 @@ createServer((req, res) => {
     return;
   }
   send(res, 404, { error: "not found" });
-}).listen(PORT, "127.0.0.1", () => console.log(`panel dev stub on http://127.0.0.1:${PORT} as ${ROLE}`));
+});
+server.on("upgrade", (req: IncomingMessage, socket: Duplex) => {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  if (url.pathname !== "/api/v1/live") return socket.destroy();
+  liveUpgrade(req, socket, { signedIn: signedIn(req) && ME_FAILURE !== "401", userId: USER_ID });
+});
+server.listen(PORT, "127.0.0.1", () => console.log(`panel dev stub on http://127.0.0.1:${PORT} as ${ROLE}`));

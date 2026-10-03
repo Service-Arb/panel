@@ -28,3 +28,30 @@ describe("the SLA as time passes", () => {
     expect(slaAt(sla, at(31)).overdue).toBe(true);
   });
 });
+
+describe("what else the customer left", () => {
+  it("names the keys the panel knows and lists the rest as text, by key", async () => {
+    const { extrasOf } = await import("@/entities/lead/model/lead");
+    const got = extrasOf({ name: "Ann", need: "hot_water", bedrooms: 3, locality: "69003", zone: "<b>east</b>", extra: { floor: 2 }, blank: " " });
+    expect(got.labelled).toEqual([
+      { key: "locality", value: "69003" },
+      { key: "bedrooms", value: "3" },
+    ]);
+    expect(got.other).toEqual([
+      { key: "extra", value: '{"floor":2}' },
+      { key: "zone", value: "<b>east</b>" },
+    ]);
+    expect(extrasOf(null)).toEqual({ labelled: [], other: [] });
+  });
+});
+
+describe("the suspect mark", () => {
+  it("is null, or one of the antispam's two words", async () => {
+    const { leadParser } = await import("@/entities/lead/model/lead");
+    const { parse } = await import("@/shared/lib/parse");
+    const row = { brand: "a", lead_id: "l", stage: "created", manual: false, last_event_at: "t" };
+    expect(parse(leadParser, row).suspect).toBeNull();
+    expect(parse(leadParser, { ...row, suspect: "too_fast" }).suspect).toBe("too_fast");
+    expect(() => parse(leadParser, { ...row, suspect: "maybe" })).toThrow(/suspect/);
+  });
+});

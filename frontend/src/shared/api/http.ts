@@ -137,14 +137,17 @@ export function createHttp(deps: HttpDeps): Http {
 /** The backend's sign-in; a full navigation, since it answers with a redirect to concierge. */
 export const SIGN_IN_PATH = "/auth/login";
 
+/** The session is gone (an HTTP 401, the live socket's 4401): off to the backend's sign-in. */
+export function goToSignIn(): void {
+  // /auth/login is the Rust backend's route, not a page of this app: only a full navigation reaches it.
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  if (typeof window !== "undefined") window.location.assign(SIGN_IN_PATH);
+}
+
 export const http: Http = createHttp({
   fetch: (input, init) => fetch(input, init),
   cookie: () => (typeof document === "undefined" ? "" : document.cookie),
-  onUnauthenticated: () => {
-    // /auth/login is the Rust backend's route, not a page of this app: only a full navigation reaches it.
-    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-    if (typeof window !== "undefined") window.location.assign(SIGN_IN_PATH);
-  },
+  onUnauthenticated: goToSignIn,
 });
 
 /** For bodies the screens do not read (`201 {event_id}`, `204`). */

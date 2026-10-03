@@ -9,6 +9,8 @@ export interface Me {
   role: Role;
   email: string;
   preferred_name: string;
+  /** The backend signs anyone in without concierge (local work only); the shell says so loudly. */
+  dev_sign_in: boolean;
 }
 
 /**

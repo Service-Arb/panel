@@ -1,9 +1,12 @@
 import { http } from "@/shared/api";
-import { object, oneOf, str } from "@/shared/lib/parse";
+import { type Parser, bool, object, oneOf, str } from "@/shared/lib/parse";
 
 import { type Me, ROLES } from "../model/role";
 
-const meParser = object({ user_id: str, role: oneOf(ROLES), email: str, preferred_name: str });
+/** A backend from before the flag says nothing: that is not dev sign-in. */
+const flag: Parser<boolean> = (v, path) => (v === undefined ? false : bool(v, path));
+
+const meParser = object({ user_id: str, role: oneOf(ROLES), email: str, preferred_name: str, dev_sign_in: flag });
 
 export function fetchMe(): Promise<Me> {
   return http.get("/api/v1/me", meParser);

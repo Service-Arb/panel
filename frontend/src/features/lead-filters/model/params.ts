@@ -14,6 +14,7 @@ export function leadFilterFrom(params: URLSearchParams): LeadFilter {
     overdue: params.get("overdue") === "1",
     createdFrom: day(params.get("created_from")),
     createdTo: day(params.get("created_to")),
+    suspect: suspectFilterOf(params.get("suspect")),
   };
 }
 
@@ -26,7 +27,13 @@ export function paramsWith(params: URLSearchParams, patch: Partial<LeadFilter>):
   if ("overdue" in patch) set("overdue", patch.overdue ? "1" : null);
   if ("createdFrom" in patch) set("created_from", patch.createdFrom ?? null);
   if ("createdTo" in patch) set("created_to", patch.createdTo ?? null);
+  if ("suspect" in patch) set("suspect", patch.suspect ?? null);
   return next;
+}
+
+/** The URL's word, if it is one the API takes (anything else answers 400): "every lead" otherwise. */
+export function suspectFilterOf(v: string | null): LeadFilter["suspect"] {
+  return v === "only" || v === "exclude" ? v : null;
 }
 
 export function stageOrNull(v: string | null): Stage | null {

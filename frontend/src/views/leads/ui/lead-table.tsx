@@ -2,12 +2,16 @@
 
 import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@evinvest/uikit";
 
-import { type Lead, SlaBadge, StageBadge, contactOf } from "@/entities/lead";
+import { type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
 import { useLocale, useT } from "@/shared/i18n";
 import { formatDateTime } from "@/shared/lib/format";
 
+import { leadKey } from "../model/live-merge";
+import type { Flash } from "../model/use-lead-list";
+import { flashAttr } from "./flash";
+
 /** Desktop: the queue as a table; a row opens the lead beside it. */
-export function LeadTable({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lead) => void }) {
+export function LeadTable({ leads, flash, onOpen }: { leads: Lead[]; flash: ReadonlyMap<string, Flash>; onOpen: (lead: Lead) => void }) {
   const t = useT();
   const locale = useLocale();
   return (
@@ -25,7 +29,7 @@ export function LeadTable({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lea
         {leads.map((lead) => {
           const c = contactOf(lead.pii);
           return (
-            <TableRow key={`${lead.brand}/${lead.lead_id}`} className="cursor-pointer" onClick={() => onOpen(lead)}>
+            <TableRow key={leadKey(lead)} data-flash={flashAttr(flash.get(leadKey(lead)))} className="cursor-pointer" onClick={() => onOpen(lead)}>
               <TableCell className="max-w-72">
                 {/* The row takes the click; the button is its keyboard stop. */}
                 <button type="button" className="block w-full truncate rounded-sm text-left text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -36,7 +40,10 @@ export function LeadTable({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lea
                 {lead.brand} · {lead.location ?? "—"} {lead.manual && <Badge variant="outline">{t("leads.manual")}</Badge>}
               </TableCell>
               <TableCell>
-                <StageBadge stage={lead.stage} />
+                <span className="flex flex-wrap items-center gap-1">
+                  <StageBadge stage={lead.stage} />
+                  <SuspectBadge suspect={lead.suspect} short />
+                </span>
               </TableCell>
               <TableCell>
                 <SlaBadge sla={lead.sla} />

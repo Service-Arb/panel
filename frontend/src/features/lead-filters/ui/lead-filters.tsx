@@ -10,7 +10,7 @@ import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
 import { FilterSelect } from "@/shared/ui/filter-select";
 import { useButtonSize } from "@/shared/ui/touch";
 
-import { stageOrNull } from "../model/params";
+import { stageOrNull, suspectFilterOf } from "../model/params";
 import { StageSegments } from "./stage-segments";
 
 type Props = { filter: LeadFilter; brands: string[]; locations: string[]; counts: LeadCounts | null; onChange: (patch: Partial<LeadFilter>) => void };
@@ -41,7 +41,7 @@ export function LeadFilters(props: Props) {
     );
   }
 
-  const more = filter.brand !== null || filter.location !== null || filter.overdue;
+  const more = filter.brand !== null || filter.location !== null || filter.overdue || filter.suspect !== null;
   return (
     <div className="flex flex-col gap-2">
       <StageSegments stage={filter.stage} counts={props.counts} onChange={(stage) => onChange({ stage })} />
@@ -65,6 +65,16 @@ function SecondaryFilters({ filter, brands, locations, onChange }: Props) {
     <>
       <FilterSelect label={t("filter.brand")} allLabel={t("filter.brand.all")} value={filter.brand} options={brands.map((b) => ({ value: b, label: b }))} onChange={(brand) => onChange({ brand, location: null })} />
       <FilterSelect label={t("filter.location")} allLabel={t("filter.location.all")} value={filter.location} options={locations.map((l) => ({ value: l, label: l }))} onChange={(location) => onChange({ location })} />
+      <FilterSelect
+        label={t("filter.suspect")}
+        allLabel={t("filter.suspect.all")}
+        value={filter.suspect}
+        options={[
+          { value: "only", label: t("filter.suspect.only") },
+          { value: "exclude", label: t("filter.suspect.exclude") },
+        ]}
+        onChange={(v) => onChange({ suspect: suspectFilterOf(v) })}
+      />
       <div className="flex items-center gap-2 px-1 max-md:min-h-11">
         <Switch id={`${id}-overdue`} checked={filter.overdue} onCheckedChange={(overdue) => onChange({ overdue })} />
         <Label htmlFor={`${id}-overdue`}>{t("filter.overdue")}</Label>

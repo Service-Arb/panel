@@ -6,12 +6,12 @@ Sources (admin), and on a phone a bottom tab bar with "More" in place of the sid
 
 ```text
 app/                 routes: (panel)/ is everything behind sign-in, signed-out/ is not
-src/views/           one slice per screen, plus shell/ (sidebar, tab bar, access states)
+src/views/           one slice per screen, plus shell/ (the kit's AppShell: rail, tab bar, nav marks, access states)
 src/features/        call-lead · move-stage · record-payment · create-lead ·
                      lead-filters · funnel-filters · manage-sources · sign-out ·
                      edit-place-settings · revert-place-change · withdraw-place · add-place
 src/entities/        session · lead · funnel · experiment · place · source — types, response checks, requests
-src/shared/          api/ (fetch, CSRF, the gate's answers), i18n/, lib/, ui/
+src/shared/          api/ (fetch, CSRF, the gate's answers), i18n/, lib/ (live/: the socket), ui/
 messages/            en.json (the source of keys) and ru.json
 scripts/dev-stub.ts  a stand-in backend for local work (place settings in scripts/stub-places.ts)
 tests/               vitest, in Node: the rules the screens obey live in plain modules
@@ -23,7 +23,8 @@ tests/               vitest, in Node: the rules the screens obey live in plain m
 npm ci
 npm run dev:stub     # :3121 — the operator API over made-up leads; STUB_ROLE=admin, STUB_ME=401|403|503,
                      # STUB_MIN_SAMPLE=2 for percents on so few leads, STUB_POSTHOG=off for no import yet,
-                     # STUB_PLACES_CONFLICT=1 for a 409 on every place-settings save and revert
+                     # STUB_PLACES_CONFLICT=1 for a 409 on every place-settings save and revert,
+                     # STUB_LIVE=off for no socket (the panel polls), STUB_LIVE_EVERY=5 for busier live activity
 npm run dev          # :3120 — proxies /api and /auth to PANEL_DEV_BACKEND (default the stub)
 ```
 
@@ -51,6 +52,33 @@ aquafix has one. What that needs of the backend and the flake:
   `out/` in the container beside the binary; the entrypoint sets the directory.
 - The IngressRoute for `sa.evinvest.ltd` sends everything to the panel's Service
   except `/api/ingest` (in-cluster only, `docs/ARCHITECTURE.md`).
+
+## Live updates
+
+The shell opens one WebSocket per tab, same origin, `/api/v1/live` (cookie
+session). The server says `changed` with a topic after each commit and `resync`
+when the client should re-read everything; it closes with 4401 (session gone:
+the browser goes to sign-in) or 4403 (access lost: the "no access" screen).
+`shared/lib/live` reconnects with exponential backoff and jitter, re-reads every
+mounted screen after any reconnect, and falls back to a re-read every 60 s when
+the socket cannot be had (three attempts in a row that never opened). A hidden
+tab keeps an open socket but makes no attempts; visible again, it reconnects at
+once.
+
+Reads follow topics through `useResource(…, { live })`, debounced (a batch
+import sends one `changed` per event). What the screens do with it:
+
+- **Leads**: arrivals wait in a "New leads: N — Show" banner rather than moving
+  the rows; rows on screen update in place and glow; a row that left the filter
+  is re-read and kept. The open card follows its lead and notes a change made
+  elsewhere (the event names no person, so the note says when and what).
+- **Locations**: an open form is never overwritten — with no edits it takes the
+  newer data, with edits it says who saved and offers to load it (saving would
+  be refused with 409 anyway).
+- **Nav**: Leads counts new leads since the screen was last in front of you (the
+  baseline kept in localStorage per person), Locations the places changed,
+  Experiments and Sources a dot; opening the screen clears it. While the tab is
+  not focused its title counts new leads: `(3) Leads — Service-Arb panel`.
 
 ## Place settings
 

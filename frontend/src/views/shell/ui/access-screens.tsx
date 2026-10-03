@@ -39,7 +39,7 @@ export function ShellSkeleton() {
   const t = useT();
   return (
     <div className="flex min-h-svh" aria-busy="true" aria-label={t("state.loading")}>
-      <Skeleton className="hidden h-svh w-64 md:block" />
+      <Skeleton className="hidden h-svh w-(--shell-rail-w) md:block" />
       <div className="flex flex-1 flex-col gap-3 p-6">
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-32 w-full" />

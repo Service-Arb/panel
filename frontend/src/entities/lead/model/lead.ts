@@ -4,6 +4,10 @@ import { type Infer, arrayOf, bool, nullable, num, object, oneOf, record, record
 export const STAGES = ["created", "contacted", "quoted", "won", "completed", "paid", "lost"] as const;
 export type Stage = (typeof STAGES)[number];
 
+/** Why a landing's antispam doubted a lead it still sent (docs/ARCHITECTURE.md, "Suspect leads"). */
+export const SUSPECTS = ["rate_limited", "too_fast"] as const;
+export type Suspect = (typeof SUSPECTS)[number];
+
 const slaParser = object({ waiting_since: str, waiting_seconds: num, overdue: bool });
 
 export const leadParser = object({
@@ -22,6 +26,8 @@ export const leadParser = object({
   paid_at: nullable(str),
   lost_at: nullable(str),
   lost_reason: nullable(str),
+  /** Kept for good once marked: progress does not clear it. */
+  suspect: nullable(oneOf(SUSPECTS)),
   last_event_at: str,
   /** Set while the lead waits for its first contact; overdue after 30 minutes. */
   sla: nullable(slaParser),
@@ -109,6 +115,40 @@ export function contactOf(pii: Record<string, unknown> | null): Contact {
     return typeof v === "string" && v.trim() !== "" ? v : null;
   };
   return { name: text("name"), phone: text("phone"), email: text("email"), need: text("need") };
+}
+
+/** Keys a site sends that have a label of their own; `need` may be a site's raw id (`hot_water`) and shows as sent. */
+export const LABELLED_PII = ["locality", "bedrooms"] as const;
+export type LabelledPii = (typeof LABELLED_PII)[number];
+
+const CONTACT_KEYS: readonly string[] = ["name", "phone", "email", "need"];
+
+/** A value the customer left, as plain text: never markup — it is their input. */
+function asText(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") return v.trim() === "" ? null : v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  return JSON.stringify(v);
+}
+
+/**
+ * Everything else the customer left: the labelled keys first, in their order,
+ * then the rest by key — a site may send fields the panel has no name for yet.
+ */
+export function extrasOf(pii: Record<string, unknown> | null): { labelled: { key: LabelledPii; value: string }[]; other: { key: string; value: string }[] } {
+  const labelled = LABELLED_PII.flatMap((key) => {
+    const value = asText(pii?.[key]);
+    return value === null ? [] : [{ key, value }];
+  });
+  const known: readonly string[] = [...CONTACT_KEYS, ...LABELLED_PII];
+  const other = Object.entries(pii ?? {})
+    .filter(([k]) => !known.includes(k))
+    .flatMap(([key, v]) => {
+      const value = asText(v);
+      return value === null ? [] : [{ key, value }];
+    })
+    .sort((a, b) => a.key.localeCompare(b.key));
+  return { labelled, other };
 }
 
 /**
