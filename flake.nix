@@ -124,10 +124,8 @@
           # PANEL_DB_PATH is the container's own env (below); the rest the deploy supplies.
           requiredEnv = [ "PANEL_DB_PATH" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
           # from the sops-backed Secret, never literal env
-          secretEnv = [ "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" "POSTHOG_PERSONAL_API_KEY" ];
-          # without POSTHOG_PROJECT_ID and POSTHOG_PERSONAL_API_KEY the hourly import is off
-          # (serve warns); one without the other fails the boot
-          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" "POSTHOG_API_HOST" "POSTHOG_PROJECT_ID" "POSTHOG_PERSONAL_API_KEY" ];
+          secretEnv = [ "PANEL_DATA_KEY" "SENTRY_DSN" "RP_CLIENT_SECRET_SA" "TELEGRAM_BOT_TOKEN" ];
+          optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" ];
           ingress = {
             # in-cluster only, by service DNS: the landings' ingest and place reads
             # (docs/ARCHITECTURE.md, Deploy requirements)
@@ -138,9 +136,8 @@
           egress = {
             # concierge's gRPC, at the address CONCIERGE_GRPC_ADDR names
             grpcEnv = [ "CONCIERGE_GRPC_ADDR" ];
-            # the Bot API; PostHog's query API (POSTHOG_API_HOST's default — follow it if it
-            # is pointed elsewhere; the capture host us.i.posthog.com is not this one)
-            hosts = [ "api.telegram.org:443" "us.posthog.com:443" ];
+            # the Bot API
+            hosts = [ "api.telegram.org:443" ];
           };
         };
 

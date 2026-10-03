@@ -1,5 +1,4 @@
-//! The projections — `leads`, `calls`, `payments`, and the counts of
-//! [`super::metrics`] — derived from registered events only.
+//! The projections — `leads`, `calls`, `payments` — derived from registered events only.
 //!
 //! A lead is never patched: every event about it recomputes its row from all of its
 //! events ([`panel_core::lead::fold`]), inside the transaction that journaled the event. That
@@ -30,7 +29,7 @@ pub async fn apply(conn: &mut SqliteConnection, event: &Recorded) -> eyre::Resul
 	Ok(())
 }
 
-/// The event's own row, if its type has a table: a call, a payment, a count. Idempotent.
+/// The event's own row, if its type has a table: a call, a payment. Idempotent.
 pub async fn insert_row(conn: &mut SqliteConnection, e: &Recorded) -> eyre::Result<()> {
 	let lead = e.subject.lead_id.as_ref().map(LeadId::as_str);
 	let location = e.subject.location_id.as_ref().map(LocationId::as_str);
@@ -78,8 +77,7 @@ pub async fn insert_row(conn: &mut SqliteConnection, e: &Recorded) -> eyre::Resu
 			.await
 			.wrap_err("projecting a payment")?;
 		}
-		Fact::Metric(m) => super::metrics::project(conn, e, m).await?,
-		Fact::LeadCreated { .. } | Fact::LeadContacted { .. } | Fact::LeadQuoted { .. } | Fact::JobWon | Fact::LeadLost { .. } | Fact::JobCompleted => {}
+		Fact::LeadCreated { .. } | Fact::LeadContacted { .. } | Fact::LeadQuoted { .. } | Fact::JobWon | Fact::LeadLost { .. } | Fact::JobCompleted | Fact::RetiredCount => {}
 	}
 	Ok(())
 }
@@ -169,7 +167,7 @@ async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result
 /// waits for it to commit rather than writing into a half-built state, and readers keep
 /// seeing the projections as they were until then.
 pub async fn clear(conn: &mut SqliteConnection) -> eyre::Result<()> {
-	sqlx::raw_sql("DELETE FROM leads; DELETE FROM calls; DELETE FROM payments; DELETE FROM daily_location_metrics; DELETE FROM daily_experiment_metrics")
+	sqlx::raw_sql("DELETE FROM leads; DELETE FROM calls; DELETE FROM payments")
 		.execute(&mut *conn)
 		.await
 		.wrap_err("clearing the projections")?;

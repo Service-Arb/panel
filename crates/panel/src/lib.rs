@@ -10,16 +10,13 @@
 //! `panel_core`; [`store`] is SQLite; [`seal`] encrypts what must not sit in the clear.
 //! [`operator`] is what a signed-in user does and reads, as events through the same journal;
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
-//! bot's notifications and buttons; [`posthog`] the hourly import of the site's counts, and
-//! [`counts`] what the screens read of them; [`place`] the places' live settings the sites
+//! bot's notifications and buttons; [`place`] the places' live settings the sites
 //! read and the panel edits; [`pricing`] the brands' price lists, the same; [`live`] the bus that tells the server's sockets what changed,
 //! published here after each commit.
 
-pub mod counts;
 pub mod live;
 pub mod operator;
 pub mod place;
-pub mod posthog;
 pub mod pricing;
 pub mod seal;
 pub mod session;
@@ -298,7 +295,7 @@ impl Panel {
 		self.journal(&incoming, Some(&grant.key_id), status, fact, now).await
 	}
 
-	/// Journals an event the panel writes itself — an operator's action, an imported count —
+	/// Journals an event the panel writes itself — an operator's action, an admin's setting —
 	/// decoded and judged exactly as a source's, with no signing key. `Err` inside: the
 	/// registry refuses it, and why.
 	async fn write_own(&self, raw: Value, now: Timestamp) -> eyre::Result<Result<(Outcome, Envelope), Invalid>> {
@@ -361,12 +358,12 @@ impl Panel {
 				fact,
 			};
 			projections::apply(&mut tx, &recorded).await?;
-			change = Some(live::Change::of_event(&recorded, now));
+			change = live::Change::of_event(&recorded, now);
 		}
 		tx.commit().await.wrap_err("committing an event")?;
 		// Every event that reaches the projections passes here, whoever wrote it: this one
-		// publication is what keeps ingest, the operator's actions, the buttons and the import
-		// from forgetting to. An unregistered event changes no read, and says nothing.
+		// publication is what keeps ingest, the operator's actions and the buttons from
+		// forgetting to. An unregistered event changes no read, and says nothing.
 		if let Some(change) = change {
 			self.live.changed(change);
 		}

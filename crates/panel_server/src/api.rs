@@ -23,7 +23,7 @@ use panel_core::{
 	Invalid,
 	event::SourceKind,
 	fact::LeadFlow,
-	funnel::{MIN_SAMPLE, Share, Totals},
+	funnel::{MIN_SAMPLE, Share},
 	ids::{BrandId, JobId, LeadId, LocationId},
 	lead::Stage,
 };
@@ -86,7 +86,6 @@ pub fn routes() -> Router<Panel> {
 		.route("/leads/{brand}/{lead}/calls/{attempt}/outcome", post(call_outcome))
 		.route("/leads/{brand}/{lead}/payments", post(payment))
 		.route("/funnel", get(funnel))
-		.route("/experiments", get(crate::counts::experiments))
 		.route("/places", get(places))
 		.route("/sources", get(sources))
 }
@@ -631,37 +630,16 @@ async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::
 		Some(_) => return Err(ApiError::BadRequest("by is location, or absent".into())),
 	};
 	let brand = q.brand.as_deref().map(BrandId::parse).transpose()?;
-	let mut slices = panel.funnel_slices(from, to, brand.as_ref(), by).await?;
-	let mut site = panel.site_slices(from, to, brand.as_ref(), by).await?;
-	if by == FunnelBy::Location {
-		// A location with visits and no lead yet is a row of the funnel too.
-		for s in &site {
-			if !slices.iter().any(|l| l.brand == s.brand && l.location == s.location) {
-				slices.push(FunnelSlice {
-					brand: s.brand.clone(),
-					location: s.location.clone(),
-					totals: Totals::default(),
-					payments: Vec::new(),
-				});
-			}
-		}
-		slices.sort_by(|a, b| (&a.brand, a.location.is_none(), &a.location).cmp(&(&b.brand, b.location.is_none(), &b.location)));
-	}
-	let mut aggregate_of = |brand: &Option<String>, location: &Option<String>| {
-		let at = site.iter().position(|s| &s.brand == brand && &s.location == location);
-		crate::counts::aggregate_body(at.map(|i| site.swap_remove(i)).unwrap_or_default())
-	};
+	let slices = panel.funnel_slices(from, to, brand.as_ref(), by).await?;
 	let mut body = json!({
 		"from": from.to_string(),
 		"to": to.to_string(),
 		"brand": brand.as_ref().map(BrandId::as_str),
 		"min_sample": MIN_SAMPLE,
-		"aggregate_source": crate::counts::source_body(panel.posthog_imported_at().await?),
 	});
 	match by {
 		FunnelBy::All => {
 			let whole = slices.into_iter().next().ok_or_else(|| ApiError::Internal(eyre::eyre!("the whole funnel came back empty")))?;
-			body["aggregate"] = aggregate_of(&None, &None);
 			for (k, v) in slice_body(whole) {
 				body[k] = v;
 			}
@@ -673,7 +651,6 @@ async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::
 					let mut row = serde_json::Map::new();
 					row.insert("brand".into(), json!(s.brand));
 					row.insert("location".into(), json!(s.location));
-					row.insert("aggregate".into(), aggregate_of(&s.brand, &s.location));
 					row.extend(slice_body(s));
 					Value::Object(row)
 				})

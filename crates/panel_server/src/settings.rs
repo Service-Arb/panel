@@ -48,15 +48,6 @@ ev_lib::settings! {
 		/// origin behind the API's routes; the image sets it. Unset: `serve` answers the API
 		/// alone, and says so.
 		panel_web_dir: Option<String>,
-		/// PostHog's private API (the query API), not the capture host the landings send to
-		/// (`us.i.posthog.com` answers no queries).
-		posthog_api_host: String = "https://us.posthog.com",
-		/// The PostHog project the landings send to (Service-Arb's). Unset, with the key below:
-		/// no import, and `serve` says so.
-		posthog_project_id: Option<String>,
-		/// A personal API key with `query:read` on that project, nothing more.
-		#[secret]
-		posthog_personal_api_key: Option<String>,
 		/// Development only: `admin` or `operator`. Signs whoever opens `/auth/login` in as a
 		/// made-up user of that role, without concierge. Refused at start in any profile but
 		/// `development`, beside any concierge variable, and unless PANEL_PUBLIC_ORIGIN is
@@ -114,49 +105,6 @@ impl Settings {
 			token: token.to_owned(),
 			username: self.telegram_bot_username.as_deref().map(str::trim).filter(|u| !u.is_empty()).map(str::to_owned),
 			locale: self.telegram_locale.parse()?,
-		}))
-	}
-}
-
-/// The PostHog import, when it is configured.
-pub struct PosthogSettings {
-	pub api_host: String,
-	pub project_id: String,
-	pub api_key: String,
-}
-
-impl std::fmt::Debug for PosthogSettings {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("PosthogSettings")
-			.field("api_host", &self.api_host)
-			.field("project_id", &self.project_id)
-			.finish_non_exhaustive()
-	}
-}
-
-impl Settings {
-	/// `None` without the project and the key: the import is off. One without the other is a
-	/// mistake, named.
-	pub fn posthog(&self) -> eyre::Result<Option<PosthogSettings>> {
-		let set = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
-		let (project, key) = match (set(&self.posthog_project_id), set(&self.posthog_personal_api_key)) {
-			(None, None) => return Ok(None),
-			(Some(p), Some(k)) => (p, k),
-			(Some(_), None) => eyre::bail!("the PostHog import needs POSTHOG_PERSONAL_API_KEY too"),
-			(None, Some(_)) => eyre::bail!("the PostHog import needs POSTHOG_PROJECT_ID too"),
-		};
-		eyre::ensure!(
-			!project.is_empty() && project.len() <= 32 && project.bytes().all(|b| b.is_ascii_digit()),
-			"POSTHOG_PROJECT_ID is a number, e.g. 614067"
-		);
-		let host = self.posthog_api_host.trim().trim_end_matches('/');
-		let url = url::Url::parse(host).map_err(|e| eyre::eyre!("POSTHOG_API_HOST is not a URL: {e}"))?;
-		eyre::ensure!(url.scheme() == "https" || self.app_env != "production", "POSTHOG_API_HOST must be https in production");
-		eyre::ensure!(url.path() == "/" && url.query().is_none(), "POSTHOG_API_HOST is an origin alone, e.g. https://us.posthog.com");
-		Ok(Some(PosthogSettings {
-			api_host: host.to_owned(),
-			project_id: project,
-			api_key: key,
 		}))
 	}
 }
@@ -313,9 +261,6 @@ mod tests {
 				"TELEGRAM_BOT_USERNAME",
 				"TELEGRAM_LOCALE",
 				"PANEL_WEB_DIR",
-				"POSTHOG_API_HOST",
-				"POSTHOG_PROJECT_ID",
-				"POSTHOG_PERSONAL_API_KEY",
 				"PANEL_DEV_SIGN_IN",
 				"PANEL_DEV_SIGN_IN_EMAIL",
 				"APP_ENV"
@@ -385,25 +330,6 @@ mod tests {
 			Locale::En
 		);
 		assert!(from(&[("TELEGRAM_BOT_TOKEN", token), ("TELEGRAM_LOCALE", "de")]).unwrap().telegram().is_err());
-	}
-
-	#[test]
-	fn the_posthog_import_is_off_without_its_key() {
-		assert!(from(&[]).unwrap().posthog().unwrap().is_none());
-		let key = "phx_secret";
-		let on = from(&[("POSTHOG_PROJECT_ID", "614067"), ("POSTHOG_PERSONAL_API_KEY", key)]).unwrap();
-		let ph = on.posthog().unwrap().unwrap();
-		assert_eq!((ph.api_host.as_str(), ph.project_id.as_str()), ("https://us.posthog.com", "614067"));
-		assert!(!format!("{on:?} {ph:?}").contains(key), "the key never prints");
-		let half = from(&[("POSTHOG_PROJECT_ID", "614067")]).unwrap().posthog().unwrap_err();
-		assert_eq!(format!("{half}"), "the PostHog import needs POSTHOG_PERSONAL_API_KEY too");
-		assert!(from(&[("POSTHOG_PROJECT_ID", "../1"), ("POSTHOG_PERSONAL_API_KEY", key)]).unwrap().posthog().is_err());
-		assert!(
-			from(&[("POSTHOG_PROJECT_ID", "1"), ("POSTHOG_PERSONAL_API_KEY", key), ("POSTHOG_API_HOST", "https://us.posthog.com/api")])
-				.unwrap()
-				.posthog()
-				.is_err()
-		);
 	}
 
 	#[test]

@@ -136,8 +136,8 @@ impl Envelope {
 /// Whether a kind of source may write a type (spec §2, the "source" column). What only an
 /// operator can know — a quote, a win, a loss, a finished job — comes from the panel alone,
 /// and payments too, which are entered by hand (owner, 2026-09-30); calls and contacts also
-/// from telephony, once there is one. The site's counts come from the PostHog import alone
-/// (§3.4). A type the panel does not know is open to every kind
+/// from telephony, once there is one. The counts of the retired PostHog import were its alone
+/// (§3.4), and stay so. A type the panel does not know is open to every kind
 /// (§3.2): it is stored, not projected, and judged again once it is registered.
 pub fn may_write(kind: SourceKind, type_name: &str) -> bool {
 	use SourceKind::{Panel, Posthog, Site, Telephony};

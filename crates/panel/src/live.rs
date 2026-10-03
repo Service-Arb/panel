@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! Panel::journal        every event journaled and projected: ingest, the operator's actions,
-//!                       the Telegram buttons, the PostHog import       → leads | lead | metrics | experiments
+//!                       the Telegram buttons                           → leads | lead
 //! Panel::rebuild_…      the projections replaced whole                 → resync
 //! place::edit, register a place's settings, withdrawn, registered      → places
 //! pricing               a brand's model saved or removed, its locales  → pricing
@@ -27,7 +27,7 @@
 use std::time::Duration;
 
 use jiff::Timestamp;
-use panel_core::{fact::Fact, ids::BrandId, lead::Recorded, metrics::MetricValue, role::Role};
+use panel_core::{fact::Fact, ids::BrandId, lead::Recorded, role::Role};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -50,9 +50,7 @@ pub enum Topic {
 	Pricing,
 	/// The signing keys: admins only, as `GET /sources` is.
 	Sources,
-	/// The PostHog counts of stages 3–4.
-	Metrics,
-	/// The PostHog counts of the experiments.
+	/// A brand's experiments: what its landing declared, or what an admin set over it.
 	Experiments,
 	/// One user's Telegram link and rules: that user only.
 	Telegram,
@@ -66,7 +64,6 @@ impl Topic {
 			Self::Places => "places",
 			Self::Pricing => "pricing",
 			Self::Sources => "sources",
-			Self::Metrics => "metrics",
 			Self::Experiments => "experiments",
 			Self::Telegram => "telegram",
 		}
@@ -88,19 +85,19 @@ pub struct Change {
 
 impl Change {
 	/// Whether `user`, of `role`, may be told of it: exactly when they may read what changed.
-	/// Every admitted role reads leads, places, pricing and the counts, for every brand (spec §5.4: the
+	/// Every admitted role reads leads, places, pricing and the experiments, for every brand (spec §5.4: the
 	/// panel's grant is `allocation:service_arb`, with no narrower scope); sources are an
 	/// admin's; a Telegram link is its own user's.
 	pub fn visible_to(&self, user: Uuid, role: Role) -> bool {
 		match self.topic {
-			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Metrics | Topic::Experiments => true,
+			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Experiments => true,
 			Topic::Sources => role.manages_sources(),
 			Topic::Telegram => self.user == Some(user),
 		}
 	}
 
-	/// What journaling `event` changed.
-	pub fn of_event(event: &Recorded, at: Timestamp) -> Self {
+	/// What journaling `event` changed; `None` for what no screen reads.
+	pub fn of_event(event: &Recorded, at: Timestamp) -> Option<Self> {
 		let lead = || event.subject.lead_id.as_ref().map(|l| l.as_str().to_owned());
 		let (topic, id) = match &event.fact {
 			Fact::LeadCreated { .. } => (Topic::Leads, lead()),
@@ -112,18 +109,15 @@ impl Change {
 			| Fact::PaymentReceived { .. }
 			| Fact::CallAttempted
 			| Fact::CallLogged { .. } => (Topic::Lead, lead()),
-			Fact::Metric(m) => match m.value {
-				MetricValue::Visits { .. } | MetricValue::Intents { .. } => (Topic::Metrics, None),
-				MetricValue::Experiment { .. } => (Topic::Experiments, None),
-			},
+			Fact::RetiredCount => return None,
 		};
-		Self {
+		Some(Self {
 			topic,
 			brand: Some(event.subject.brand_id.clone()),
 			id,
 			user: None,
 			at,
-		}
+		})
 	}
 }
 
@@ -212,7 +206,7 @@ mod tests {
 	#[test]
 	fn who_is_told() {
 		let (ann, bob) = (Uuid::from_u128(1), Uuid::from_u128(2));
-		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Pricing, Topic::Metrics, Topic::Experiments] {
+		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Pricing, Topic::Experiments] {
 			assert!(change(topic, None).visible_to(ann, Role::Operator), "{topic:?}");
 			assert!(change(topic, None).visible_to(ann, Role::Admin), "{topic:?}");
 		}

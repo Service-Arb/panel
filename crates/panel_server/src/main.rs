@@ -24,7 +24,7 @@ use panel_core::{
 use panel_server::{
 	DEFAULT_BIND,
 	concierge::{Concierge, DevIdentity},
-	http, posthog,
+	http,
 	signin::{SignIn, SignInConfig},
 	telegram::{self, BotApi, BotName},
 	web::{self, Files},
@@ -52,12 +52,6 @@ enum Cmd {
 	/// Rebuild leads, calls and payments from the journal, judging every event against the
 	/// registry as it is now.
 	RebuildProjections,
-	/// Count the last days in PostHog now and journal what changed — what `serve` does every
-	/// hour; more days than its three for a backfill.
-	ImportPosthog {
-		#[arg(long, default_value_t = panel::posthog::WINDOW_DAYS)]
-		days: u16,
-	},
 	/// The sources that may write events, and their keys.
 	#[command(subcommand)]
 	Source(SourceCmd),
@@ -213,19 +207,7 @@ async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSign
 			};
 			let telegram = settings.telegram()?;
 			let front_end = settings.web()?;
-			let posthog = settings.posthog()?.map(|p| posthog::QueryApi::new(&p.api_host, &p.project_id, &p.api_key)).transpose()?;
-			serve(connect().await?, sign_in, telegram, posthog, front_end, bind).await
-		}
-		Cmd::ImportPosthog { days } => {
-			let p = settings
-				.posthog()?
-				.ok_or_else(|| eyre::eyre!("POSTHOG_PROJECT_ID and POSTHOG_PERSONAL_API_KEY must be set to import"))?;
-			let api = posthog::QueryApi::new(&p.api_host, &p.project_id, &p.api_key)?;
-			let done = posthog::once(&connect().await?, &api, &api.source_id(), uuid::Uuid::now_v7(), days, true)
-				.await?
-				.ok_or_else(|| eyre::eyre!("the import was not leased"))?;
-			println!("{} counts written, {} rows left out, {} conflicts", done.written, done.skipped, done.conflicts);
-			Ok(())
+			serve(connect().await?, sign_in, telegram, front_end, bind).await
 		}
 		Cmd::RebuildProjections => {
 			let r = connect().await?.rebuild_projections().await?;
@@ -427,28 +409,10 @@ enum Identity {
 	Dev(settings::DevSignIn),
 }
 
-async fn serve(
-	panel: Panel,
-	sign_in: Option<Identity>,
-	telegram: Option<settings::TelegramSettings>,
-	posthog: Option<posthog::QueryApi>,
-	front_end: Option<Files>,
-	bind: SocketAddr,
-) -> eyre::Result<()> {
+async fn serve(panel: Panel, sign_in: Option<Identity>, telegram: Option<settings::TelegramSettings>, front_end: Option<Files>, bind: SocketAddr) -> eyre::Result<()> {
 	let (stop, stopped) = tokio::sync::watch::channel(false);
 	let bus = panel.bus().clone();
 	let mut bot_work = None;
-	// Held, and awaited at shutdown, like the bot's.
-	let import_work = match posthog {
-		Some(api) => {
-			tracing::info!(project = api.source_id(), "posthog import on, hourly");
-			Some(tokio::spawn(posthog::run(panel.clone(), api, stopped.clone())))
-		}
-		None => {
-			tracing::warn!("POSTHOG_PROJECT_ID / POSTHOG_PERSONAL_API_KEY unset: no PostHog import, stages 3–4 stay empty");
-			None
-		}
-	};
 	let app = match sign_in {
 		Some(identity) => {
 			let (concierge, config) = match identity {
@@ -529,11 +493,6 @@ async fn serve(
 		&& let Err(e) = work.await
 	{
 		panel_server::report(&eyre::eyre!(e), "the telegram worker panicked");
-	}
-	if let Some(work) = import_work
-		&& let Err(e) = work.await
-	{
-		panel_server::report(&eyre::eyre!(e), "the posthog import panicked");
 	}
 	served
 }
