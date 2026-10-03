@@ -9,7 +9,7 @@ use panel_contracts::{SCHEMA, v1};
 use panel_core::{
 	Invalid,
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
-	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, LeadSuspect, bounded},
+	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
 	metrics::{DailyMetric, IntentChannel, MetricValue, Tally},
 };
@@ -260,6 +260,7 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 				channel: LeadChannel::parse(&p.channel)?,
 				entered_by: bounded("properties.entered_by", p.entered_by)?,
 				suspect: p.suspect.as_deref().map(LeadSuspect::parse).transpose()?,
+				offer: LeadOffer::parse(p.flow.as_deref(), p.quoted_cents, p.pricing_valid_from.as_deref(), p.estimate_inputs)?,
 			})
 		}),
 		("lead.contacted", 1) => props::<v1::LeadContactedV1>(key, properties).and_then(|p| {
@@ -382,6 +383,7 @@ mod tests {
 				channel: LeadChannel::Form,
 				entered_by: None,
 				suspect: None,
+				offer: LeadOffer::default(),
 			})
 		);
 	}
@@ -401,6 +403,7 @@ mod tests {
 					channel: LeadChannel::Form,
 					entered_by: None,
 					suspect: Some(mark),
+					offer: LeadOffer::default(),
 				})
 			);
 		}
@@ -411,6 +414,30 @@ mod tests {
 				"{bad}"
 			);
 		}
+	}
+
+	#[test]
+	fn a_lead_says_its_flow_in_either_spelling() {
+		let judge = |props: Value| {
+			let mut e = event();
+			e["properties"] = props;
+			let got = decode(e, now()).unwrap();
+			check(&got.envelope.type_key, got.envelope.source.kind, &got.properties, &got.envelope.subject)
+		};
+		let camel = judge(json!({"channel": "form", "flow": "estimate", "quotedCents": "12900", "pricingValidFrom": "2026-10-01", "estimateInputs": {"zone": "a", "bedrooms": "2"}}));
+		let snake = judge(json!({"channel": "form", "flow": "estimate", "quoted_cents": 12900, "pricing_valid_from": "2026-10-01", "estimate_inputs": {"bedrooms": "2", "zone": "a"}}));
+		assert_eq!(camel, snake);
+		let Checked::Registered(Fact::LeadCreated { offer, .. }) = camel else { panic!("{camel:?}") };
+		assert_eq!(offer.price.unwrap().cents, 12_900);
+		assert_eq!(offer.estimate_inputs.len(), 2);
+		assert_eq!(
+			judge(json!({"channel": "form", "flow": "quote", "quotedCents": 100, "pricingValidFrom": "2026-10-01"})),
+			Checked::Invalid(Invalid::new("properties.quoted_cents and properties.pricing_valid_from are only for flow estimate or fixed"))
+		);
+		assert!(
+			matches!(judge(json!({"channel": "form", "estimateInputs": {"zone": 1}})), Checked::Invalid(_)),
+			"values are strings"
+		);
 	}
 
 	#[test]

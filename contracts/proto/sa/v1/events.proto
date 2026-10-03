@@ -4,7 +4,7 @@
 // (`occurredAt`, `typeVersion`; the snake_case names are accepted too), `Timestamp` as an
 // RFC 3339 string, int64 as a JSON string or number.
 //
-// Closed vocabularies (source kinds, call outcomes, lead channels, suspect marks) are
+// Closed vocabularies (source kinds, call outcomes, lead channels, suspect marks, flows) are
 // strings rather than proto enums so the JSON carries the words the spec uses (`"site"`,
 // `"no_answer"`) and not `SOURCE_KIND_SITE`; the panel checks each against its list and
 // rejects any other.
@@ -102,6 +102,21 @@ message LeadCreatedV1 {
   optional string suspect = 3;
   // What the customer said they need is their words, so it goes in `pii` (as `need`),
   // not here: properties are stored in the clear, `pii` encrypted.
+
+  // The landing's flow for the need (FORM-VARIANTS-SPEC): quote | estimate | fixed. `quote`
+  // asks for a price; `estimate` showed one computed from the visitor's choices; `fixed` showed
+  // a fixed price. Absent: a landing from before the flows, the same as `quote`.
+  optional string flow = 4;
+  // The price shown, in integer cents, EUR TTC (no currency field yet), at least 0, as the
+  // landing's server computed it. With `pricing_valid_from`: both are required when `flow` is
+  // estimate or fixed, and refused with quote or no flow.
+  optional int64 quoted_cents = 5;
+  // The day the pricing model that gave `quoted_cents` took effect, RFC 3339 full-date
+  // ("2026-10-01").
+  optional string pricing_valid_from = 6;
+  // What the visitor picked for an estimate: input id → value id, the pricing model's slugs
+  // (1–40 of [a-z0-9_-] each), at most 12 pairs, never free text. Only with flow estimate.
+  map<string, string> estimate_inputs = 7;
 }
 
 // lead.contacted@1 — subject.lead_id required.
@@ -200,3 +215,4 @@ message ExperimentMetricsV1 {
   int64 booking = 9;
   uint32 revision = 10;
 }
+
