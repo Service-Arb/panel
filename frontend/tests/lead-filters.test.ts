@@ -47,3 +47,18 @@ describe("the created range in the URL", () => {
     expect(leadFilterFrom(new URLSearchParams("created_from=yesterday")).createdFrom).toBeNull();
   });
 });
+
+describe("the suspect filter", () => {
+  it("takes only the words the API takes, and is every lead otherwise", () => {
+    expect(leadFilterFrom(new URLSearchParams("suspect=only")).suspect).toBe("only");
+    expect(leadFilterFrom(new URLSearchParams("suspect=exclude")).suspect).toBe("exclude");
+    expect(leadFilterFrom(new URLSearchParams("suspect=maybe")).suspect).toBeNull();
+    expect(leadFilterFrom(new URLSearchParams("")).suspect).toBeNull();
+  });
+
+  it("goes into the URL and back out of it", () => {
+    const on = paramsWith(new URLSearchParams("stage=created"), { suspect: "exclude" });
+    expect(on.toString()).toBe("stage=created&suspect=exclude");
+    expect(paramsWith(on, { suspect: null }).toString()).toBe("stage=created");
+  });
+});

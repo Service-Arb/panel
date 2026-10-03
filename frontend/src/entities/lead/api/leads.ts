@@ -11,6 +11,8 @@ export interface LeadFilter {
   /** UTC days, `YYYY-MM-DD`, both included. */
   createdFrom: string | null;
   createdTo: string | null;
+  /** Antispam's doubted leads: only them, none of them, or (null) every lead. */
+  suspect: "only" | "exclude" | null;
 }
 
 export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50): Promise<LeadPage> {
@@ -21,6 +23,7 @@ export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50
     overdue: filter.overdue ? true : null,
     created_from: filter.createdFrom,
     created_to: filter.createdTo,
+    suspect: filter.suspect,
     cursor,
     limit,
   });

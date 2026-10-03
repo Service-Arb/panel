@@ -3,7 +3,7 @@
 import { Skeleton } from "@evinvest/uikit";
 import { useState } from "react";
 
-import { ChangeEntry, ConflictAlert, type PlaceSettingsView, fetchSettingsHistory } from "@/entities/place";
+import { ChangeEntry, ConflictAlert, type PlaceSettingsView, fetchSettingsHistory, followsPlace } from "@/entities/place";
 import { RevertButton } from "@/features/revert-place-change";
 import { useT } from "@/shared/i18n";
 import { useResource } from "@/shared/lib/use-resource";
@@ -24,7 +24,7 @@ export function PlaceHistory({ view, version, onChanged, onReload }: PlaceHistor
   const t = useT();
   const [conflict, setConflict] = useState(false);
   const id = `${view.brand}/${view.slug}`;
-  const history = useResource(`history:${id}:${version}`, () => fetchSettingsHistory(view), `history:${id}`);
+  const history = useResource(`history:${id}:${version}`, () => fetchSettingsHistory(view), `history:${id}`, { live: followsPlace(view) });
   if (history.status === "loading") return <Skeleton className="h-32 w-full" />;
   if (history.status === "error") return <ErrorState failure={history.failure} onRetry={history.reload} />;
   if (history.data.length === 0) return <EmptyState className="p-4" title={t("placeSettings.history.empty")} />;
