@@ -31,7 +31,7 @@ describe("the nav's badges", () => {
   });
 
   it("mark experiments and sources with a dot, and nothing for the other topics", () => {
-    const s = noteChanges(NOTHING_UNSEEN, [ev("experiments"), ev("sources"), ev("telegram"), ev("metrics")], "overview");
+    const s = noteChanges(NOTHING_UNSEEN, [ev("experiments"), ev("sources"), ev("telegram"), ev("pricing")], "overview");
     expect(s).toEqual({ places: [], experiments: true, sources: true });
   });
 

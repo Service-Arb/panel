@@ -9,11 +9,13 @@ app/                 routes: (panel)/ is everything behind sign-in, signed-out/ 
 src/views/           one slice per screen, plus shell/ (the kit's AppShell: rail, tab bar, nav marks, access states)
 src/features/        call-lead · move-stage · record-payment · create-lead ·
                      lead-filters · funnel-filters · manage-sources · sign-out ·
-                     edit-place-settings · revert-place-change · withdraw-place · add-place
+                     edit-place-settings · revert-place-change · withdraw-place · add-place ·
+                     configure-experiment
 src/entities/        session · lead · funnel · experiment · place · source — types, response checks, requests
 src/shared/          api/ (fetch, CSRF, the gate's answers), i18n/, lib/ (live/: the socket), ui/
 messages/            en.json (the source of keys) and ru.json
-scripts/dev-stub.ts  a stand-in backend for local work (place settings in scripts/stub-places.ts)
+scripts/dev-stub.ts  a stand-in backend for local work (place settings in scripts/stub-places.ts,
+                     experiments in scripts/stub-experiments.ts)
 tests/               vitest, in Node: the rules the screens obey live in plain modules
 ```
 
@@ -22,7 +24,7 @@ tests/               vitest, in Node: the rules the screens obey live in plain m
 ```sh
 npm ci
 npm run dev:stub     # :3121 — the operator API over made-up leads; STUB_ROLE=admin, STUB_ME=401|403|503,
-                     # STUB_MIN_SAMPLE=2 for percents on so few leads, STUB_POSTHOG=off for no import yet,
+                     # STUB_MIN_SAMPLE=2 for percents on so few leads, STUB_POSTHOG=off for no PostHog links,
                      # STUB_PLACES_CONFLICT=1 for a 409 on every place-settings save and revert,
                      # STUB_LIVE=off for no socket (the panel polls), STUB_LIVE_EVERY=5 for busier live activity
 npm run dev          # :3120 — proxies /api and /auth to PANEL_DEV_BACKEND (default the stub)
@@ -97,7 +99,11 @@ The preview of the contact channels assumes the places' hours are Paris time
 ## What the API does not answer yet
 
 - **Stages 1–2** (Maps) arrive with the GBP import; until then the overview says so
-  rather than showing zeros. Stages 3–4 (site) and the experiments come from the
-  PostHog import, and say "not connected" the same way while `imported_at` is null.
+  rather than showing zeros.
+- **Stages 3–4** (site visits, contact intents) and the experiments' results are
+  PostHog's and are read there; the panel does not count them again. The
+  Experiments screen is config: what each landing declared, the split it runs,
+  and for an admin the kill switch, the weights and the holdout, with a link to
+  the experiment's funnel in PostHog when the backend has a project configured.
 - **Lost reasons** are a slug the backend takes freely; the panel offers a fixed
   list (`features/move-stage/model/moves.ts`) so the reports can group by it.

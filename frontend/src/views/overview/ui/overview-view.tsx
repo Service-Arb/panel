@@ -10,8 +10,6 @@ import { useResource } from "@/shared/lib/use-resource";
 import { ErrorState } from "@/shared/ui/error-state";
 import { ScreenFrame } from "@/shared/ui/screen-frame";
 
-import { DailyBlock } from "./daily-block";
-import { EstimateEdge } from "./estimate-edge";
 import { LeadsBlock } from "./leads-block";
 
 export function OverviewView() {
@@ -19,8 +17,8 @@ export function OverviewView() {
   const { period, brand, range, update } = useFilterParams();
   const places = usePlaces();
   const key = `funnel:${range.from}:${range.to}:${brand ?? ""}`;
-  // The counts move with every lead, and the site's day counts with each import.
-  const funnel = useResource(key, () => fetchFunnel({ ...range, brand }), key, { live: ["leads", "lead", "metrics"] });
+  // The counts move with every lead.
+  const funnel = useResource(key, () => fetchFunnel({ ...range, brand }), key, { live: ["leads", "lead"] });
 
   return (
     <ScreenFrame title={t("nav.overview")} actions={<FunnelFilters period={period} brand={brand} brands={brandsOf(places, brand)} onChange={update} />}>
@@ -28,9 +26,10 @@ export function OverviewView() {
         {funnel.status === "error" && <ErrorState failure={funnel.failure} onRetry={funnel.reload} />}
         {funnel.status === "ok" && (
           <>
-            <DailyBlock funnel={funnel.data} />
-            <EstimateEdge funnel={funnel.data} />
             <LeadsBlock funnel={funnel.data} />
+            <p className="px-1 text-sm text-ink-soft" role="note">
+              {t("funnel.site.posthog")} {t("funnel.site.mapsPending")}
+            </p>
             <p className="px-1 text-xs text-ink-soft">{t("funnel.range", { from: funnel.data.from, to: funnel.data.to })}</p>
           </>
         )}

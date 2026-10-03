@@ -81,3 +81,11 @@ export function utcDay(d: Date): string {
 export function daysAgo(now: Date, days: number): Date {
   return new Date(now.getTime() - days * 86_400_000);
 }
+
+/**
+ * A configured share, 0–100, to a tenth at most ("50 %", "33,3 %"). Not for a
+ * measured rate: those go through `formatShare`, which withholds small samples.
+ */
+export function formatPercent(percent: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 1 }).format(percent / 100);
+}
