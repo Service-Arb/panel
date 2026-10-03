@@ -24,7 +24,8 @@ npm ci
 npm run dev:stub     # :3121 — the operator API over made-up leads; STUB_ROLE=admin, STUB_ME=401|403|503,
                      # STUB_MIN_SAMPLE=2 for percents on so few leads, STUB_POSTHOG=off for no import yet,
                      # STUB_PLACES_CONFLICT=1 for a 409 on every place-settings save and revert,
-                     # STUB_LIVE=off for no socket (the panel polls), STUB_LIVE_EVERY=5 for busier live activity
+                     # STUB_LIVE=off for no socket (the panel polls), STUB_LIVE_EVERY=5 for busier live activity,
+                     # STUB_BOOKING_CONFLICT=1 for a 409 on every booking write
 npm run dev          # :3120 — proxies /api and /auth to PANEL_DEV_BACKEND (default the stub)
 ```
 

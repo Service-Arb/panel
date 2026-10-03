@@ -1,6 +1,7 @@
 import type { T } from "@/shared/i18n";
 
 import { EDITED_KEYS, type EditedFields, type PlaceSettings } from "../model/settings";
+import { bookingText } from "./booking";
 import { formatHours } from "./hours";
 
 export interface DiffLine {
@@ -23,6 +24,8 @@ function editedText(key: EditedKey, fields: EditedFields, t: T): string | null {
       return fields.hours ? formatHours(fields.hours, t) : null;
     case "serviceArea":
       return fields.serviceArea ? fields.serviceArea.join(", ") : null;
+    case "booking":
+      return fields.booking ? bookingText(fields.booking, t) : null;
   }
 }
 

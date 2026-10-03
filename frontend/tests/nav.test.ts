@@ -6,7 +6,7 @@ import { panelNav } from "@/views/shell/ui/nav-items";
 import type { Marks } from "@/views/shell/model/use-marks";
 
 const t: T = (key) => key;
-const marks: Marks = { leads: 0, away: 0, places: 0, experiments: false, sources: false };
+const marks: Marks = { leads: 0, away: 0, places: 0, experiments: false, sources: false, bookings: false };
 const ids = (role: Role) => Object.fromEntries(panelNav(t, role, marks).groups.map((g) => [g.id, g.items.map((i) => i.id)]));
 
 describe("the rail", () => {

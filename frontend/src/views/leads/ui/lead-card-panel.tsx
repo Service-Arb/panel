@@ -14,6 +14,7 @@ import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
 
 import { type Known, nextKnown, updatedElsewhere } from "../model/card-updates";
+import { BookingBlock } from "./booking-block";
 import { CardSection } from "./card-section";
 import { PricingBlock } from "./deal-blocks";
 import { EventList } from "./event-list";
@@ -58,6 +59,7 @@ function CardBody({ card, leadRef, elsewhere, onChanged }: { card: LeadCard; lea
           <StageActions lead={lead} onMoved={onChanged} />
         </CardSection>
       )}
+      <BookingBlock lead={lead} onChanged={onChanged} />
       {takesPayment(lead.stage) && (
         <CardSection title={t("payment.title")}>
           <PaymentForm lead={lead} onSaved={onChanged} />

@@ -1,5 +1,7 @@
 import { type Infer, type Parser, arrayOf, bool, nullable, object, oneOf, record, str } from "@/shared/lib/parse";
 
+import { type BookingConfig, bookingConfigOf } from "./booking";
+
 /** kitstart's `DayOfWeek`: the wire names, Monday first as the site lists them. */
 export const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 export type Day = (typeof DAYS)[number];
@@ -17,16 +19,16 @@ export interface EditedFields {
   whatsapp?: string;
   hours?: HoursRow[];
   serviceArea?: string[];
+  /** The booking providers the place offers and its default. */
+  booking?: BookingConfig;
 }
 
-export const EDITED_KEYS = ["phone", "whatsapp", "hours", "serviceArea"] as const satisfies readonly (keyof EditedFields)[];
+export const EDITED_KEYS = ["phone", "whatsapp", "hours", "serviceArea", "booking"] as const satisfies readonly (keyof EditedFields)[];
 
 export interface PlaceSettings {
   edited: EditedFields;
   rest: Record<string, unknown>;
 }
-
-const isEditedKey = (k: string): k is (typeof EDITED_KEYS)[number] => (EDITED_KEYS as readonly string[]).includes(k);
 
 /** The live data as stored, split into what the form edits and what it carries through. */
 export const settingsParser: Parser<PlaceSettings> = (v, path) => {
@@ -36,7 +38,10 @@ export const settingsParser: Parser<PlaceSettings> = (v, path) => {
   if (o.whatsapp !== undefined) edited.whatsapp = str(o.whatsapp, `${path}.whatsapp`);
   if (o.hours !== undefined) edited.hours = arrayOf(hoursRowParser)(o.hours, `${path}.hours`);
   if (o.serviceArea !== undefined) edited.serviceArea = arrayOf(str)(o.serviceArea, `${path}.serviceArea`);
-  const rest = Object.fromEntries(Object.entries(o).filter(([k]) => !isEditedKey(k)));
+  // A booking the server would now refuse (its rules grew) is not the form's to edit: it rides in `rest`.
+  const booking = o.booking === undefined ? null : bookingConfigOf(o.booking);
+  if (booking) edited.booking = booking;
+  const rest = Object.fromEntries(Object.entries(o).filter(([k]) => !(k in edited)));
   return { edited, rest };
 };
 

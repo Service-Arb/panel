@@ -1,8 +1,14 @@
 export { createLead, fetchLeadCard, fetchLeadCounts, fetchLeads, moveLead, recordPayment } from "./api/leads";
 export type { LeadFilter, NewLead, PaymentInput, StageMove } from "./api/leads";
+export { closeBooking, writeSlot } from "./api/booking";
+export type { CloseBody, SlotBody } from "./api/booking";
+export { BOOKING_MATCHES, BOOKING_STATUSES, DAY_PARTS, NO_BOOKING, bookingActions } from "./model/booking";
+export type { BookingAction, BookingMatch, BookingStatus, DayPart, LeadBooking } from "./model/booking";
 export { CONTACT_SLA_SECONDS, LABELLED_PII, STAGES, SUSPECTS, contactOf, extrasOf, dialable, slaAt, decodeRef, encodeRef, leadPath, reached, refOf } from "./model/lead";
 export type { Contact, LabelledPii, Lead, Suspect, LeadCard, LeadCounts, LeadEvent, LeadPage, LeadRef, Stage } from "./model/lead";
 export { FLOWS, quotedPrice } from "./model/pricing";
 export type { Flow } from "./model/pricing";
 export { SlaBadge, StageBadge, SuspectBadge } from "./ui/badges";
 export { DealSummary, PriceText } from "./ui/deal-badges";
+export { BookingBadge, BookingLine } from "./ui/booking-badge";
+export { bookingWhen, wishText } from "./lib/booking-text";

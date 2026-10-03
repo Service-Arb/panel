@@ -28,9 +28,11 @@ export interface Unseen {
   places: readonly string[];
   experiments: boolean;
   sources: boolean;
+  /** A provider's booking without a lead came or changed: it waits on the leads screen. */
+  bookings: boolean;
 }
 
-export const NOTHING_UNSEEN: Unseen = { places: [], experiments: false, sources: false };
+export const NOTHING_UNSEEN: Unseen = { places: [], experiments: false, sources: false, bookings: false };
 
 const placeOf = (e: ChangedEvent) => (e.id === null ? `${e.brand_id ?? "*"}@${e.at}` : `${e.brand_id ?? "*"}/${e.id}`);
 
@@ -43,6 +45,7 @@ export function noteChanges(state: Unseen, events: readonly ChangedEvent[], at: 
       if (!next.places.includes(key)) next = { ...next, places: [...next.places, key] };
     } else if (e.topic === "experiments" && at !== "experiments" && !next.experiments) next = { ...next, experiments: true };
     else if (e.topic === "sources" && at !== "sources" && !next.sources) next = { ...next, sources: true };
+    else if (e.topic === "bookings" && at !== "leads" && !next.bookings) next = { ...next, bookings: true };
   }
   return next;
 }
@@ -56,6 +59,8 @@ export function visit(state: Unseen, at: Section | null): Unseen {
       return state.experiments ? { ...state, experiments: false } : state;
     case "sources":
       return state.sources ? { ...state, sources: false } : state;
+    case "leads":
+      return state.bookings ? { ...state, bookings: false } : state;
     default:
       return state;
   }

@@ -2,7 +2,7 @@
 
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@evinvest/uikit";
 
-import { DealSummary, type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
+import { BookingLine, DealSummary, type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 
 import { leadKey } from "../model/live-merge";
@@ -26,6 +26,7 @@ export function LeadList({ leads, flash, selected, onOpen }: { leads: Lead[]; fl
                   {lead.manual && ` · ${t("leads.manual")}`}
                 </ItemDescription>
                 <DealSummary lead={lead} />
+                {lead.booking.status !== "none" && <BookingLine booking={lead.booking} />}
               </ItemContent>
               <ItemActions className="flex-col items-end gap-1">
                 {lead.sla ? <SlaBadge sla={lead.sla} /> : <StageBadge stage={lead.stage} />}

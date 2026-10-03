@@ -1,6 +1,6 @@
 "use client";
 
-import { ChannelPreview, type PlaceSettingsView, formatHours } from "@/entities/place";
+import { ChannelPreview, type PlaceSettingsView, bookingText, formatHours } from "@/entities/place";
 import { useT } from "@/shared/i18n";
 
 import { KeptFields } from "./kept-fields";
@@ -15,6 +15,7 @@ export function SettingsSummary({ place }: { place: PlaceSettingsView }) {
     { label: t("placeSettings.field.whatsapp"), value: e.whatsapp },
     { label: t("placeSettings.field.hours"), value: e.hours && formatHours(e.hours, t) },
     { label: t("placeSettings.field.serviceArea"), value: e.serviceArea?.join(", ") },
+    { label: t("placeSettings.field.booking"), value: e.booking && bookingText(e.booking, t) },
   ];
   return (
     <div className="flex flex-col gap-4">

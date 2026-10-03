@@ -10,6 +10,7 @@ import { useButtonSize } from "@/shared/ui/touch";
 import { type SettingsDraft, draftChanged, draftOf, draftValid, editedOf, settingsOf } from "../model/draft";
 import { useSave } from "../model/use-save";
 import { AreaChips } from "./area-chips";
+import { BookingFields } from "./booking-fields";
 import { HoursEditor } from "./hours-editor";
 import { KeptFields } from "./kept-fields";
 import { PhoneField } from "./phone-field";
@@ -68,6 +69,7 @@ export function SettingsForm({ place, onSaved, onReload, fresher, onTakeFresh }:
       <PhoneField label={t("placeSettings.field.whatsapp")} value={draft.whatsapp} onChange={(whatsapp) => set({ whatsapp })} errors={errors.byField.whatsapp} />
       <HoursEditor rows={draft.hours} onChange={(hours) => set({ hours })} errors={errors.byField.hours} />
       <AreaChips names={draft.serviceArea} onChange={(serviceArea) => set({ serviceArea })} errors={errors.byField.serviceArea} />
+      <BookingFields draft={draft.booking} onChange={(booking) => set({ booking })} serverErrors={errors.byKey} />
       <KeptFields rest={base.rest} />
       <ChannelPreview fields={editedOf(draft)} />
       <div className="flex flex-wrap gap-2">

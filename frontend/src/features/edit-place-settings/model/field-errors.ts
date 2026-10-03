@@ -7,13 +7,15 @@ export interface FieldErrors {
   byField: Partial<Record<FieldKey, string[]>>;
   /** Reasons for keys the form has no field for, shown above it rather than lost. */
   other: { key: string; reason: string }[];
+  /** Every reason by its own key, for a field that shows parts apart (`booking.providers.link.url`). */
+  byKey: Readonly<Record<string, string>>;
 }
 
 const owner = (key: string): FieldKey | null => EDITED_KEYS.find((f) => key === f || key.startsWith(`${f}.`) || key.startsWith(`${f}[`)) ?? null;
 
 /** A 422's `fields` sorted onto the form. */
 export function fieldErrorsOf(fields: Record<string, string>): FieldErrors {
-  const out: FieldErrors = { byField: {}, other: [] };
+  const out: FieldErrors = { byField: {}, other: [], byKey: fields };
   for (const [key, reason] of Object.entries(fields)) {
     const f = owner(key);
     if (f) out.byField[f] = [...(out.byField[f] ?? []), reason];
@@ -22,4 +24,4 @@ export function fieldErrorsOf(fields: Record<string, string>): FieldErrors {
   return out;
 }
 
-export const NO_ERRORS: FieldErrors = { byField: {}, other: [] };
+export const NO_ERRORS: FieldErrors = { byField: {}, other: [], byKey: {} };
