@@ -10,7 +10,7 @@ use jiff::{SignedDuration, Timestamp};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use crate::{Invalid, role::Role};
+use crate::{Invalid, fact::LeadSuspect, role::Role};
 
 /// What a user may be notified of. Each is on or off per user; [`Rule::on_by_default`] is
 /// what a user who never chose gets.
@@ -198,6 +198,12 @@ pub struct LeadNote {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Note {
 	NewLead(LeadNote),
+	/// A new lead the landing's antispam doubted: told under [`Rule::NewLead`] too, since it
+	/// may be a person, but headed so nobody takes it for an ordinary one.
+	SuspectLead {
+		lead: LeadNote,
+		suspect: LeadSuspect,
+	},
 	ContactOverdue {
 		lead: LeadNote,
 		waiting: SignedDuration,
@@ -223,7 +229,7 @@ pub enum Note {
 impl Note {
 	pub fn rule(&self) -> Rule {
 		match self {
-			Self::NewLead(_) | Self::Backlog { .. } => Rule::NewLead,
+			Self::NewLead(_) | Self::SuspectLead { .. } | Self::Backlog { .. } => Rule::NewLead,
 			Self::ContactOverdue { .. } => Rule::ContactOverdue,
 			Self::PaymentReceived { .. } => Rule::PaymentReceived,
 			Self::SourceSilent { .. } => Rule::SourceSilent,
@@ -233,7 +239,7 @@ impl Note {
 	/// The buttons under it: the lead's two actions for the lead rules, none otherwise.
 	pub fn buttons(&self) -> &'static [Button] {
 		match self {
-			Self::NewLead(_) | Self::ContactOverdue { .. } => &[Button::Take, Button::NoAnswer],
+			Self::NewLead(_) | Self::SuspectLead { .. } | Self::ContactOverdue { .. } => &[Button::Take, Button::NoAnswer],
 			Self::PaymentReceived { .. } | Self::SourceSilent { .. } | Self::Backlog { .. } => &[],
 		}
 	}
@@ -251,6 +257,15 @@ impl Note {
 		let mut out = Rendered::default();
 		match self {
 			Self::NewLead(lead) => lead_text(&mut out, if ru { "Новая заявка" } else { "New lead" }, lead, locale),
+			Self::SuspectLead { lead, suspect } => {
+				let head = match (suspect, ru) {
+					(LeadSuspect::RateLimited, true) => "Подозрительная заявка (антиспам: слишком много отправок)",
+					(LeadSuspect::RateLimited, false) => "Suspect lead (antispam: too many submissions)",
+					(LeadSuspect::TooFast, true) => "Подозрительная заявка (антиспам: форма заполнена слишком быстро)",
+					(LeadSuspect::TooFast, false) => "Suspect lead (antispam: form filled too fast)",
+				};
+				lead_text(&mut out, head, lead, locale);
+			}
 			Self::ContactOverdue { lead, waiting } => {
 				let mins = waiting.as_mins().max(0);
 				let head = if ru {
@@ -624,7 +639,13 @@ mod tests {
 			phone: None,
 			..lead.clone()
 		};
-		assert_eq!(Note::NewLead(withheld).text(Locale::En), "New lead\naquafix · paris-11");
+		assert_eq!(Note::NewLead(withheld.clone()).text(Locale::En), "New lead\naquafix · paris-11");
+		let doubted = Note::SuspectLead {
+			lead: withheld,
+			suspect: LeadSuspect::TooFast,
+		};
+		assert_eq!(doubted.text(Locale::En), "Suspect lead (antispam: form filled too fast)\naquafix · paris-11");
+		assert_eq!((doubted.rule(), doubted.buttons()), (Rule::NewLead, [Button::Take, Button::NoAnswer].as_slice()));
 		let overdue = Note::ContactOverdue {
 			lead,
 			waiting: SignedDuration::from_mins(47),
