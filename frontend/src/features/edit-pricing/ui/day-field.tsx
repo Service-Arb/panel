@@ -1,61 +1,32 @@
 "use client";
 
-import { Button, Calendar, Field, FieldLabel, Popover, PopoverContent, PopoverTrigger } from "@evinvest/uikit";
-import { CalendarDays } from "lucide-react";
-import { useState } from "react";
+import { Field, FieldLabel } from "@evinvest/uikit";
 
-import { isDay } from "@/entities/pricing";
-import { useLocale, useT } from "@/shared/i18n";
-import { formatDay } from "@/shared/lib/format";
-import { useButtonSize } from "@/shared/ui/touch";
+import { useT } from "@/shared/i18n";
+import { DayPicker } from "@/shared/ui/day-picker";
 
 import type { FieldErrors } from "../model/errors";
 import { describedByOf, domIdOf } from "../model/fields";
 import { FieldMessages } from "./field-messages";
 
-/** The Calendar works in local days; the model in `YYYY-MM-DD`, no zone. */
-const dateOf = (day: string): Date | undefined => {
-  if (!isDay(day)) return undefined;
-  const [y = 0, m = 1, d = 1] = day.split("-").map(Number);
-  return new Date(y, m - 1, d);
-};
-const dayOf = (date: Date): string => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-
-/** A calendar day from the kit's Calendar, in a popover: no browser date control. */
+/** A model's day field: the shared day picker, with the editor's messages under it. */
 export function DayField({ field, label, value, onChange, errors }: { field: string; label: string; value: string; onChange: (day: string) => void; errors: FieldErrors }) {
   const t = useT();
-  const locale = useLocale();
-  const button = useButtonSize();
-  const [open, setOpen] = useState(false);
   const shown = errors.byField.get(field);
   const id = domIdOf(field);
-  const selected = dateOf(value);
   const describedBy = describedByOf(field, false, shown?.length ?? 0);
   return (
     <Field className="flex min-w-0 flex-col gap-1" data-invalid={shown ? true : undefined}>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button id={id} type="button" variant="outline" size={button()} className="w-full justify-start" aria-invalid={shown ? true : undefined}
-            {...(describedBy === undefined ? {} : { "aria-describedby": describedBy })}
-          >
-            <CalendarDays aria-hidden className="size-4" />
-            {selected ? formatDay(value, locale) : t("pricing.field.pickDay")}
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-auto p-2">
-          <Calendar
-            {...(selected ? { selected, defaultMonth: selected } : {})}
-            locale={locale}
-            previousMonthLabel={t("pricing.calendar.previous")}
-            nextMonthLabel={t("pricing.calendar.next")}
-            onSelect={(date) => {
-              onChange(dayOf(date));
-              setOpen(false);
-            }}
-          />
-        </PopoverContent>
-      </Popover>
+      <DayPicker
+        id={id}
+        value={value}
+        onChange={onChange}
+        placeholder={t("pricing.field.pickDay")}
+        labels={{ previous: t("pricing.calendar.previous"), next: t("pricing.calendar.next") }}
+        invalid={shown !== undefined}
+        {...(describedBy === undefined ? {} : { describedBy })}
+      />
       <FieldMessages shown={shown} field={field} />
     </Field>
   );

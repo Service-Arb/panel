@@ -1,14 +1,9 @@
 import type { T } from "@/shared/i18n";
+import { minutesOf } from "@/shared/lib/clock";
 
 import { DAYS, type Day, type HoursRow } from "../model/settings";
 
-const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
-
-/** Minutes since midnight of an `HH:MM`, or null when it is not one (kitstart's own pattern). */
-export function minutesOf(time: string): number | null {
-  const m = TIME.exec(time);
-  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
-}
+export { minutesOf };
 
 export interface LocalTime {
   day: Day;
