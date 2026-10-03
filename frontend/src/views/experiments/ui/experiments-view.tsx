@@ -20,7 +20,7 @@ export function ExperimentsView() {
   const { period, brand, range, update } = useFilterParams();
   const places = usePlaces();
   const key = `experiments:${range.from}:${range.to}:${brand ?? ""}`;
-  const data = useResource(key, () => fetchExperiments({ ...range, brand }), key, { live: ["experiments", "metrics"] });
+  const data = useResource(key, () => fetchExperiments({ ...range, brand }), key, { live: ["experiments"] });
   const seen = data.status === "ok" ? data.data.experiments : [];
 
   return (
