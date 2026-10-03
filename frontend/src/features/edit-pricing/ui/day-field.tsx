@@ -10,7 +10,7 @@ import { formatDay } from "@/shared/lib/format";
 import { useButtonSize } from "@/shared/ui/touch";
 
 import type { FieldErrors } from "../model/errors";
-import { domIdOf } from "../model/fields";
+import { describedByOf, domIdOf } from "../model/fields";
 import { FieldMessages } from "./field-messages";
 
 /** The Calendar works in local days; the model in `YYYY-MM-DD`, no zone. */
@@ -30,12 +30,15 @@ export function DayField({ field, label, value, onChange, errors }: { field: str
   const shown = errors.byField.get(field);
   const id = domIdOf(field);
   const selected = dateOf(value);
+  const describedBy = describedByOf(field, false, shown?.length ?? 0);
   return (
     <Field className="flex min-w-0 flex-col gap-1" data-invalid={shown ? true : undefined}>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <Button id={id} type="button" variant="outline" size={button()} className="w-full justify-start" aria-invalid={shown ? true : undefined}>
+          <Button id={id} type="button" variant="outline" size={button()} className="w-full justify-start" aria-invalid={shown ? true : undefined}
+            {...(describedBy === undefined ? {} : { "aria-describedby": describedBy })}
+          >
             <CalendarDays aria-hidden className="size-4" />
             {selected ? formatDay(value, locale) : t("pricing.field.pickDay")}
           </Button>
@@ -53,7 +56,7 @@ export function DayField({ field, label, value, onChange, errors }: { field: str
           />
         </PopoverContent>
       </Popover>
-      <FieldMessages shown={shown} />
+      <FieldMessages shown={shown} field={field} />
     </Field>
   );
 }

@@ -15,10 +15,12 @@ export interface LabelsFieldsProps {
   field: string;
   onChange: (labels: Record<string, string>) => void;
   errors: FieldErrors;
+  /** The row the labels belong to (see `TextField`): "Studio — Label (FR)". */
+  context?: string | null;
 }
 
 /** The words of an input or an option, one per locale: every site locale must have them. */
-export function LabelsFields({ labels, locales, field, onChange, errors }: LabelsFieldsProps) {
+export function LabelsFields({ labels, locales, field, onChange, errors, context }: LabelsFieldsProps) {
   const t = useT();
   const all = [...locales, ...Object.keys(labels).filter((l) => !locales.includes(l))];
   return (
@@ -32,6 +34,7 @@ export function LabelsFields({ labels, locales, field, onChange, errors }: Label
             value={labels[locale] ?? ""}
             onChange={(text) => onChange({ ...labels, [locale]: text })}
             errors={errors}
+            context={context ?? null}
           />
         ))}
       </div>

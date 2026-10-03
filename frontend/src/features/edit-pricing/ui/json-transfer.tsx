@@ -9,6 +9,7 @@ import { useT } from "@/shared/i18n";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
 import { useButtonSize } from "@/shared/ui/touch";
 
+import { PASTE_FIELD_CLASS, PROBLEMS_CLASS } from "../config/paste";
 import { exportModel, importModel } from "../model/import";
 import type { PricingEditor } from "../model/use-pricing-editor";
 import { shownText } from "./shown-text";
@@ -82,8 +83,8 @@ function PasteForm({ onLoaded }: { onLoaded: (model: PricingModel) => void }) {
     >
       <Field className="flex flex-col gap-1">
         <FieldLabel htmlFor={id}>{t("pricing.json.field")}</FieldLabel>
-        <Textarea id={id} rows={10} className="font-mono text-xs" spellCheck={false} value={text} aria-invalid={refused ? true : undefined} onChange={(e) => setText(e.target.value)} />
-        <FieldDescription>{t("pricing.json.hint")}</FieldDescription>
+        <Textarea id={id} className={PASTE_FIELD_CLASS} aria-describedby={`${id}-hint`} spellCheck={false} value={text} aria-invalid={refused ? true : undefined} onChange={(e) => setText(e.target.value)} />
+        <FieldDescription id={`${id}-hint`}>{t("pricing.json.hint")}</FieldDescription>
       </Field>
       {refused && (
         <Alert variant="destructive">
@@ -91,7 +92,7 @@ function PasteForm({ onLoaded }: { onLoaded: (model: PricingModel) => void }) {
             {"notJson" in refused ? (
               t("pricing.json.notJson")
             ) : (
-              <ul className="flex flex-col gap-0.5">
+              <ul className={PROBLEMS_CLASS}>
                 {refused.problems.slice(0, SHOWN_PROBLEMS).map((p, i) => (
                   <li key={i} className="wrap-anywhere">
                     <span className="font-mono">{p.path || "model"}</span>: {shownText({ code: p.code, vars: p.vars }, t)}

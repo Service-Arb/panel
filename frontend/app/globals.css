@@ -65,3 +65,11 @@ body {
     animation-name: panel-glow-odd;
   }
 }
+
+/* The kit's overlays stay mounted through their exit fade, still covering the
+   page: a click on Save right after a dialog closes landed on the fading
+   overlay. The leaving content already drops pointer events; its overlay must too.
+   Belongs in @evinvest/uikit (DialogOverlay & co.); drop this once it ships there. */
+[data-slot$="-overlay"][data-state="closed"] {
+  pointer-events: none;
+}

@@ -1,7 +1,7 @@
 "use client";
 
 import { Alert, AlertDescription, Button } from "@evinvest/uikit";
-import { useEffect } from "react";
+import { type ReactNode, useEffect } from "react";
 
 import type { PricingItem } from "@/entities/pricing";
 import { useT } from "@/shared/i18n";
@@ -21,10 +21,16 @@ export interface PricingEditorFormProps {
   editor: PricingEditor;
   /** The brand's pricing as saved by someone else since the draft started; null while nobody has. */
   fresher: PricingItem | null;
-  /** Start the draft again from this pricing, dropping its edits. */
-  onTakeFresh: (item: PricingItem) => void;
+  /**
+   * Start the draft again from this pricing, dropping its edits. `chosen`: the
+   * person asked for it (a button), so the rebuilt screen puts their focus back
+   * somewhere; an untouched draft following a save by someone else does not.
+   */
+  onTakeFresh: (item: PricingItem, chosen: boolean) => void;
   /** After a 409 that did not say what is current: read the brand again. */
   onReload: () => void;
+  /** Beside Save in the action bar, where the screen puts more than the editor (a way to the preview). */
+  extraAction?: ReactNode;
 }
 
 /**
@@ -32,12 +38,12 @@ export interface PricingEditorFormProps {
  * never replaces what is typed: with no edits the draft takes it, with edits
  * it says so and the person decides.
  */
-export function PricingEditorForm({ editor, fresher, onTakeFresh, onReload }: PricingEditorFormProps) {
+export function PricingEditorForm({ editor, fresher, onTakeFresh, onReload, extraAction }: PricingEditorFormProps) {
   const t = useT();
   const button = useButtonSize();
   const { state, changed, errors, draft } = editor;
   useEffect(() => {
-    if (fresher && !changed) onTakeFresh(fresher);
+    if (fresher && !changed) onTakeFresh(fresher, false);
   }, [fresher, changed, onTakeFresh]);
   return (
     <form
@@ -51,11 +57,11 @@ export function PricingEditorForm({ editor, fresher, onTakeFresh, onReload }: Pr
       {state.kind === "conflict" && (
         <ConflictAlert
           current={state.current}
-          onTakeFresh={() => (state.current ? onTakeFresh(state.current) : onReload())}
+          onTakeFresh={() => (state.current ? onTakeFresh(state.current, true) : onReload())}
           onOverwrite={editor.overwrite}
         />
       )}
-      {fresher && changed && state.kind !== "conflict" && <FresherAlert fresher={fresher} onTakeFresh={() => onTakeFresh(fresher)} />}
+      {fresher && changed && state.kind !== "conflict" && <FresherAlert fresher={fresher} onTakeFresh={() => onTakeFresh(fresher, true)} />}
       {errors.general.length > 0 && (
         <Alert variant="destructive" role="alert">
           <AlertDescription className="flex flex-col gap-0.5">
@@ -92,16 +98,19 @@ export function PricingEditorForm({ editor, fresher, onTakeFresh, onReload }: Pr
           <NeedCard key={need.key} editor={editor} need={need} />
         ))}
       </ListSection>
-      <div className="flex flex-wrap items-center gap-2 border-t border-border bg-background py-3 md:sticky md:bottom-0">
+      {/* Sticky on every width: a phone's form runs to thousands of pixels. There it
+          stops above the kit's fixed tab bar, which itself clears the home indicator. */}
+      <div className="sticky bottom-[calc(var(--shell-tab-bar-h)+env(safe-area-inset-bottom,0px))] z-10 flex flex-wrap items-center gap-2 border-t border-border bg-background py-3 md:bottom-0">
         <Button type="submit" size={button()} disabled={!changed || state.kind === "saving" || state.kind === "conflict"}>
           {state.kind === "saving" ? t("pricing.saving") : t("pricing.save")}
         </Button>
         <Button type="button" variant="ghost" size={button()} disabled={!changed || state.kind === "saving"} onClick={editor.reset}>
           {t("pricing.reset")}
         </Button>
-        <span className="text-sm text-ink-soft" aria-live="polite">
+        <span className="text-sm text-ink-soft max-md:sr-only" aria-live="polite">
           {changed ? t("pricing.unsaved") : t("pricing.upToDate")}
         </span>
+        {extraAction}
       </div>
     </form>
   );

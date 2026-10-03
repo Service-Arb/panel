@@ -21,6 +21,8 @@ export function BrandPricing({ brand, today }: { brand: string; today: string })
   const { role } = useMe();
   const [version, setVersion] = useState(0);
   const [pinned, setPinned] = useState<PricingItem | null>(null);
+  // The pricing the person chose to load: its workspace mounts with focus on the status, not on <body>.
+  const [chosen, setChosen] = useState<PricingItem | null>(null);
   const data = useResource(`pricing:${brand}:${version}`, () => fetchPricing(brand), `pricing:${brand}`, { live: followsPricing(brand) });
   const latest = data.status === "ok" ? data.data : null;
   if (latest !== null && pinned === null) setPinned(latest);
@@ -30,7 +32,10 @@ export function BrandPricing({ brand, today }: { brand: string; today: string })
     setPinned(item ?? null);
     setVersion((v) => v + 1);
   }, []);
-  const takeFresh = useCallback((item: PricingItem) => setPinned(item), []);
+  const takeFresh = useCallback((item: PricingItem, wasChosen: boolean) => {
+    setPinned(item);
+    setChosen(wasChosen ? item : null);
+  }, []);
 
   return (
     <Settled loading={data.status === "loading"} skeleton={<Skeleton className="h-96 w-full" />}>
@@ -43,6 +48,7 @@ export function BrandPricing({ brand, today }: { brand: string; today: string })
             fresher={pinned && pricingSavedSince(latest, pinned) ? latest : null}
             today={today}
             version={version}
+            focusStatus={pinned !== null && pinned === chosen}
             onWritten={written}
             onTakeFresh={takeFresh}
           />

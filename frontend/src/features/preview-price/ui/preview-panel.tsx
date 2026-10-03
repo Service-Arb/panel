@@ -19,10 +19,12 @@ export interface PreviewPanelProps {
   onShowPath: (path: string) => void;
   /** With no model: shows what keeps the draft from making one. */
   onShowProblem?: () => void;
+  /** The card's DOM id: where a phone's "Calculate" in the editor's action bar takes the reader. */
+  id?: string;
 }
 
 /** "Calculate": a need and the visitor's answers, priced by the server exactly as the site prices them. */
-export function PreviewPanel({ brand, model, onShowPath, onShowProblem }: PreviewPanelProps) {
+export function PreviewPanel({ brand, model, onShowPath, onShowProblem, id }: PreviewPanelProps) {
   const t = useT();
   const [pickedNeed, setPickedNeed] = useState<string | null>(null);
   const [picked, setPicked] = useState<Record<string, string>>({});
@@ -30,7 +32,7 @@ export function PreviewPanel({ brand, model, onShowPath, onShowProblem }: Previe
   const answers = model && need !== null ? answersFor(model, need, picked) : {};
   const state = usePreview(brand, model, need, answers);
   return (
-    <Card>
+    <Card id={id} tabIndex={-1} className="scroll-mt-4 outline-none">
       <CardHeader>
         <CardTitle>{t("pricing.preview.title")}</CardTitle>
         <CardDescription>{t("pricing.preview.body")}</CardDescription>

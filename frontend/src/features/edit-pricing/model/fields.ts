@@ -32,3 +32,15 @@ export const within = (field: string, parent: string): boolean => field === pare
 
 /** The DOM id of a field's control (or of its group): what a link to the field focuses. */
 export const domIdOf = (field: string): string => `pricing-${field.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+
+/** The id of a field's hint: what its control's `aria-describedby` names. */
+export const hintIdOf = (field: string): string => `${domIdOf(field)}-hint`;
+
+/** The id of the `i`-th reason filed under a field. */
+export const messageIdOf = (field: string, i: number): string => `${domIdOf(field)}-msg-${i}`;
+
+/** A control's `aria-describedby`: its hint, then its reasons; none — no attribute. */
+export function describedByOf(field: string, hasHint: boolean, messages: number): string | undefined {
+  const ids = [...(hasHint ? [hintIdOf(field)] : []), ...Array.from({ length: messages }, (_, i) => messageIdOf(field, i))];
+  return ids.length > 0 ? ids.join(" ") : undefined;
+}
