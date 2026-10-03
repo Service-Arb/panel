@@ -16,10 +16,13 @@ export type ApiFailure =
   | { kind: "forbidden"; message: string }
   | { kind: "unavailable" }
   | { kind: "not_found" }
-  | { kind: "conflict"; message: string }
+  /** `body` is the whole answer: some 409s carry the record as it now is (`current`). */
+  | { kind: "conflict"; message: string; body: unknown }
   | { kind: "bad_request"; message: string }
   /** A 422 naming the fields it refused, each with the backend's reason. */
   | { kind: "invalid_fields"; fields: Record<string, string> }
+  /** A 422 naming one place in the body it refused (`needs.standard.inputs[2]`). */
+  | { kind: "invalid_path"; path: string; message: string }
   | { kind: "failed"; status: number; message: string }
   | { kind: "network" };
 
@@ -51,28 +54,33 @@ function withQuery(path: string, query?: Query): string {
 interface ErrorBody {
   message: string;
   fields: Record<string, string> | null;
+  path: string | null;
+  body: unknown;
 }
 
-/** `{"error": "...", "fields": {...}}`, the backend's error shape; anything else says nothing. */
+const NO_BODY: ErrorBody = { message: "", fields: null, path: null, body: null };
+
+/** `{"error": "...", "fields": {...}}` or `{"error": "...", "path": "..."}`, the backend's error shapes; anything else says nothing. */
 async function errorBody(res: Response): Promise<ErrorBody> {
   try {
     const body: unknown = await res.json();
-    if (typeof body !== "object" || body === null) return { message: "", fields: null };
+    if (typeof body !== "object" || body === null) return NO_BODY;
     const message = "error" in body && typeof body.error === "string" ? body.error : "";
     const raw = "fields" in body ? body.fields : null;
     const fields =
       typeof raw === "object" && raw !== null && !Array.isArray(raw)
         ? Object.fromEntries(Object.entries(raw).filter((e): e is [string, string] => typeof e[1] === "string"))
         : null;
-    return { message, fields };
+    const path = "path" in body && typeof body.path === "string" ? body.path : null;
+    return { message, fields, path, body };
   } catch {
     // Not JSON: a proxy's page, say. The status says enough.
-    return { message: "", fields: null };
+    return NO_BODY;
   }
 }
 
 export async function failureOf(res: Response): Promise<ApiFailure> {
-  const { message, fields } = await errorBody(res);
+  const { message, fields, path, body } = await errorBody(res);
   switch (res.status) {
     case 401:
       return { kind: "unauthenticated" };
@@ -83,11 +91,12 @@ export async function failureOf(res: Response): Promise<ApiFailure> {
     case 404:
       return { kind: "not_found" };
     case 409:
-      return { kind: "conflict", message };
+      return { kind: "conflict", message, body };
     case 400:
       return { kind: "bad_request", message };
     case 422:
-      return fields ? { kind: "invalid_fields", fields } : { kind: "failed", status: 422, message };
+      if (fields) return { kind: "invalid_fields", fields };
+      return path === null ? { kind: "failed", status: 422, message } : { kind: "invalid_path", path, message };
     case 503:
       return { kind: "unavailable" };
     default:

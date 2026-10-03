@@ -29,3 +29,8 @@ export function managesSources(role: Role): boolean {
 export function managesPlaces(role: Role): boolean {
   return role === "admin";
 }
+
+/** Editing and taking off a brand's prices: an admin's (a site quotes from them); an operator reads them. */
+export function managesPricing(role: Role): boolean {
+  return role === "admin";
+}
