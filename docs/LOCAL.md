@@ -82,7 +82,8 @@ to `/etc/hosts`.
 `PANEL_DEV_SIGN_IN=admin|operator` (and optionally `PANEL_DEV_SIGN_IN_EMAIL`, by default
 `dev-<role>@localhost`) replaces concierge: `/auth/login` sends the browser straight to
 `/auth/callback`, which opens a real panel session for a made-up user with that role. The
-sidebar shows the user as **Dev sign-in (admin)**, and `serve` logs `DEV SIGN-IN ON` at start.
+sidebar shows the user as **Dev sign-in (admin)**, `GET /api/v1/me` answers
+`"dev_sign_in": true` (for a UI badge), and `serve` logs `DEV SIGN-IN ON` at start.
 
 The binary refuses it at start (exit 78, every command) in any `APP_ENV` but `development`,
 beside any concierge variable, and unless `PANEL_PUBLIC_ORIGIN` is `http://localhost[:port]`

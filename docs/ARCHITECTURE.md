@@ -164,7 +164,7 @@ the journal and is answered `200` with the same body, journaling nothing. Withou
 every request is a new event (`201`).
 
 ```text
-GET    /me                                        {user_id, role, email, preferred_name}
+GET    /me                                        {user_id, role, email, preferred_name, dev_sign_in}
 GET    /leads?stage&brand&location&overdue&created_from&created_to&cursor&limit
                                                   {leads: [Lead], next_cursor}; newest created
                                                   first, limit ≤ 200 (default 50); created_*

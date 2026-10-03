@@ -128,6 +128,8 @@ pub struct Caller {
 	pub role: Role,
 	pub email: String,
 	pub preferred_name: String,
+	/// Signed in by `PANEL_DEV_SIGN_IN`, not concierge: `/me` says so, for the UI to show.
+	pub dev_sign_in: bool,
 }
 
 fn json_error(status: StatusCode, msg: &str) -> Response {
@@ -451,6 +453,7 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> 
 		role,
 		email: me.email,
 		preferred_name: me.preferred_name,
+		dev_sign_in: s.concierge.is_dev(),
 	})
 }
 

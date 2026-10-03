@@ -216,6 +216,8 @@ struct MeDto {
 	role: &'static str,
 	email: String,
 	preferred_name: String,
+	/// `true` only under `PANEL_DEV_SIGN_IN` (development, loopback).
+	dev_sign_in: bool,
 }
 
 async fn me(Extension(caller): Extension<Caller>) -> Json<MeDto> {
@@ -224,6 +226,7 @@ async fn me(Extension(caller): Extension<Caller>) -> Json<MeDto> {
 		role: caller.role.as_str(),
 		email: caller.email,
 		preferred_name: caller.preferred_name,
+		dev_sign_in: caller.dev_sign_in,
 	})
 }
 

@@ -159,6 +159,7 @@ async fn dev_sign_in_opens_a_real_session_with_the_role() {
 	assert_eq!(me["role"], "admin");
 	assert_eq!(me["email"], "dev-admin@localhost");
 	assert_eq!(me["preferred_name"], "Dev sign-in (admin)", "the UI shows that this is dev sign-in");
+	assert_eq!(me["dev_sign_in"], true);
 	assert_eq!(b.send(&app, Method::GET, "/api/v1/sources").await.0, StatusCode::OK, "an admin's screen");
 
 	assert_eq!(b.send(&app, Method::POST, "/auth/logout").await.0, StatusCode::NO_CONTENT);
