@@ -1092,7 +1092,7 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 	assert_eq!(got.status, StatusCode::OK, "{}", got.body);
 	assert_eq!(
 		got.body,
-		json!({"enabled": true, "linked": true, "blocked": false, "account": null, "rules": {"new_lead": true, "contact_overdue": true}}),
+		json!({"enabled": true, "linked": true, "blocked": false, "account": null, "rules": {"new_lead": true, "contact_overdue": true, "booked": true}}),
 		"an operator's rules, at their defaults"
 	);
 	let (role, name): (Option<String>, String) = sqlx::query_as("SELECT role, display_name FROM telegram_links").fetch_one(&pool).await.unwrap();
@@ -1111,7 +1111,7 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 
 	let muted = b.send(&app, Method::PUT, "/api/v1/telegram/rules", Some(json!({"rules": {"new_lead": false}})), true).await;
 	assert_eq!(muted.status, StatusCode::OK, "{}", muted.body);
-	assert_eq!(muted.body["rules"], json!({"new_lead": false, "contact_overdue": true}));
+	assert_eq!(muted.body["rules"], json!({"new_lead": false, "contact_overdue": true, "booked": true}));
 	let admins = b
 		.send(&app, Method::PUT, "/api/v1/telegram/rules", Some(json!({"rules": {"payment_received": true}})), true)
 		.await;

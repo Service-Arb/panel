@@ -1022,3 +1022,81 @@ async fn a_link_changing_tells_its_user() {
 	assert_eq!(s.n.deliver(at(0)).await.unwrap().dead, 1);
 	assert_eq!(told(), [Some(user)], "blocked");
 }
+
+/// The rule `booked`: a slot set by an operator goes to the others; a provider's booking,
+/// matched or not, its move and its cancellation, to everyone linked.
+#[tokio::test]
+async fn bookings_are_told_under_booked() {
+	use panel::booking::{BookingEvent, Change, Contact, Provider, SlotAction};
+
+	let s = setup().await;
+	let (op, admin) = (Uuid::now_v7(), Uuid::now_v7());
+	s.link(op, Role::Operator, 1, t0()).await;
+	s.link(admin, Role::Admin, 2, t0()).await;
+	let lead = s.lead(t0()).await;
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	s.n.deliver(t0()).await.unwrap();
+	s.mock.clear();
+
+	let set = SlotAction::Set {
+		start_at: "2026-10-08T10:00:00+02:00".into(),
+		end_at: None,
+	};
+	s.panel.book_once(Actor(op), &brand(), &lead, set, t0(), None).await.unwrap();
+	assert_eq!(s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap(), 1, "not to the operator who set it");
+	s.n.deliver(at(2_000)).await.unwrap();
+	let sent = s.mock.calls("sendMessage");
+	assert_eq!(sent[0]["chat_id"], 2);
+	assert_eq!(
+		sent[0]["text"], "Бронь: 2026-10-08 10:00 (Paris)\naquafix · paris-11\nНужно: a leaking tap\nТелефон: +33 6 00 00 00 00\nЧерез: manual",
+		"the slot in the place's time"
+	);
+	assert!(sent[0].get("reply_markup").is_none_or(|m| m["inline_keyboard"] == json!([])), "no buttons");
+	s.mock.clear();
+
+	let google = |id: &str, version: &str, change: Change, phone: &str| BookingEvent {
+		provider: Provider::GoogleCalendar,
+		external_ref: id.into(),
+		version: version.into(),
+		at: t0(),
+		change,
+		lead_ref: None,
+		contact: Contact {
+			phone: Some(phone.into()),
+			..Contact::default()
+		},
+	};
+	let booked = |m: i64| Change::Booked {
+		start: "2026-10-09T08:00:00Z".parse::<Timestamp>().unwrap() + SignedDuration::from_mins(m),
+		end: None,
+		booked_at: Some(t0()),
+	};
+	let events = vec![google("ev1", "a", booked(0), "+33600000000"), google("ev2", "a", booked(60), "+33799999999")];
+	let i = s.panel.ingest_bookings(&brand(), events, t0()).await.unwrap();
+	assert_eq!((i.matched, i.unmatched), (1, 1));
+	s.panel.ingest_bookings(&brand(), vec![google("ev1", "b", booked(30), "+33600000000")], at(1)).await.unwrap();
+	s.panel
+		.ingest_bookings(&brand(), vec![google("ev2", "c", Change::Canceled, "+33799999999")], at(2))
+		.await
+		.unwrap();
+	assert_eq!(s.panel.telegram_fan_out(at(10), Locale::Ru).await.unwrap(), 8, "four events, two chats");
+	let mut heads: Vec<String> = Vec::new();
+	for n in 0..8 {
+		s.n.deliver(at(10 + 1_100 * n)).await.unwrap();
+	}
+	for t in texts(&s.mock.calls("sendMessage")) {
+		heads.push(t.lines().next().unwrap().to_owned());
+	}
+	heads.sort();
+	heads.dedup();
+	assert_eq!(
+		heads,
+		[
+			"Бронь без заявки: 2026-10-09 11:00 (Paris)",
+			"Бронь отменена без заявки: 2026-10-09 11:00 (Paris)",
+			"Бронь перенесена: 2026-10-09 10:30 (Paris)",
+			"Бронь: 2026-10-09 10:00 (Paris)",
+		]
+	);
+	assert_eq!(s.panel.telegram_fan_out(at(20), Locale::Ru).await.unwrap(), 0, "each told once");
+}

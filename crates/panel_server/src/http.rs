@@ -14,7 +14,11 @@
 //! only. The route sheds load past a number of requests at once, and bounds how long a body
 //! may take to arrive and a request in all ([`Limits`]).
 //!
-//! Answers: `207` with a verdict per event (protojson `sa.v1.IngestResponse`); `401` for a
+//! Answers: `207` with a verdict per event (protojson `sa.v1.IngestResponse`); `409` with
+//! `Retry-After` and the same verdicts when an event names what has not arrived yet (a
+//! `booking.requested` before its `lead.created`: `deferred`) — kitstart's outbox retries a
+//! 409 for `booking.requested`, and what was journaled of the batch is a duplicate then;
+//! `401` for a
 //! batch whose key or signature is refused; `400` for a body that is not a batch; `408` for
 //! a body too slow to arrive; `413` past [`MAX_BODY`]; `503` when shedding load; `500` for
 //! our own failures, reported.
@@ -31,7 +35,7 @@ use axum::{
 	response::{IntoResponse, Response},
 	routing::{get, post},
 };
-use panel::{IngestError, Outcome, Panel, SignedBatch};
+use panel::{IngestError, Outcome, Panel, SignedBatch, booking::PushSources};
 use panel_contracts::v1::{EventResult, IngestResponse};
 use panel_core::signature::{self, SignatureError};
 use serde_json::json;
@@ -39,7 +43,7 @@ use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
 
 use crate::{
-	api,
+	api, booking,
 	live::{self, Live, LiveLimits},
 	places, pricing,
 	signin::{self, SignIn},
@@ -106,6 +110,7 @@ pub fn app_with_telegram(sign_in: SignIn, limits: Limits, bot: BotName) -> Route
 		.route("/auth/logout", post(signin::logout));
 	let auth = bounded(auth, limits.auth_concurrent, limits.auth_timeout).with_state(sign_in.clone());
 	let reads_and_edits = api::routes()
+		.merge(booking::routes())
 		.merge(places::reads())
 		.merge(pricing::reads())
 		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate));
@@ -159,6 +164,12 @@ async fn nosniff(mut res: Response) -> Response {
 }
 
 pub fn router_with(panel: Panel, limits: Limits) -> Router {
+	router_with_hooks(panel, limits, PushSources::default())
+}
+
+/// [`router_with`], answering the booking webhooks of `hooks` (`POST /api/hooks/booking/…`);
+/// a provider not among them is a 404.
+pub fn router_with_hooks(panel: Panel, limits: Limits, hooks: PushSources) -> Router {
 	let layers = ServiceBuilder::new()
 		// The only error the layers below raise is the shed: everything else is a response.
 		.layer(HandleErrorLayer::new(|_: BoxError| async { error(StatusCode::SERVICE_UNAVAILABLE, "busy, try again") }))
@@ -170,7 +181,8 @@ pub fn router_with(panel: Panel, limits: Limits) -> Router {
 		.route("/health", get(|| async { "ok" }))
 		.route("/api/ingest/v1/events", post(ingest).layer(layers))
 		.merge(places::internal())
-		.with_state(panel)
+		.with_state(panel.clone())
+		.merge(booking::hooks(panel, hooks))
 		.layer(middleware::map_response(nosniff))
 }
 
@@ -181,6 +193,10 @@ fn error(status: StatusCode, msg: impl Into<String>) -> Response {
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 	headers.get(name).and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty())
 }
+
+/// When a batch with a deferred event is to come again, in seconds: a lead's own event is
+/// usually a moment behind.
+const DEFERRED_RETRY_AFTER: &str = "30";
 
 const STALE_MESSAGE: &str = "timestamp outside the replay window";
 const REFUSED_MESSAGE: &str = "invalid key or signature";
@@ -227,6 +243,7 @@ async fn ingest(State(panel): State<Panel>, headers: HeaderMap, body: Body) -> R
 	};
 	match panel.ingest(batch, now).await {
 		Ok(verdicts) => {
+			let deferred = verdicts.iter().any(|v| matches!(v.outcome, Outcome::Deferred(_)));
 			let results = verdicts
 				.into_iter()
 				.map(|v| {
@@ -235,6 +252,7 @@ async fn ingest(State(panel): State<Panel>, headers: HeaderMap, body: Body) -> R
 						Outcome::Accepted { unregistered: true } => ("accepted", Some("type not registered: stored, not projected".to_owned())),
 						Outcome::Duplicate => ("duplicate", None),
 						Outcome::Rejected(e) => ("rejected", Some(e.0)),
+						Outcome::Deferred(e) => ("deferred", Some(e.0)),
 					};
 					EventResult {
 						// `wire::MAX_BATCH` keeps this far below u32::MAX.
@@ -245,6 +263,13 @@ async fn ingest(State(panel): State<Panel>, headers: HeaderMap, body: Body) -> R
 					}
 				})
 				.collect();
+			if deferred {
+				// A 207's `rejected` is final to kitstart's outbox; a 409 (or 425) on
+				// `booking.requested` it sends again (lib#185). Not a 5xx: nothing failed here.
+				let mut res = (StatusCode::CONFLICT, Json(IngestResponse { results })).into_response();
+				res.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static(DEFERRED_RETRY_AFTER));
+				return res;
+			}
 			(StatusCode::MULTI_STATUS, Json(IngestResponse { results })).into_response()
 		}
 		// An unknown key and a bad signature read the same, so key ids cannot be probed for;

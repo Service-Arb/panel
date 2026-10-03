@@ -62,7 +62,7 @@ fn currency(v: &str) -> ApiResult<String> {
 }
 
 /// The client's idempotency key: 1–128 visible ASCII characters, or none.
-fn idempotency_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
+pub(crate) fn idempotency_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
 	let Some(v) = headers.get(IDEMPOTENCY_KEY) else { return Ok(None) };
 	let v = v.to_str().ok().filter(|v| (1..=128).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_graphic()));
 	v.map(|v| Some(v.to_owned()))
@@ -260,6 +260,8 @@ struct LeadDto {
 	pricing_valid_from: Option<String>,
 	/// An estimate's inputs, input id → value id.
 	estimate_inputs: Option<Value>,
+	/// Its booking; `status: none` when it has none.
+	booking: BookingDto,
 	last_event_at: String,
 	/// Set while it waits for its first contact.
 	sla: Option<SlaDto>,
@@ -267,6 +269,23 @@ struct LeadDto {
 	/// otherwise or when there is none.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pii: Option<Value>,
+}
+
+#[derive(Serialize)]
+struct BookingDto {
+	/// none | requested | booked | canceled | done | no_show
+	status: &'static str,
+	/// manual | link | google_calendar | cal_com
+	provider: Option<&'static str>,
+	start_at: Option<String>,
+	end_at: Option<String>,
+	/// The provider's booking, when the slot is one.
+	external_ref: Option<String>,
+	/// ref | contact | manual: how the slot joined the lead.
+	r#match: Option<&'static str>,
+	/// The visitor's wish (`YYYY-MM-DD`; morning | afternoon | evening).
+	preferred_date: Option<String>,
+	preferred_part: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -305,6 +324,16 @@ fn lead_dto(v: LeadView, now: Timestamp) -> LeadDto {
 		quoted_cents: r.quoted_cents,
 		pricing_valid_from: r.pricing_valid_from,
 		estimate_inputs: r.estimate_inputs,
+		booking: BookingDto {
+			status: r.booking.status.as_str(),
+			provider: r.booking.provider.map(|p| p.as_str()),
+			start_at: ts(r.booking.start_at),
+			end_at: ts(r.booking.end_at),
+			external_ref: r.booking.external_ref,
+			r#match: r.booking.matched.map(|m| m.as_str()),
+			preferred_date: r.booking.preferred_date.map(|d| d.to_string()),
+			preferred_part: r.booking.preferred_part.map(|p| p.as_str()),
+		},
 		last_event_at: r.last_event_at.to_string(),
 	}
 }
@@ -323,6 +352,8 @@ struct LeadsQuery {
 	suspect: Option<String>,
 	/// `quote` | `estimate` | `fixed`; absent lists every lead.
 	flow: Option<String>,
+	/// A booking status (`none`, `requested`, `booked`, …); absent lists every lead.
+	booking: Option<String>,
 	cursor: Option<String>,
 	limit: Option<u32>,
 }
@@ -362,6 +393,11 @@ async fn leads(State(panel): State<Panel>, Extension(caller): Extension<Caller>,
 			.flow
 			.as_deref()
 			.map(|f| LeadFlow::parse(f).map_err(|_| ApiError::BadRequest("flow is not one of quote, estimate, fixed".into())))
+			.transpose()?,
+		booking: q
+			.booking
+			.as_deref()
+			.map(|b| panel_core::booking::BookingStatus::parse(b).map_err(|e| ApiError::BadRequest(e.0)))
 			.transpose()?,
 		after: q.cursor.as_deref().map(cursor_decode).transpose()?,
 		limit: q.limit.unwrap_or(50),
@@ -765,8 +801,8 @@ async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Cal
 	let kind: SourceKind = b.kind.parse()?;
 	// The panel's own events carry no key (`key_id` NULL): a key of kind panel would only let
 	// something outside pass its writes off as typed in by hand.
-	if kind == SourceKind::Panel {
-		return Err(ApiError::BadRequest("a key of kind panel is not issued: the panel writes without one".into()));
+	if matches!(kind, SourceKind::Panel | SourceKind::Booking) {
+		return Err(ApiError::BadRequest(format!("a key of kind {kind} is not issued: the panel writes without one")));
 	}
 	let brands = b.brands.iter().map(|b| BrandId::parse(b)).collect::<Result<BTreeSet<_>, _>>()?;
 	if !panel_core::ids::is_slug(&b.key_id) {

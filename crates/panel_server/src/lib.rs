@@ -5,9 +5,11 @@
 //! A library target too, so tests can serve the real router in-process.
 
 pub mod api;
+pub mod booking;
 pub mod concierge;
 pub mod cookies;
 pub mod counts;
+pub mod google_calendar;
 pub mod http;
 pub mod live;
 pub mod places;
