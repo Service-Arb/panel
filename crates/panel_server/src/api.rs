@@ -756,7 +756,7 @@ async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Cal
 
 async fn revoke_source(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path(key_id): Path<String>) -> ApiResult<StatusCode> {
 	allow(caller.role.manages_sources())?;
-	if !panel.store().revoke_source(&key_id).await? {
+	if !panel.revoke_source(&key_id).await? {
 		return Err(ApiError::NotFound);
 	}
 	tracing::info!(user_id = %caller.user_id, key_id, "source revoked from the panel");

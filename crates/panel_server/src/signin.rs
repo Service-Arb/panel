@@ -93,6 +93,12 @@ impl SignIn {
 		&self.cookies
 	}
 
+	/// The panel's own origin, e.g. `https://sa.evinvest.ltd`: the one a live socket's
+	/// handshake must come from.
+	pub fn panel_origin(&self) -> &str {
+		&self.config.panel_origin
+	}
+
 	fn redirect_uri(&self) -> String {
 		format!("{}/auth/callback", self.config.panel_origin)
 	}
@@ -351,7 +357,7 @@ pub async fn gate_fresh(State(s): State<SignIn>, req: Request, next: Next) -> Re
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Freshness {
+pub(crate) enum Freshness {
 	Cached,
 	Fresh,
 }
@@ -384,18 +390,47 @@ async fn get_me(s: &SignIn, access: &str) -> Result<Me, ConciergeError> {
 	}
 }
 
+/// Why a caller was not let in, before it is an answer: `/api/v1` answers it, a live socket
+/// closes on it.
+#[derive(Debug)]
+pub(crate) enum Denied {
+	/// No session, or one closed: sign in again (401, the cookies cleared).
+	Unauthenticated,
+	/// Signed in, and no role in the panel (403).
+	Forbidden,
+	/// Concierge cannot be asked now; nothing is closed (503).
+	Unavailable,
+	/// Our failure, or concierge's: the status and the message the caller sees.
+	Failed(StatusCode, &'static str),
+}
+
+impl Denied {
+	pub(crate) fn into_response(self, s: &SignIn) -> Response {
+		match self {
+			Self::Unauthenticated => signed_out(s, json_error(StatusCode::UNAUTHORIZED, "sign in")),
+			Self::Forbidden => json_error(StatusCode::FORBIDDEN, "no access to the panel"),
+			Self::Unavailable => json_error(StatusCode::SERVICE_UNAVAILABLE, "sign-in is unavailable, try again"),
+			Self::Failed(status, msg) => json_error(status, msg),
+		}
+	}
+}
+
 /// The refusal is boxed: a `Response` is large, and the happy path should not carry it.
 async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> Result<Caller, Box<Response>> {
-	let unauthenticated = || Box::new(signed_out(s, json_error(StatusCode::UNAUTHORIZED, "sign in")));
-	let unavailable = || Box::new(json_error(StatusCode::SERVICE_UNAVAILABLE, "sign-in is unavailable, try again"));
-	let cookie = s.cookies.get(headers, cookies::SESSION).ok_or_else(unauthenticated)?;
+	check(s, headers, freshness).await.map_err(|denied| Box::new(denied.into_response(s)))
+}
+
+/// The session behind the request's cookie and the role concierge gives its user: what
+/// [`gate`] lets through, and what a live socket asks again while it is open.
+pub(crate) async fn check(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> Result<Caller, Denied> {
+	let cookie = s.cookies.get(headers, cookies::SESSION).ok_or(Denied::Unauthenticated)?;
 	let session = match s.panel.session(cookie, Timestamp::now(), &s.concierge).await {
 		Ok(session) => session,
-		Err(SessionError::Missing | SessionError::Rejected) => return Err(unauthenticated()),
-		Err(SessionError::Unavailable) => return Err(unavailable()),
+		Err(SessionError::Missing | SessionError::Rejected) => return Err(Denied::Unauthenticated),
+		Err(SessionError::Unavailable) => return Err(Denied::Unavailable),
 		Err(SessionError::Internal(e)) => {
 			crate::report(&e, "reading a session");
-			return Err(Box::new(json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")));
+			return Err(Denied::Failed(StatusCode::INTERNAL_SERVER_ERROR, "internal error"));
 		}
 	};
 	// The user is here: the bot may ask concierge with this session for another week.
@@ -419,21 +454,21 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> 
 				if let Err(e) = s.panel.close_session(&session.key).await {
 					crate::report(&e, "closing a refused session");
 				}
-				return Err(unauthenticated());
+				return Err(Denied::Unauthenticated);
 			}
 			Err(ConciergeError::Unavailable(why)) => {
 				tracing::warn!(why, "concierge unavailable for GetMe");
-				return Err(unavailable());
+				return Err(Denied::Unavailable);
 			}
 			Err(e @ ConciergeError::Failed(_)) => {
 				crate::report(&eyre::eyre!(e), "GetMe");
-				return Err(Box::new(json_error(StatusCode::BAD_GATEWAY, "sign-in failed")));
+				return Err(Denied::Failed(StatusCode::BAD_GATEWAY, "sign-in failed"));
 			}
 		},
 	};
 	if me.user_id != session.user_id {
 		crate::report(&eyre::eyre!("GetMe answered another user than the session's"), "GetMe");
-		return Err(Box::new(json_error(StatusCode::BAD_GATEWAY, "sign-in failed")));
+		return Err(Denied::Failed(StatusCode::BAD_GATEWAY, "sign-in failed"));
 	}
 	let grants = me.scopes.iter().map(|(scope, role)| (scope.as_str(), role.as_str()));
 	let admitted = Role::admitted(&me.role, grants);
@@ -446,7 +481,7 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> 
 		}
 	}
 	let Some(role) = admitted else {
-		return Err(Box::new(json_error(StatusCode::FORBIDDEN, "no access to the panel")));
+		return Err(Denied::Forbidden);
 	};
 	Ok(Caller {
 		user_id: me.user_id,
