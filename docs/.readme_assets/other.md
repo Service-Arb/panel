@@ -43,6 +43,18 @@ after, and can be reverted. The settings are checked as kitstart reads them, ref
 by field (`422`) where kitstart would quietly drop them. The session API is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#place-settings).
 
+## Running it locally
+
+```sh
+nix run .#local-stack    # the panel on :59120 (signed in as a dev admin) and the aquafix and vifnet
+                         # landings from the checkouts beside it, wired together; Ctrl-C stops all
+```
+
+A lead posted on a local site lands in the local panel, a phone edited in the panel shows on
+the site. `PANEL_DEV_SIGN_IN=admin|operator` stands in for concierge, in development on
+loopback only. The prerequisites, the end-to-end check and troubleshooting are in
+[docs/LOCAL.md](docs/LOCAL.md).
+
 ## Tests
 
 `cargo test` runs everything, here and in CI: each database test gets its own throwaway SQLite

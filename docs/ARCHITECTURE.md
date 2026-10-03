@@ -56,7 +56,8 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
   src/http.rs                        POST /api/ingest/v1/events, GET /health; the sign-in and
                                      /api/v1 mounted on top when signing in is configured
   src/signin.rs                      /auth/login, /auth/callback, /auth/logout; the /api/v1 gate
-  src/concierge.rs                   concierge over gRPC: ExchangeCode, RefreshClientToken, GetMe
+  src/concierge.rs                   concierge over gRPC: ExchangeCode, RefreshClientToken, GetMe;
+                                     its development stand-in (PANEL_DEV_SIGN_IN)
   src/cookies.rs                     __Host- cookies, the double-submit CSRF check
   src/api.rs                         the operator API: JSON over the engine's `operator` module
   src/places.rs                      a place's settings: the editor's routes, and the sites'
@@ -140,6 +141,13 @@ POST /auth/logout    CSRF; every session of the user is closed
   http (development only), all `SameSite=Lax`: the callback arrives by a top-level navigation.
 - `serve` without any of the four sign-in variables answers ingest alone; some but not all
   of them is a configuration error at boot.
+- **Dev sign-in** (`PANEL_DEV_SIGN_IN=admin|operator`, docs/LOCAL.md): `Concierge::dev`
+  answers ExchangeCode, RefreshClientToken and GetMe for one made-up user, and `/auth/login`
+  redirects straight to `/auth/callback?code=dev-sign-in&state=…`; the pre-login, the state,
+  the session and the gate run unchanged. Refused at boot (exit 78, every command) in any
+  profile but development, beside any concierge variable, and unless `PANEL_PUBLIC_ORIGIN`
+  is `http://localhost[:port]` or `http://127.0.0.1[:port]` — the image is
+  `APP_ENV=production`, so it cannot be on there.
 
 ## The operator API, `/api/v1`
 
@@ -156,7 +164,7 @@ the journal and is answered `200` with the same body, journaling nothing. Withou
 every request is a new event (`201`).
 
 ```text
-GET    /me                                        {user_id, role, email, preferred_name}
+GET    /me                                        {user_id, role, email, preferred_name, dev_sign_in}
 GET    /leads?stage&brand&location&overdue&created_from&created_to&cursor&limit
                                                   {leads: [Lead], next_cursor}; newest created
                                                   first, limit ≤ 200 (default 50); created_*

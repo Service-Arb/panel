@@ -19,6 +19,10 @@
 //!
 //! The browser never holds a concierge token: only a random session id, whose hash names a
 //! row holding the tokens sealed.
+//!
+//! Under `PANEL_DEV_SIGN_IN` (development, loopback only) there is no concierge:
+//! `/auth/login` sends the browser straight to `/auth/callback` with [`DEV_CODE`], and
+//! [`Concierge::dev`] answers for one made-up user; everything else above runs unchanged.
 
 use std::{
 	collections::HashMap,
@@ -44,7 +48,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-	concierge::{CLIENT_ID, Concierge, ConciergeError, Me},
+	concierge::{CLIENT_ID, Concierge, ConciergeError, DEV_CODE, Me},
 	cookies::{self, Cookies},
 };
 
@@ -124,6 +128,8 @@ pub struct Caller {
 	pub role: Role,
 	pub email: String,
 	pub preferred_name: String,
+	/// Signed in by `PANEL_DEV_SIGN_IN`, not concierge: `/me` says so, for the UI to show.
+	pub dev_sign_in: bool,
 }
 
 fn json_error(status: StatusCode, msg: &str) -> Response {
@@ -175,13 +181,19 @@ pub async fn login(State(s): State<SignIn>) -> Response {
 			return private(page(StatusCode::INTERNAL_SERVER_ERROR, "Sign-in failed", "Something went wrong on our side. Try again."));
 		}
 	};
-	let location = format!(
-		"{}/api/auth/authorize?client_id={CLIENT_ID}&redirect_uri={}&response_type=code&state={}&code_challenge={}&code_challenge_method=S256",
-		s.config.concierge_origin,
-		encode(&s.redirect_uri()),
-		begun.state,
-		begun.challenge,
-	);
+	let location = if s.concierge.is_dev() {
+		// No concierge to send the browser to: straight back to the callback, which then runs
+		// as after concierge — pre-login, state redeemed once, the code exchanged, a session.
+		format!("{}?code={DEV_CODE}&state={}", s.redirect_uri(), begun.state)
+	} else {
+		format!(
+			"{}/api/auth/authorize?client_id={CLIENT_ID}&redirect_uri={}&response_type=code&state={}&code_challenge={}&code_challenge_method=S256",
+			s.config.concierge_origin,
+			encode(&s.redirect_uri()),
+			begun.state,
+			begun.challenge,
+		)
+	};
 	let Ok(location) = HeaderValue::from_str(&location) else {
 		return private(page(StatusCode::INTERNAL_SERVER_ERROR, "Sign-in failed", "The sign-in is misconfigured."));
 	};
@@ -441,6 +453,7 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> 
 		role,
 		email: me.email,
 		preferred_name: me.preferred_name,
+		dev_sign_in: s.concierge.is_dev(),
 	})
 }
 

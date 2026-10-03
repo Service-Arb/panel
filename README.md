@@ -71,6 +71,7 @@ panel serve
 panel rebuild-projections
 
 # A place's live settings (see "Place settings"): set some fields, clear others, the rest stay
+panel place register aquafix royat             # known to the panel, nothing set; a no-op when known
 panel place set aquafix royat --phone +33423500640 --whatsapp +33612345678 \
   --hours 'Mo-Fr 08:00-19:00,Sa 09:00-12:00' --service-area 'Royat,Chamalières'
 panel place set aquafix royat --clear whatsapp
@@ -125,6 +126,18 @@ every change, from the panel or the CLI (`by = cli`), is journaled with what was
 after, and can be reverted. The settings are checked as kitstart reads them, refused field
 by field (`422`) where kitstart would quietly drop them. The session API is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#place-settings).
+
+## Running it locally
+
+```sh
+nix run .#local-stack    # the panel on :59120 (signed in as a dev admin) and the aquafix and vifnet
+                         # landings from the checkouts beside it, wired together; Ctrl-C stops all
+```
+
+A lead posted on a local site lands in the local panel, a phone edited in the panel shows on
+the site. `PANEL_DEV_SIGN_IN=admin|operator` stands in for concierge, in development on
+loopback only. The prerequisites, the end-to-end check and troubleshooting are in
+[docs/LOCAL.md](docs/LOCAL.md).
 
 ## Tests
 

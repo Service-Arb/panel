@@ -179,6 +179,8 @@
             nix build                         the panel binary
             nix build .#${pname}-container    OCI image, the front end in it (Linux only)
             nix build .#frontend              the front end's static export
+            nix run .#local-stack             the panel and both landings on this machine,
+                                              wired together (docs/LOCAL.md)
             nix run .#help                    this
             cargo test                        every test; the database ones on throwaway
                                               SQLite files, nothing to set up
@@ -186,10 +188,20 @@
             EOF
           '';
         };
+        # The panel (dev sign-in) and the landings beside its checkout, wired together on this
+        # machine; the script is the source, shellchecked here (docs/LOCAL.md). It builds the
+        # binary and the front end itself, unless PANEL_BIN / PANEL_WEB_DIR name others: the
+        # app does not depend on them, so naming a cargo build skips the Nix one.
+        localStack = pkgs.writeShellApplication {
+          name = "local-stack";
+          runtimeInputs = with pkgs; [ coreutils curl gawk git gnused ];
+          text = builtins.readFile ./scripts/local-stack.sh;
+        };
       in
       {
         apps = {
           help = { type = "app"; program = lib.getExe help; };
+          local-stack = { type = "app"; program = lib.getExe localStack; };
         };
 
         packages = {
