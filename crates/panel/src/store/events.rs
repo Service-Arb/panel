@@ -203,6 +203,23 @@ pub async fn of_lead(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId
 	.collect()
 }
 
+/// A brand's registered experiment events.
+pub async fn of_experiments(conn: &mut SqliteConnection, brand: &BrandId) -> eyre::Result<Vec<Stored>> {
+	sqlx::query_as::<_, Row>(concat!(
+		"SELECT ",
+		columns!(),
+		" FROM events WHERE brand_id = $1 AND type IN ('experiments.declared', 'experiment.configured') AND status = 'registered' \
+		 ORDER BY occurred_at, id"
+	))
+	.bind(brand.as_str())
+	.fetch_all(&mut *conn)
+	.await
+	.wrap_err_with(|| format!("reading the experiment events of {brand}"))?
+	.into_iter()
+	.map(Stored::try_from)
+	.collect()
+}
+
 /// The next page of the whole journal in `(occurred_at, id)` order, after `after`.
 pub async fn page(conn: &mut SqliteConnection, after: Option<(Timestamp, EventId)>, limit: i64) -> eyre::Result<Vec<Stored>> {
 	let rows = match after {

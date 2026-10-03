@@ -44,7 +44,7 @@ export function PlacesView() {
       return { rows: placeRows(funnel.locations, places), minSample: funnel.min_sample, brands: brandsOf(places) };
     },
     `places:${range.from}:${range.to}`,
-    { live: ["places", "leads", "lead", "metrics"] },
+    { live: ["places", "leads", "lead"] },
   );
 
   return (

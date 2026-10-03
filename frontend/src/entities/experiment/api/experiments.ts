@@ -1,13 +1,13 @@
 import { http } from "@/shared/api";
 
-import { type Experiments, experimentsParser } from "../model/experiment";
+import { type Experiment, type ExperimentPatch, experimentParser, experimentsParser } from "../model/experiment";
 
-export interface ExperimentsFilter {
-  from: string;
-  to: string;
-  brand: string | null;
+/** Every brand's experiments, or one brand's. */
+export async function fetchExperiments(brand: string | null): Promise<Experiment[]> {
+  return (await http.get("/api/v1/experiments", experimentsParser, { brand })).experiments;
 }
 
-export function fetchExperiments(filter: ExperimentsFilter): Promise<Experiments> {
-  return http.get("/api/v1/experiments", experimentsParser, { from: filter.from, to: filter.to, brand: filter.brand });
+/** An admin's change; the answer is the experiment as it now is. */
+export function configureExperiment(brand: string, key: string, patch: ExperimentPatch): Promise<Experiment> {
+  return http.send("PUT", `/api/v1/experiments/${encodeURIComponent(brand)}/${encodeURIComponent(key)}`, patch, experimentParser);
 }

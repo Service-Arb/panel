@@ -5,13 +5,13 @@
 //! A library target too, so tests can serve the real router in-process.
 
 pub mod api;
+pub mod capture;
 pub mod concierge;
 pub mod cookies;
-pub mod counts;
+pub mod experiments;
 pub mod http;
 pub mod live;
 pub mod places;
-pub mod posthog;
 pub mod pricing;
 pub mod signin;
 pub mod telegram;

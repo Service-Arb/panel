@@ -136,14 +136,17 @@ impl Envelope {
 /// Whether a kind of source may write a type (spec §2, the "source" column). What only an
 /// operator can know — a quote, a win, a loss, a finished job — comes from the panel alone,
 /// and payments too, which are entered by hand (owner, 2026-09-30); calls and contacts also
-/// from telephony, once there is one. The site's counts come from the PostHog import alone
-/// (§3.4). A type the panel does not know is open to every kind
-/// (§3.2): it is stored, not projected, and judged again once it is registered.
+/// from telephony, once there is one. The counts of the retired PostHog import were its alone
+/// (§3.4), and stay so. A type the panel does not know is open to every kind
+/// (§3.2): it is stored, not projected, and judged again once it is registered. A landing
+/// declares its experiments; only an admin in the panel lays a setting over them.
 pub fn may_write(kind: SourceKind, type_name: &str) -> bool {
 	use SourceKind::{Panel, Posthog, Site, Telephony};
 	match type_name {
 		"lead.created" => matches!(kind, Site | Panel),
 		"site.metrics" | "contact.metrics" | "experiment.metrics" => matches!(kind, Posthog),
+		"experiments.declared" => matches!(kind, Site),
+		"experiment.configured" => matches!(kind, Panel),
 		"lead.contacted" | "call.attempted" | "call.logged" => matches!(kind, Panel | Telephony),
 		"lead.quoted" | "job.won" | "lead.lost" | "job.completed" | "payment.received" => matches!(kind, Panel),
 		_ => true,
@@ -222,7 +225,7 @@ mod tests {
 	#[test]
 	fn who_writes_what() {
 		use SourceKind::*;
-		let table: [(&str, &[SourceKind]); 12] = [
+		let table: [(&str, &[SourceKind]); 14] = [
 			("lead.created", &[Site, Panel]),
 			("lead.contacted", &[Panel, Telephony]),
 			("lead.quoted", &[Panel]),
@@ -235,6 +238,8 @@ mod tests {
 			("site.metrics", &[Posthog]),
 			("contact.metrics", &[Posthog]),
 			("experiment.metrics", &[Posthog]),
+			("experiments.declared", &[Site]),
+			("experiment.configured", &[Panel]),
 		];
 		for (name, allowed) in table {
 			for kind in SourceKind::ALL {

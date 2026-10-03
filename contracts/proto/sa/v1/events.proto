@@ -117,6 +117,11 @@ message LeadCreatedV1 {
   // What the visitor picked for an estimate: input id → value id, the pricing model's slugs
   // (1–40 of [a-z0-9_-] each), at most 12 pairs, never free text. Only with flow estimate.
   map<string, string> estimate_inputs = 7;
+  // The `distinct_id` of the landing's analytics beacon when the form was sent (a random id it
+  // holds in memory, `crypto.randomUUID()`): 1–128 of [A-Za-z0-9._:-]. Not PII. The panel
+  // sends the lead's later life to PostHog under it, so a visit and its lead are one person
+  // there. Absent: the panel uses `sa-lead:<brand>:<lead>`.
+  optional string analytics_id = 8;
 }
 
 // lead.contacted@1 — subject.lead_id required.
@@ -167,7 +172,54 @@ message CallLoggedV1 {
   optional string attempt_id = 2;
 }
 
-// ── counts, from the PostHog import (spec §2 stages 3–4, §3.4, §7) ─────────────────────
+// ── experiments: configuration, not statistics (those are PostHog's) ───────────────────
+
+// experiments.declared@1 — what a brand's landing runs, as its code declares it; sent by the
+// landing (source.kind site) at every start, a new id each time. subject: the brand alone (no
+// location, lead or job). The panel keeps the latest by occurred_at; an experiment the latest
+// does not name is retired.
+message ExperimentsDeclaredV1 {
+  // At most 64, each key once.
+  repeated ExperimentDeclaration experiments = 1;
+}
+
+message ExperimentDeclaration {
+  // 1–64 of [a-z0-9_].
+  string key = 1;
+  // 2–32 unique names of 1–32 [a-z0-9_-]; the first is the control.
+  repeated string variants = 2;
+  // One per variant, each ≥ 0, their sum > 0.
+  repeated double weights = 3;
+  bool enabled = 4;
+  // [0, 1).
+  optional double holdout = 5;
+  // The hypothesis, at most 200 characters.
+  optional string summary = 6;
+}
+
+// experiment.configured@1 — an admin's change to one of the brand's experiments, written by the
+// panel (source.kind panel, source.id the admin's concierge id, or `cli`). subject: the brand
+// alone. A field absent is left as it was; named in `reset`, it follows the declaration again.
+message ExperimentConfiguredV1 {
+  string key = 1;
+  optional bool enabled = 2;
+  // 2–32 of them, each ≥ 0, their sum > 0; empty: not set by this change.
+  repeated double weights = 3;
+  // [0, 1).
+  optional double holdout = 4;
+  // enabled | weights | holdout.
+  repeated string reset = 5;
+  // Who, as the screens show them: the admin's email, or their concierge id when concierge gave
+  // none (as a place's or a price list's history names them). An employee's, not PII. One line,
+  // 1–320 characters.
+  string by = 6;
+}
+
+// ── counts, from the retired PostHog import (spec §2 stages 3–4, §3.4, §7) ─────────────
+//
+// The panel no longer imports them (2026-10-04: what PostHog shows is looked at in PostHog).
+// They stay registered so a journal holding them still passes and rebuilds; nothing is
+// projected from them.
 //
 // One count of one UTC day and slice; never about a person, so never a lead or a job in the
 // subject. A day is counted again while it is recent: a later count of the same slice comes

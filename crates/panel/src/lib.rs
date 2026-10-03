@@ -10,16 +10,16 @@
 //! `panel_core`; [`store`] is SQLite; [`seal`] encrypts what must not sit in the clear.
 //! [`operator`] is what a signed-in user does and reads, as events through the same journal;
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
-//! bot's notifications and buttons; [`posthog`] the hourly import of the site's counts, and
-//! [`counts`] what the screens read of them; [`place`] the places' live settings the sites
-//! read and the panel edits; [`pricing`] the brands' price lists, the same; [`live`] the bus that tells the server's sockets what changed,
+//! bot's notifications and buttons; [`place`] the places' live settings the sites
+//! read and the panel edits; [`pricing`] the brands' price lists, the same; [`experiment`]
+//! the brands' experiments as configuration; [`live`] the bus that tells the server's sockets what changed,
 //! published here after each commit.
 
-pub mod counts;
+pub mod capture;
+pub mod experiment;
 pub mod live;
 pub mod operator;
 pub mod place;
-pub mod posthog;
 pub mod pricing;
 pub mod seal;
 pub mod session;
@@ -159,6 +159,31 @@ fn sources_changed() -> live::Change {
 	}
 }
 
+/// Queues what PostHog is told of a new lead event: nothing for what is about no lead, nor for
+/// a `lead.created` that is not the one that counts (a source's second one).
+async fn queue_capture(conn: &mut sqlx::SqliteConnection, recorded: &Recorded, lead: Option<&panel_core::lead::LeadState>, now: Timestamp) -> eyre::Result<()> {
+	let (Some(capture), Some(lead)) = (panel_core::analytics::capture_of(recorded), lead) else {
+		return Ok(());
+	};
+	if matches!(recorded.fact, panel_core::fact::Fact::LeadCreated { .. }) && lead.creation != Some(recorded.id) {
+		return Ok(());
+	}
+	let properties = serde_json::to_value(&capture.properties).wrap_err("PostHog properties")?;
+	store::posthog::enqueue(
+		conn,
+		&store::posthog::Queued {
+			event_id: recorded.id.raw(),
+			event: capture.event.to_owned(),
+			distinct_id: panel_core::analytics::distinct_id(lead.brand_id.as_str(), lead.lead_id.as_str(), lead.analytics_id.as_ref()),
+			properties,
+			occurred_at: recorded.occurred_at,
+			queued_at: now,
+			tries: 0,
+		},
+	)
+	.await
+}
+
 /// The engine.
 #[derive(Clone, Debug)]
 pub struct Panel {
@@ -166,6 +191,9 @@ pub struct Panel {
 	key: Arc<DataKey>,
 	rotations: Arc<session::Rotations>,
 	live: live::Bus,
+	posthog: Option<experiment::PosthogProject>,
+	/// Whether journaled lead events are queued for PostHog ([`capture`]).
+	capture: bool,
 }
 
 impl Panel {
@@ -175,7 +203,15 @@ impl Panel {
 			key: Arc::new(key),
 			rotations: Arc::default(),
 			live: live::Bus::default(),
+			posthog: None,
+			capture: false,
 		}
+	}
+
+	/// This panel linking each experiment to its funnel in `project`.
+	pub fn with_posthog_project(mut self, project: Option<experiment::PosthogProject>) -> Self {
+		self.posthog = project;
+		self
 	}
 
 	/// This panel on `bus` instead of its own: a bus of another capacity, or one shared.
@@ -298,7 +334,7 @@ impl Panel {
 		self.journal(&incoming, Some(&grant.key_id), status, fact, now).await
 	}
 
-	/// Journals an event the panel writes itself — an operator's action, an imported count —
+	/// Journals an event the panel writes itself — an operator's action, an admin's setting —
 	/// decoded and judged exactly as a source's, with no signing key. `Err` inside: the
 	/// registry refuses it, and why.
 	async fn write_own(&self, raw: Value, now: Timestamp) -> eyre::Result<Result<(Outcome, Envelope), Invalid>> {
@@ -360,13 +396,18 @@ impl Panel {
 				subject: env.subject.clone(),
 				fact,
 			};
-			projections::apply(&mut tx, &recorded).await?;
-			change = Some(live::Change::of_event(&recorded, now));
+			let lead = projections::apply(&mut tx, &recorded).await?;
+			// Here, in the journal's transaction, and nowhere else: the rebuild projects without
+			// passing here, so it never tells PostHog anything twice.
+			if self.capture {
+				queue_capture(&mut tx, &recorded, lead.as_ref(), now).await?;
+			}
+			change = live::Change::of_event(&recorded, now);
 		}
 		tx.commit().await.wrap_err("committing an event")?;
 		// Every event that reaches the projections passes here, whoever wrote it: this one
-		// publication is what keeps ingest, the operator's actions, the buttons and the import
-		// from forgetting to. An unregistered event changes no read, and says nothing.
+		// publication is what keeps ingest, the operator's actions and the buttons from
+		// forgetting to. An unregistered event changes no read, and says nothing.
 		if let Some(change) = change {
 			self.live.changed(change);
 		}
@@ -401,6 +442,7 @@ impl Panel {
 		projections::clear(&mut tx).await?;
 		let mut done = Rebuilt::default();
 		let mut leads: BTreeSet<(BrandId, LeadId)> = BTreeSet::new();
+		let mut experiment_brands: BTreeSet<BrandId> = BTreeSet::new();
 		let mut after = None;
 		loop {
 			let page = events::page(&mut tx, after, PAGE).await?;
@@ -434,6 +476,9 @@ impl Panel {
 					fact,
 				};
 				projections::insert_row(&mut tx, &recorded).await?;
+				if projections::is_experiment(&recorded.fact) {
+					experiment_brands.insert(recorded.subject.brand_id.clone());
+				}
 				if let Some(lead) = recorded.subject.lead_id {
 					leads.insert((recorded.subject.brand_id, lead));
 				}
@@ -443,6 +488,9 @@ impl Panel {
 			projections::recompute_lead(&mut tx, brand, lead).await?;
 		}
 		done.leads = leads.len() as u64;
+		for brand in &experiment_brands {
+			store::experiments::recompute(&mut tx, brand).await?;
+		}
 		tx.commit().await.wrap_err("committing the rebuild")?;
 		self.live.publish(live::Signal::Resync);
 		Ok(done)

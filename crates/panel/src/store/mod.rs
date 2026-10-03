@@ -11,8 +11,9 @@
 //! outside a transaction is atomic by itself and waits on `busy_timeout` the same way.
 
 pub mod events;
-pub mod metrics;
+pub mod experiments;
 pub mod places;
+pub mod posthog;
 pub mod pricing;
 pub mod projections;
 pub mod reads;
@@ -113,10 +114,6 @@ pub(crate) fn day_to_db(d: Date) -> String {
 	d.strftime("%Y-%m-%d").to_string()
 }
 
-pub(crate) fn day_from_db(s: &str) -> eyre::Result<Date> {
-	s.parse().wrap_err_with(|| format!("stored date {s:?}"))
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -132,11 +129,10 @@ mod tests {
 	}
 
 	#[test]
-	fn days_round_trip_and_sort() {
+	fn days_are_stored_as_they_sort() {
 		for s in ["2026-09-30", "2024-02-29", "0001-01-01"] {
 			let d: Date = s.parse().unwrap();
 			assert_eq!(day_to_db(d), s);
-			assert_eq!(day_from_db(&day_to_db(d)).unwrap(), d, "{s}");
 		}
 	}
 }

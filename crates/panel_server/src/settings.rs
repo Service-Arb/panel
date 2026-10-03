@@ -48,15 +48,17 @@ ev_lib::settings! {
 		/// origin behind the API's routes; the image sets it. Unset: `serve` answers the API
 		/// alone, and says so.
 		panel_web_dir: Option<String>,
-		/// PostHog's private API (the query API), not the capture host the landings send to
-		/// (`us.i.posthog.com` answers no queries).
-		posthog_api_host: String = "https://us.posthog.com",
-		/// The PostHog project the landings send to (Service-Arb's). Unset, with the key below:
-		/// no import, and `serve` says so.
+		/// The project key the landings send to PostHog with (`phc_…`, public — not a secret):
+		/// `serve` sends each lead's life after the form there. Unset: nothing is sent, and
+		/// `serve` says so.
+		posthog_project_api_key: Option<String>,
+		/// PostHog's capture host, the landings' too.
+		posthog_host: String = "https://us.i.posthog.com",
+		/// The PostHog project the landings send to (Service-Arb's, a number like 614067): the
+		/// experiments link to their funnels in it. Unset: no links.
 		posthog_project_id: Option<String>,
-		/// A personal API key with `query:read` on that project, nothing more.
-		#[secret]
-		posthog_personal_api_key: Option<String>,
+		/// The PostHog app's origin, for those links (not the capture host).
+		posthog_app_host: String = "https://us.posthog.com",
 		/// Development only: `admin` or `operator`. Signs whoever opens `/auth/login` in as a
 		/// made-up user of that role, without concierge. Refused at start in any profile but
 		/// `development`, beside any concierge variable, and unless PANEL_PUBLIC_ORIGIN is
@@ -118,47 +120,54 @@ impl Settings {
 	}
 }
 
-/// The PostHog import, when it is configured.
-pub struct PosthogSettings {
-	pub api_host: String,
-	pub project_id: String,
-	pub api_key: String,
-}
-
-impl std::fmt::Debug for PosthogSettings {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("PosthogSettings")
-			.field("api_host", &self.api_host)
-			.field("project_id", &self.project_id)
-			.finish_non_exhaustive()
-	}
+/// Sending events to PostHog, when it is configured.
+#[derive(Debug)]
+pub struct CaptureSettings {
+	pub host: String,
+	pub key: String,
 }
 
 impl Settings {
-	/// `None` without the project and the key: the import is off. One without the other is a
-	/// mistake, named.
-	pub fn posthog(&self) -> eyre::Result<Option<PosthogSettings>> {
-		let set = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
-		let (project, key) = match (set(&self.posthog_project_id), set(&self.posthog_personal_api_key)) {
-			(None, None) => return Ok(None),
-			(Some(p), Some(k)) => (p, k),
-			(Some(_), None) => eyre::bail!("the PostHog import needs POSTHOG_PERSONAL_API_KEY too"),
-			(None, Some(_)) => eyre::bail!("the PostHog import needs POSTHOG_PROJECT_ID too"),
+	/// `None` without `POSTHOG_PROJECT_API_KEY`: nothing is sent.
+	pub fn capture(&self) -> eyre::Result<Option<CaptureSettings>> {
+		let Some(key) = self.posthog_project_api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) else {
+			return Ok(None);
 		};
+		// A personal key (`phx_`) here would be a secret in the wrong place, and one PostHog
+		// refuses for capture anyway.
 		eyre::ensure!(
-			!project.is_empty() && project.len() <= 32 && project.bytes().all(|b| b.is_ascii_digit()),
-			"POSTHOG_PROJECT_ID is a number, e.g. 614067"
+			key.starts_with("phc_") && key.len() <= 128 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+			"POSTHOG_PROJECT_API_KEY is a project key, phc_…"
 		);
-		let host = self.posthog_api_host.trim().trim_end_matches('/');
-		let url = url::Url::parse(host).map_err(|e| eyre::eyre!("POSTHOG_API_HOST is not a URL: {e}"))?;
-		eyre::ensure!(url.scheme() == "https" || self.app_env != "production", "POSTHOG_API_HOST must be https in production");
-		eyre::ensure!(url.path() == "/" && url.query().is_none(), "POSTHOG_API_HOST is an origin alone, e.g. https://us.posthog.com");
-		Ok(Some(PosthogSettings {
-			api_host: host.to_owned(),
-			project_id: project,
-			api_key: key,
+		Ok(Some(CaptureSettings {
+			host: origin("POSTHOG_HOST", &self.posthog_host, &self.app_env)?,
+			key: key.to_owned(),
 		}))
 	}
+
+	/// The PostHog project the experiments link into; `None` without `POSTHOG_PROJECT_ID`.
+	pub fn posthog_project(&self) -> eyre::Result<Option<panel::experiment::PosthogProject>> {
+		let Some(project) = self.posthog_project_id.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+			return Ok(None);
+		};
+		eyre::ensure!(project.len() <= 32 && project.bytes().all(|b| b.is_ascii_digit()), "POSTHOG_PROJECT_ID is a number, e.g. 614067");
+		Ok(Some(panel::experiment::PosthogProject {
+			app_host: origin("POSTHOG_APP_HOST", &self.posthog_app_host, &self.app_env)?,
+			project_id: project.to_owned(),
+		}))
+	}
+}
+
+/// An origin alone, `https` in production; without its trailing slash.
+fn origin(var: &str, raw: &str, app_env: &str) -> eyre::Result<String> {
+	let raw = raw.trim().trim_end_matches('/');
+	let url = url::Url::parse(raw).map_err(|e| eyre::eyre!("{var} is not a URL: {e}"))?;
+	eyre::ensure!(url.scheme() == "https" || app_env != "production", "{var} must be https in production");
+	eyre::ensure!(
+		matches!(url.scheme(), "http" | "https") && url.path() == "/" && url.query().is_none() && url.fragment().is_none(),
+		"{var} is an origin alone, e.g. https://us.posthog.com"
+	);
+	Ok(raw.to_owned())
 }
 
 /// What signing in needs, all of it or none.
@@ -313,9 +322,10 @@ mod tests {
 				"TELEGRAM_BOT_USERNAME",
 				"TELEGRAM_LOCALE",
 				"PANEL_WEB_DIR",
-				"POSTHOG_API_HOST",
+				"POSTHOG_PROJECT_API_KEY",
+				"POSTHOG_HOST",
 				"POSTHOG_PROJECT_ID",
-				"POSTHOG_PERSONAL_API_KEY",
+				"POSTHOG_APP_HOST",
 				"PANEL_DEV_SIGN_IN",
 				"PANEL_DEV_SIGN_IN_EMAIL",
 				"APP_ENV"
@@ -388,22 +398,29 @@ mod tests {
 	}
 
 	#[test]
-	fn the_posthog_import_is_off_without_its_key() {
-		assert!(from(&[]).unwrap().posthog().unwrap().is_none());
-		let key = "phx_secret";
-		let on = from(&[("POSTHOG_PROJECT_ID", "614067"), ("POSTHOG_PERSONAL_API_KEY", key)]).unwrap();
-		let ph = on.posthog().unwrap().unwrap();
-		assert_eq!((ph.api_host.as_str(), ph.project_id.as_str()), ("https://us.posthog.com", "614067"));
-		assert!(!format!("{on:?} {ph:?}").contains(key), "the key never prints");
-		let half = from(&[("POSTHOG_PROJECT_ID", "614067")]).unwrap().posthog().unwrap_err();
-		assert_eq!(format!("{half}"), "the PostHog import needs POSTHOG_PERSONAL_API_KEY too");
-		assert!(from(&[("POSTHOG_PROJECT_ID", "../1"), ("POSTHOG_PERSONAL_API_KEY", key)]).unwrap().posthog().is_err());
+	fn capture_is_off_without_a_project_key() {
+		assert!(from(&[]).unwrap().capture().unwrap().is_none());
+		let on = from(&[("POSTHOG_PROJECT_API_KEY", "phc_abc123")]).unwrap().capture().unwrap().unwrap();
+		assert_eq!((on.host.as_str(), on.key.as_str()), ("https://us.i.posthog.com", "phc_abc123"));
+		assert!(from(&[("POSTHOG_PROJECT_API_KEY", "phx_personal")]).unwrap().capture().is_err(), "a personal key is refused");
+		let plain = from(&[("POSTHOG_PROJECT_API_KEY", "phc_x"), ("POSTHOG_HOST", "http://127.0.0.1:1"), ("APP_ENV", "development")]).unwrap();
+		assert!(plain.capture().is_ok(), "plain http outside production");
+	}
+
+	#[test]
+	fn the_posthog_links_need_the_project() {
+		assert!(from(&[]).unwrap().posthog_project().unwrap().is_none());
+		let p = from(&[("POSTHOG_PROJECT_ID", "614067")]).unwrap().posthog_project().unwrap().unwrap();
+		assert_eq!((p.app_host.as_str(), p.project_id.as_str()), ("https://us.posthog.com", "614067"));
+		assert!(from(&[("POSTHOG_PROJECT_ID", "../1")]).unwrap().posthog_project().is_err());
 		assert!(
-			from(&[("POSTHOG_PROJECT_ID", "1"), ("POSTHOG_PERSONAL_API_KEY", key), ("POSTHOG_API_HOST", "https://us.posthog.com/api")])
+			from(&[("POSTHOG_PROJECT_ID", "1"), ("POSTHOG_APP_HOST", "https://us.posthog.com/api")])
 				.unwrap()
-				.posthog()
+				.posthog_project()
 				.is_err()
 		);
+		let eu = from(&[("POSTHOG_PROJECT_ID", "1"), ("POSTHOG_APP_HOST", "https://eu.posthog.com/")]).unwrap();
+		assert_eq!(eu.posthog_project().unwrap().unwrap().app_host, "https://eu.posthog.com");
 	}
 
 	#[test]

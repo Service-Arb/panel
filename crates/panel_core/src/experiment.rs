@@ -1,250 +1,473 @@
-//! What the experiments screen may say about a variant against its control (spec §10.1):
-//! the difference of two rates and its 95 % interval, and "too little data" while that
-//! interval holds zero or an arm is too small. Never a winner.
+//! A brand's experiments as configuration: what its landing declares at start
+//! (`experiments.declared`), and what an admin lays over it (`experiment.configured`): a kill
+//! switch, the weights, the holdout. The statistics are PostHog's; nothing here counts.
 //!
-//! **The interval is Newcombe's hybrid score interval** for a difference of two independent
-//! proportions (Newcombe 1998, method 10), built from the two Wilson score intervals. The
-//! Wald interval `d ± z·SE` is what a textbook gives first and is wrong exactly where the
-//! landings live: rates of a few percent and arms of a few hundred page views — it collapses
-//! to a point at zero successes, overshoots [−1, 1], and covers far less than 95 % for small
-//! rates. Newcombe's stays within bounds, is defined at 0 and at n, and keeps its coverage
-//! close to nominal at small counts, at the cost of a square root.
-//!
-//! What it assumes, and the landings only approximately give: each exposure (a page view)
-//! converts or not, independently. A visitor who views two pages is two exposures, and a
-//! page view that taps twice is capped at one success — the counts are per page view, as
-//! both landings' own reports treat them.
+//! The landing applies an override field only when it is valid against the variants in its own
+//! code (`@evinvest/experiments` `applyOverrides`); [`fold`] judges by the same rules against the
+//! latest declaration, so what the panel shows as effective is what the landings do — even when
+//! a declaration changed the variants after an admin set the weights.
 
-/// The normal quantile of a two-sided 95 % interval.
-pub const Z95: f64 = 1.959_963_984_540_054;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// An arm needs this many exposures before its difference to the control is shown at all —
-/// the landings' stop rule (docs/EXPERIMENTS.md there: "≥ ~100 exposures in each arm").
-pub const MIN_EXPOSURES: u64 = 100;
+use jiff::Timestamp;
 
-/// A closed interval of a rate or of a difference of rates, as fractions.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Interval {
-	pub low: f64,
-	pub high: f64,
+use crate::{Invalid, ids::EventId};
+
+/// Experiments one declaration may hold.
+pub const MAX_EXPERIMENTS: usize = 64;
+/// Variants one experiment may have.
+pub const MAX_VARIANTS: usize = 32;
+/// The longest summary, in characters.
+pub const MAX_SUMMARY: usize = 200;
+
+/// What a landing says of one experiment in its code.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Declaration {
+	pub key: String,
+	/// At least two, unique; the first is the control.
+	pub variants: Vec<String>,
+	pub weights: Vec<f64>,
+	pub enabled: bool,
+	pub holdout: Option<f64>,
+	/// The hypothesis, in a line.
+	pub summary: Option<String>,
 }
 
-impl Interval {
-	pub fn contains_zero(&self) -> bool {
-		self.low <= 0.0 && self.high >= 0.0
-	}
+// Every number in one is finite (checked on parse), so equality is reflexive.
+impl Eq for Declaration {}
+
+/// `[a-z0-9_]{1,64}`.
+pub fn is_key(s: &str) -> bool {
+	(1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-/// The Wilson score interval of `x` successes in `n` trials; `None` without a trial. `x` past
-/// `n` counts as `n`.
-pub fn wilson(x: u64, n: u64, z: f64) -> Option<Interval> {
-	if n == 0 {
-		return None;
-	}
-	let (x, n) = (x.min(n) as f64, n as f64);
-	let p = x / n;
-	let z2 = z * z;
-	let denom = 1.0 + z2 / n;
-	let centre = (p + z2 / (2.0 * n)) / denom;
-	let half = z / denom * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
-	Some(Interval {
-		low: (centre - half).max(0.0),
-		high: (centre + half).min(1.0),
-	})
+/// A variant's name: `[a-z0-9_-]{1,32}`, what `@evinvest/experiments` takes.
+fn is_variant(s: &str) -> bool {
+	(1..=32).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
-/// Successes out of trials; successes past the trials are capped (see the module docs).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Arm {
-	pub successes: u64,
-	pub trials: u64,
+/// Weights a landing takes for `variants` variants: as many, each a finite number ≥ 0, and
+/// their sum > 0.
+pub fn weights_ok(weights: &[f64], variants: usize) -> bool {
+	weights.len() == variants && weights.iter().all(|w| w.is_finite() && *w >= 0.0) && weights.iter().sum::<f64>() > 0.0
 }
 
-impl Arm {
-	pub fn new(successes: u64, trials: u64) -> Self {
-		Self {
-			successes: successes.min(trials),
-			trials,
+/// A holdout a landing takes: in [0, 1).
+pub fn holdout_ok(h: f64) -> bool {
+	h.is_finite() && (0.0..1.0).contains(&h)
+}
+
+impl Declaration {
+	pub fn parse(key: &str, variants: Vec<String>, weights: Vec<f64>, enabled: bool, holdout: Option<f64>, summary: Option<String>) -> Result<Self, Invalid> {
+		let at = |what: &str| Invalid::new(format!("properties.experiments[{key}].{what}"));
+		if !is_key(key) {
+			return Err(Invalid::new("properties.experiments[].key is not 1–64 of [a-z0-9_]"));
 		}
+		if !(2..=MAX_VARIANTS).contains(&variants.len()) {
+			return Err(at(&format!("variants are 2 to {MAX_VARIANTS}")));
+		}
+		if !variants.iter().all(|v| is_variant(v)) {
+			return Err(at("variants are 1–32 of [a-z0-9_-]"));
+		}
+		if variants.iter().collect::<BTreeSet<_>>().len() != variants.len() {
+			return Err(at("variants are not unique"));
+		}
+		if !weights_ok(&weights, variants.len()) {
+			return Err(at("weights are one per variant, each ≥ 0, their sum > 0"));
+		}
+		if holdout.is_some_and(|h| !holdout_ok(h)) {
+			return Err(at("holdout is not in [0, 1)"));
+		}
+		let summary = summary.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+		if summary.as_ref().is_some_and(|s| s.chars().count() > MAX_SUMMARY) {
+			return Err(at(&format!("summary is at most {MAX_SUMMARY} characters")));
+		}
+		Ok(Self {
+			key: key.to_owned(),
+			variants,
+			weights,
+			enabled,
+			holdout,
+			summary,
+		})
 	}
+}
 
-	fn rate(&self) -> f64 {
-		self.successes as f64 / self.trials as f64
+/// A whole declaration: at most [`MAX_EXPERIMENTS`], each key once.
+pub fn check_declared(experiments: &[Declaration]) -> Result<(), Invalid> {
+	if experiments.len() > MAX_EXPERIMENTS {
+		return Err(Invalid::new(format!("properties.experiments holds more than {MAX_EXPERIMENTS}")));
 	}
+	if experiments.iter().map(|e| &e.key).collect::<BTreeSet<_>>().len() != experiments.len() {
+		return Err(Invalid::new("properties.experiments names a key twice"));
+	}
+	Ok(())
 }
 
-/// `treatment − control` and Newcombe's interval of it; `None` when an arm has no trial.
-pub fn newcombe(control: Arm, treatment: Arm, z: f64) -> Option<(f64, Interval)> {
-	let (c, t) = (wilson(control.successes, control.trials, z)?, wilson(treatment.successes, treatment.trials, z)?);
-	let (pc, pt) = (control.rate(), treatment.rate());
-	let d = pt - pc;
-	let low = d - ((pt - t.low).powi(2) + (c.high - pc).powi(2)).sqrt();
-	let high = d + ((t.high - pt).powi(2) + (pc - c.low).powi(2)).sqrt();
-	Some((d, Interval { low, high }))
+/// One field of an admin's change: left as it is, set, or put back to the declaration.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Field<T> {
+	#[default]
+	Keep,
+	Set(T),
+	Reset,
 }
 
-/// Why a difference is not one to act on.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Insufficient {
-	/// An arm has fewer than [`MIN_EXPOSURES`]: no difference is given.
-	SmallSample,
-	/// The interval holds zero: the variants are not told apart.
-	IntervalIncludesZero,
-}
-
-impl Insufficient {
-	pub fn as_str(self) -> &'static str {
+impl<T: Clone> Field<T> {
+	fn apply(&self, current: &mut Option<T>) {
 		match self {
-			Self::SmallSample => "small_sample",
-			Self::IntervalIncludesZero => "interval_includes_zero",
+			Self::Keep => {}
+			Self::Set(v) => *current = Some(v.clone()),
+			Self::Reset => *current = None,
 		}
 	}
 }
 
-/// A difference in percentage points, rounded no finer than the data: whole points while the
-/// interval is 2 points wide or more, a tenth of a point when it is narrower.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Points {
-	pub estimate: f64,
-	pub low: f64,
-	pub high: f64,
-	pub decimals: u8,
+/// What an admin changed of one experiment (`experiment.configured`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Patch {
+	pub key: String,
+	pub enabled: Field<bool>,
+	pub weights: Field<Vec<f64>>,
+	pub holdout: Field<f64>,
 }
 
-impl Points {
-	fn of(d: f64, i: Interval) -> Self {
-		let (estimate, low, high) = (d * 100.0, i.low * 100.0, i.high * 100.0);
-		let decimals = if high - low >= 2.0 { 0 } else { 1 };
-		let scale = if decimals == 0 { 1.0 } else { 10.0 };
-		let round = |v: f64| {
-			let r = (v * scale).round() / scale;
-			// `-0` reads as a sign the data does not have.
-			if r == 0.0 { 0.0 } else { r }
-		};
-		Self {
-			estimate: round(estimate),
-			low: round(low),
-			high: round(high),
-			decimals,
+// As for `Declaration`: a set weight or holdout is finite.
+impl Eq for Patch {}
+
+/// The fields a patch may put back, as the event names them.
+pub const RESETTABLE: [&str; 3] = ["enabled", "weights", "holdout"];
+
+impl Patch {
+	/// Checked on its own: a set field well-formed (weights 2–32 of them, a holdout in [0, 1)),
+	/// no field both set and put back. Whether the weights fit the variants is the declaration's
+	/// question ([`State::check_patch`]).
+	pub fn parse(key: &str, enabled: Option<bool>, weights: Vec<f64>, holdout: Option<f64>, reset: &[String]) -> Result<Self, Invalid> {
+		if !is_key(key) {
+			return Err(Invalid::new("properties.key is not 1–64 of [a-z0-9_]"));
+		}
+		if let Some(other) = reset.iter().find(|r| !RESETTABLE.contains(&r.as_str())) {
+			return Err(Invalid::new(format!("properties.reset names {other:?}, not one of enabled, weights, holdout")));
+		}
+		if !weights.is_empty() && !weights_ok(&weights, weights.len().clamp(2, MAX_VARIANTS)) {
+			return Err(Invalid::new("properties.weights are 2–32 numbers, each ≥ 0, their sum > 0"));
+		}
+		if holdout.is_some_and(|h| !holdout_ok(h)) {
+			return Err(Invalid::new("properties.holdout is not in [0, 1)"));
+		}
+		Ok(Self {
+			key: key.to_owned(),
+			enabled: field(enabled, "enabled", reset)?,
+			weights: field((!weights.is_empty()).then_some(weights), "weights", reset)?,
+			holdout: field(holdout, "holdout", reset)?,
+		})
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.enabled == Field::Keep && self.weights == Field::Keep && self.holdout == Field::Keep
+	}
+}
+
+/// One field of a patch from what the event says of it.
+fn field<T>(set: Option<T>, name: &str, reset: &[String]) -> Result<Field<T>, Invalid> {
+	match (set, reset.iter().any(|r| r == name)) {
+		(Some(_), true) => Err(Invalid::new(format!("properties.{name} is both set and reset"))),
+		(Some(v), false) => Ok(Field::Set(v)),
+		(None, true) => Ok(Field::Reset),
+		(None, false) => Ok(Field::Keep),
+	}
+}
+
+/// The longest label of who changed an experiment.
+pub const MAX_LABEL: usize = 320;
+
+/// Who changed an experiment, as the screens show them: the admin's email, or their concierge id
+/// when concierge gave none (`place::Editor::label`, as a place's or a price list's history
+/// names them). An employee's, not a customer's: not PII. One line, 1–320 characters.
+pub fn label(raw: &str) -> Result<String, Invalid> {
+	let l = raw.trim();
+	if (1..=MAX_LABEL).contains(&l.chars().count()) && !l.chars().any(char::is_control) {
+		Ok(l.to_owned())
+	} else {
+		Err(Invalid::new(format!("properties.by is one line of 1–{MAX_LABEL} characters")))
+	}
+}
+
+/// What an admin has set over a declaration; `None` fields follow it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Override {
+	pub enabled: Option<bool>,
+	pub weights: Option<Vec<f64>>,
+	pub holdout: Option<f64>,
+	/// Who made the last change ([`label`]).
+	pub changed_by: String,
+	pub changed_at: Timestamp,
+}
+
+impl Override {
+	fn is_empty(&self) -> bool {
+		self.enabled.is_none() && self.weights.is_none() && self.holdout.is_none()
+	}
+}
+
+/// What a landing runs: the declaration with every valid override field laid over it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Effective {
+	pub enabled: bool,
+	pub weights: Vec<f64>,
+	pub holdout: Option<f64>,
+}
+
+/// One experiment of a brand, folded from its declarations and changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct State {
+	/// As the latest declaration naming it said it.
+	pub declared: Declaration,
+	/// When that declaration happened.
+	pub declared_at: Timestamp,
+	/// The first declaration naming it.
+	pub first_declared_at: Timestamp,
+	/// `None` when nothing is set, or everything was put back.
+	pub over: Option<Override>,
+	/// The last time the weights a landing runs changed, by a declaration or an admin; `None`
+	/// while they are the first declared.
+	pub weights_changed_at: Option<Timestamp>,
+	/// Not in the brand's latest declaration: shown, not changed.
+	pub retired: bool,
+}
+
+impl State {
+	/// The fields of the override a landing takes, by the rules it applies them by.
+	pub fn valid_override(&self) -> (Option<bool>, Option<&[f64]>, Option<f64>) {
+		let Some(o) = &self.over else { return (None, None, None) };
+		let weights = o.weights.as_deref().filter(|w| weights_ok(w, self.declared.variants.len()));
+		(o.enabled, weights, o.holdout.filter(|h| holdout_ok(*h)))
+	}
+
+	pub fn effective(&self) -> Effective {
+		let (enabled, weights, holdout) = self.valid_override();
+		Effective {
+			enabled: enabled.unwrap_or(self.declared.enabled),
+			weights: weights.map_or_else(|| self.declared.weights.clone(), <[f64]>::to_vec),
+			holdout: holdout.or(self.declared.holdout),
 		}
 	}
-}
 
-/// A variant against the control on one metric.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Comparison {
-	/// `None` while an arm is under [`MIN_EXPOSURES`].
-	pub difference: Option<Points>,
-	/// `None` when the interval excludes zero; even then, the screen says only which way
-	/// and how far, not that a variant won.
-	pub insufficient: Option<Insufficient>,
-}
-
-/// Compares `treatment` with `control` at 95 %. Zero inside the interval is judged on the
-/// unrounded bounds.
-pub fn compare(control: Arm, treatment: Arm) -> Comparison {
-	if control.trials < MIN_EXPOSURES || treatment.trials < MIN_EXPOSURES {
-		return Comparison {
-			difference: None,
-			insufficient: Some(Insufficient::SmallSample),
-		};
+	/// Whether an admin's change fits: the experiment is current, and set weights are one per
+	/// declared variant.
+	pub fn check_patch(&self, patch: &Patch) -> Result<(), Invalid> {
+		if let Field::Set(w) = &patch.weights
+			&& !weights_ok(w, self.declared.variants.len())
+		{
+			return Err(Invalid::new(format!(
+				"weights are {} numbers, one per variant, each ≥ 0, their sum > 0",
+				self.declared.variants.len()
+			)));
+		}
+		Ok(())
 	}
-	match newcombe(control, treatment, Z95) {
-		Some((d, i)) => Comparison {
-			difference: Some(Points::of(d, i)),
-			insufficient: i.contains_zero().then_some(Insufficient::IntervalIncludesZero),
-		},
-		None => Comparison {
-			difference: None,
-			insufficient: Some(Insufficient::SmallSample),
-		},
+
+	/// The override after `patch`; `None` when nothing is left set.
+	pub fn patched(&self, patch: &Patch, by: &str, at: Timestamp) -> Option<Override> {
+		let mut o = self.over.clone().unwrap_or(Override {
+			enabled: None,
+			weights: None,
+			holdout: None,
+			changed_by: by.to_owned(),
+			changed_at: at,
+		});
+		patch.enabled.apply(&mut o.enabled);
+		patch.weights.apply(&mut o.weights);
+		patch.holdout.apply(&mut o.holdout);
+		o.changed_by = by.to_owned();
+		o.changed_at = at;
+		(!o.is_empty()).then_some(o)
+	}
+
+	/// Whether `patch` would change what is set.
+	pub fn changes(&self, patch: &Patch) -> bool {
+		let fields = |o: &Option<Override>| o.as_ref().map(|o| (o.enabled, o.weights.clone(), o.holdout));
+		fields(&self.over) != fields(&self.patched(patch, "", Timestamp::UNIX_EPOCH))
 	}
 }
 
-/// Which variant is the control: `@evinvest/experiments` puts it first in the landing's
-/// config, which PostHog never sees; by convention it is `control` or `a`, else the first by
-/// name.
-pub fn control_of<'a>(variants: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-	let mut all: Vec<&str> = variants.into_iter().collect();
-	all.sort_unstable();
-	["control", "a"].into_iter().find_map(|c| all.iter().copied().find(|v| *v == c)).or_else(|| all.first().copied())
+/// One event about a brand's experiments.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Happened {
+	Declared(Vec<Declaration>),
+	/// `by`: the event's source id.
+	Configured {
+		patch: Patch,
+		by: String,
+	},
+}
+
+/// A brand's experiments from all its events about them, by key: the same answer in whatever
+/// order they are given (sorted by `(occurred_at, id)` here).
+pub fn fold(events: &[(Timestamp, EventId, Happened)]) -> BTreeMap<String, State> {
+	let mut ordered: Vec<&(Timestamp, EventId, Happened)> = events.iter().collect();
+	ordered.sort_by_key(|(at, id, _)| (*at, id.raw()));
+	let mut states: BTreeMap<String, State> = BTreeMap::new();
+	for (at, _, happened) in ordered {
+		let before: BTreeMap<String, Vec<f64>> = states.iter().map(|(k, s)| (k.clone(), s.effective().weights)).collect();
+		match happened {
+			Happened::Declared(declared) => {
+				let current: BTreeSet<&str> = declared.iter().map(|d| d.key.as_str()).collect();
+				for s in states.values_mut() {
+					s.retired = !current.contains(s.declared.key.as_str());
+				}
+				for d in declared {
+					states
+						.entry(d.key.clone())
+						.and_modify(|s| {
+							s.declared = d.clone();
+							s.declared_at = *at;
+						})
+						.or_insert_with(|| State {
+							declared: d.clone(),
+							declared_at: *at,
+							first_declared_at: *at,
+							over: None,
+							weights_changed_at: None,
+							retired: false,
+						});
+				}
+			}
+			// A change of an experiment never declared names nothing: the API refuses it, and one
+			// that slipped in is left out.
+			Happened::Configured { patch, by } =>
+				if let Some(s) = states.get_mut(&patch.key) {
+					s.over = s.patched(patch, by, *at);
+				},
+		}
+		for (k, s) in &mut states {
+			if before.get(k).is_some_and(|w| *w != s.effective().weights) {
+				s.weights_changed_at = Some(*at);
+			}
+		}
+	}
+	states
 }
 
 #[cfg(test)]
 mod tests {
+	use uuid::Uuid;
+
 	use super::*;
 
-	fn close(got: f64, want: f64) {
-		assert!((got - want).abs() < 5e-5, "{got} is not {want}");
+	fn at(minutes: i64) -> Timestamp {
+		"2026-10-04T10:00:00Z".parse::<Timestamp>().unwrap() + jiff::SignedDuration::from_mins(minutes)
 	}
 
-	/// Newcombe, "Two-sided confidence intervals for the single proportion" (1998), Table I,
-	/// method 3.
-	#[test]
-	fn wilson_on_the_published_examples() {
-		for (x, n, low, high) in [(81, 263, 0.2553, 0.3662), (15, 148, 0.0624, 0.1605), (0, 20, 0.0, 0.1611), (1, 29, 0.0061, 0.1718)] {
-			let i = wilson(x, n, Z95).unwrap();
-			close(i.low, low);
-			close(i.high, high);
-		}
-		assert_eq!(wilson(1, 0, Z95), None);
-		assert_eq!(wilson(5, 3, Z95), wilson(3, 3, Z95), "capped at n");
+	fn decl(key: &str, variants: &[&str], weights: &[f64]) -> Declaration {
+		Declaration::parse(key, variants.iter().map(|v| (*v).to_owned()).collect(), weights.to_vec(), true, None, None).unwrap()
 	}
 
-	/// Newcombe, "Interval estimation for the difference between independent proportions"
-	/// (1998), Table II, method 10: there `p1 − p2`, here `treatment − control`, so the
-	/// first arm is the treatment.
-	#[test]
-	fn newcombe_on_the_published_examples() {
-		for ((x1, n1), (x2, n2), low, high) in [
-			((56, 70), (48, 80), 0.0524, 0.3339),
-			((9, 10), (3, 10), 0.1705, 0.8090),
-			((6, 7), (2, 7), 0.0582, 0.8062),
-			((5, 56), (0, 29), -0.0381, 0.1926),
-			((0, 10), (0, 20), -0.1611, 0.2775),
-			((10, 10), (0, 20), 0.6791, 1.0),
-		] {
-			let (_, i) = newcombe(Arm::new(x2, n2), Arm::new(x1, n1), Z95).unwrap();
-			close(i.low, low);
-			close(i.high, high);
+	fn ev(minutes: i64, h: Happened) -> (Timestamp, EventId, Happened) {
+		(at(minutes), EventId::from_raw(Uuid::now_v7()), h)
+	}
+
+	fn set_weights(key: &str, w: &[f64]) -> Happened {
+		Happened::Configured {
+			patch: Patch::parse(key, None, w.to_vec(), None, &[]).unwrap(),
+			by: "admin-1".into(),
 		}
 	}
 
 	#[test]
-	fn no_winner_on_little_data() {
-		let small = compare(Arm::new(1, 40), Arm::new(9, 40));
-		assert_eq!(
-			small,
-			Comparison {
-				difference: None,
-				insufficient: Some(Insufficient::SmallSample)
-			},
-			"40 page views an arm is too few, however different"
+	fn declarations_are_checked() {
+		let v = |xs: &[&str]| xs.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+		assert!(Declaration::parse("lead_layout", v(&["a", "b"]), vec![1.0, 0.0], false, Some(0.0), Some(" one line ".into())).is_ok());
+		assert!(
+			Declaration::parse("k", v(&["_control", "-b", &"c".repeat(32)]), vec![1.0, 1.0, 1.0], true, None, Some("x".repeat(200))).is_ok(),
+			"no stricter than the landing's own check"
 		);
-
-		let even = compare(Arm::new(10, 500), Arm::new(14, 500));
-		assert_eq!(even.insufficient, Some(Insufficient::IntervalIncludesZero));
-		let d = even.difference.unwrap();
-		assert!(d.low < 0.0 && d.high > 0.0, "{d:?}");
-		assert_eq!(d.decimals, 0, "an interval this wide is whole points");
-
-		let apart = compare(Arm::new(20, 1000), Arm::new(60, 1000));
-		assert_eq!(apart.insufficient, None);
-		let d = apart.difference.unwrap();
-		assert_eq!((d.estimate, d.decimals), (4.0, 0));
-		assert!(d.low > 0.0, "{d:?}");
-
-		let narrow = compare(Arm::new(1000, 100_000), Arm::new(1300, 100_000));
-		let d = narrow.difference.unwrap();
-		assert_eq!((d.estimate, d.decimals), (0.3, 1), "{d:?}");
-		assert_eq!(narrow.insufficient, None);
+		for (key, variants, weights, holdout, summary, want) in [
+			("Lead", v(&["a", "b"]), vec![1.0, 1.0], None, None, "key"),
+			("k", v(&["a"]), vec![1.0], None, None, "variants are 2"),
+			("k", v(&["a", "a"]), vec![1.0, 1.0], None, None, "not unique"),
+			("k", v(&["a", "B"]), vec![1.0, 1.0], None, None, "variants are 1–32"),
+			("k", v(&["a", &"b".repeat(33)]), vec![1.0, 1.0], None, None, "variants are 1–32"),
+			("k", v(&["a", "b"]), vec![1.0], None, None, "weights"),
+			("k", v(&["a", "b"]), vec![0.0, 0.0], None, None, "weights"),
+			("k", v(&["a", "b"]), vec![-1.0, 2.0], None, None, "weights"),
+			("k", v(&["a", "b"]), vec![f64::NAN, 1.0], None, None, "weights"),
+			("k", v(&["a", "b"]), vec![1.0, 1.0], Some(1.0), None, "holdout"),
+			("k", v(&["a", "b"]), vec![1.0, 1.0], None, Some("x".repeat(201)), "summary"),
+		] {
+			let e = Declaration::parse(key, variants, weights, true, holdout, summary).unwrap_err();
+			assert!(e.0.contains(want), "{key}: {e}");
+		}
+		assert!(check_declared(&[decl("a", &["x", "y"], &[1.0, 1.0]), decl("a", &["x", "y"], &[1.0, 1.0])]).is_err());
 	}
 
 	#[test]
-	fn the_control() {
-		assert_eq!(control_of(["b", "a"]), Some("a"));
-		assert_eq!(control_of(["test", "control", "a"]), Some("control"));
-		assert_eq!(control_of(["single", "double"]), Some("double"));
-		assert_eq!(control_of([]), None);
+	fn labels() {
+		assert_eq!(label(" ops@evinvest.ltd ").unwrap(), "ops@evinvest.ltd");
+		assert!(label("").is_err());
+		assert!(label("a\nb").is_err());
+		assert!(label(&"x".repeat(321)).is_err());
+	}
+
+	#[test]
+	fn patches_are_checked() {
+		assert_eq!(Patch::parse("k", None, vec![], Some(0.0), &[]).unwrap().holdout, Field::Set(0.0), "a holdout of 0 is valid");
+		assert_eq!(Patch::parse("k", None, vec![], None, &["weights".into()]).unwrap().weights, Field::Reset);
+		assert!(Patch::parse("k", Some(true), vec![], None, &["enabled".into()]).is_err());
+		assert!(Patch::parse("k", None, vec![], None, &["variants".into()]).is_err());
+		assert!(Patch::parse("k", None, vec![0.0, 0.0], None, &[]).is_err());
+		assert!(Patch::parse("k", None, vec![], Some(-0.1), &[]).is_err());
+		assert!(Patch::parse("k", None, vec![], None, &[]).unwrap().is_empty());
+	}
+
+	#[test]
+	fn an_override_lays_over_the_declaration_while_it_fits() {
+		let s = fold(&[ev(0, Happened::Declared(vec![decl("hero", &["a", "b"], &[1.0, 1.0])])), ev(5, set_weights("hero", &[3.0, 1.0]))]);
+		let hero = &s["hero"];
+		assert_eq!(hero.effective().weights, [3.0, 1.0]);
+		assert_eq!(hero.weights_changed_at, Some(at(5)));
+		assert_eq!(hero.first_declared_at, at(0));
+
+		// The landing adds a variant: the admin's two weights no longer fit, and are ignored.
+		let s = fold(&[
+			ev(0, Happened::Declared(vec![decl("hero", &["a", "b"], &[1.0, 1.0])])),
+			ev(5, set_weights("hero", &[3.0, 1.0])),
+			ev(9, Happened::Declared(vec![decl("hero", &["a", "b", "c"], &[1.0, 1.0, 1.0])])),
+		]);
+		assert_eq!(s["hero"].effective().weights, [1.0, 1.0, 1.0]);
+		assert_eq!(s["hero"].valid_override().1, None);
+		assert_eq!(s["hero"].weights_changed_at, Some(at(9)));
+	}
+
+	#[test]
+	fn the_order_given_does_not_matter_and_gone_is_retired() {
+		let mut events = vec![
+			ev(0, Happened::Declared(vec![decl("hero", &["a", "b"], &[1.0, 1.0]), decl("cta", &["a", "b"], &[1.0, 1.0])])),
+			ev(
+				3,
+				Happened::Configured {
+					patch: Patch::parse("cta", Some(false), vec![], None, &[]).unwrap(),
+					by: "admin-1".into(),
+				},
+			),
+			ev(6, Happened::Declared(vec![decl("hero", &["a", "b"], &[1.0, 1.0])])),
+		];
+		let forward = fold(&events);
+		events.reverse();
+		assert_eq!(fold(&events), forward);
+		assert!(forward["cta"].retired && !forward["hero"].retired);
+		assert!(!forward["cta"].effective().enabled);
+		assert_eq!(forward["hero"].weights_changed_at, None, "the same weights declared again");
+	}
+
+	#[test]
+	fn putting_everything_back_leaves_no_override() {
+		let s = fold(&[ev(0, Happened::Declared(vec![decl("hero", &["a", "b"], &[1.0, 1.0])])), ev(1, set_weights("hero", &[2.0, 1.0]))]);
+		let back = Patch::parse("hero", None, vec![], None, &["weights".into()]).unwrap();
+		assert!(s["hero"].changes(&back));
+		assert_eq!(s["hero"].patched(&back, "admin-1", at(2)), None);
+		let same = Patch::parse("hero", None, vec![2.0, 1.0], None, &[]).unwrap();
+		assert!(!s["hero"].changes(&same));
+		assert!(s["hero"].check_patch(&Patch::parse("hero", None, vec![1.0, 1.0, 1.0], None, &[]).unwrap()).is_err());
 	}
 }

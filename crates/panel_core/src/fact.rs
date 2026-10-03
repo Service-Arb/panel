@@ -6,7 +6,12 @@ use std::{collections::BTreeMap, fmt};
 
 use jiff::civil::Date;
 
-use crate::{Invalid, event::Subject, ids::is_slug, metrics::DailyMetric};
+use crate::{
+	Invalid,
+	event::Subject,
+	experiment::{Declaration, Patch},
+	ids::is_slug,
+};
 
 /// ISO 4217 code: three uppercase letters.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -239,6 +244,27 @@ impl ContactChannel {
 	}
 }
 
+/// The `distinct_id` a landing's analytics beacon gave the visitor who sent a form: 1–128 of
+/// `[A-Za-z0-9._:-]` (a UUID from `crypto.randomUUID()`, or the beacon's fallback). A random
+/// id, not PII; PostHog knows the visit by it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsId(String);
+
+impl AnalyticsId {
+	pub fn parse(raw: &str) -> Result<Self, Invalid> {
+		let ok = (1..=128).contains(&raw.len()) && raw.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
+		if ok {
+			Ok(Self(raw.to_owned()))
+		} else {
+			Err(Invalid::new("properties.analytics_id is not 1–128 of [A-Za-z0-9._:-]"))
+		}
+	}
+
+	pub fn as_str(&self) -> &str {
+		&self.0
+	}
+}
+
 /// How a call ended, as the operator tells it. Only what a person can know without
 /// telephony: no durations, no missed calls (spec §10.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +307,8 @@ pub enum Fact {
 		suspect: Option<LeadSuspect>,
 		/// Its flow and the price it was shown; empty from a landing before the flows.
 		offer: LeadOffer,
+		/// The landing's analytics `distinct_id` when the form was sent ([`AnalyticsId`]).
+		analytics_id: Option<AnalyticsId>,
 	},
 	LeadContacted {
 		channel: Option<ContactChannel>,
@@ -304,9 +332,19 @@ pub enum Fact {
 		outcome: CallOutcome,
 		attempt_id: Option<String>,
 	},
-	/// A day's count of an aggregate stage or an experiment's variant (`site.metrics`,
-	/// `contact.metrics`, `experiment.metrics`): about no lead.
-	Metric(DailyMetric),
+	/// A day's count from the retired PostHog import (`site.metrics`, `contact.metrics`,
+	/// `experiment.metrics`): still read, so a journal from before keeps passing the registry
+	/// and a rebuild does not fail on it, but nothing is projected from it. PostHog itself is
+	/// where those counts are looked at now.
+	RetiredCount,
+	/// What a brand's landing declares of its experiments at start: about no lead.
+	ExperimentsDeclared(Vec<Declaration>),
+	/// An admin's change to one experiment of the brand; `by` names them as the screens show it
+	/// ([`crate::experiment::label`]).
+	ExperimentConfigured {
+		patch: Patch,
+		by: String,
+	},
 }
 
 /// Free text a person typed: bounded, so a source cannot park a document in the journal.
@@ -359,36 +397,35 @@ impl Fact {
 	}
 
 	/// What the fact needs to know about its subject: every lead type is about a lead, and
-	/// the job types about a job too; a count is about no one, and an experiment's about no
-	/// location either.
+	/// the job types about a job too; a count is about no one, an experiment about its brand.
 	pub fn check_subject(&self, subject: &Subject) -> Result<(), Invalid> {
-		if let Self::Metric(m) = self {
-			if subject.lead_id.is_some() || subject.job_id.is_some() {
-				return Err(Invalid::new("a count names no lead and no job"));
-			}
-			if !m.located() && subject.location_id.is_some() {
-				return Err(Invalid::new("an experiment's count names no location"));
-			}
-			return Ok(());
+		/// What a type needs of its subject.
+		enum Needs {
+			Lead,
+			LeadAndJob,
+			NoLeadNoJob,
+			BrandOnly,
 		}
-		if subject.lead_id.is_none() {
-			return Err(Invalid::new("subject.lead_id is required for this type"));
-		}
-		let needs_job = match self {
-			Self::JobWon | Self::JobCompleted => true,
+		let needs = match self {
+			Self::JobWon | Self::JobCompleted => Needs::LeadAndJob,
 			Self::LeadCreated { .. }
 			| Self::LeadContacted { .. }
 			| Self::LeadQuoted { .. }
 			| Self::LeadLost { .. }
 			| Self::PaymentReceived { .. }
 			| Self::CallAttempted
-			| Self::CallLogged { .. }
-			| Self::Metric(_) => false,
+			| Self::CallLogged { .. } => Needs::Lead,
+			Self::RetiredCount => Needs::NoLeadNoJob,
+			Self::ExperimentsDeclared(_) | Self::ExperimentConfigured { .. } => Needs::BrandOnly,
 		};
-		if needs_job && subject.job_id.is_none() {
-			return Err(Invalid::new("subject.job_id is required for this type"));
+		match needs {
+			Needs::NoLeadNoJob if subject.lead_id.is_some() || subject.job_id.is_some() => Err(Invalid::new("a count names no lead and no job")),
+			Needs::BrandOnly if subject.location_id.is_some() || subject.lead_id.is_some() || subject.job_id.is_some() =>
+				Err(Invalid::new("an experiment is the brand's: subject names no location, lead or job")),
+			Needs::Lead | Needs::LeadAndJob if subject.lead_id.is_none() => Err(Invalid::new("subject.lead_id is required for this type")),
+			Needs::LeadAndJob if subject.job_id.is_none() => Err(Invalid::new("subject.job_id is required for this type")),
+			Needs::Lead | Needs::LeadAndJob | Needs::NoLeadNoJob | Needs::BrandOnly => Ok(()),
 		}
-		Ok(())
 	}
 }
 
@@ -469,6 +506,16 @@ mod tests {
 		for (k, v) in [("Zone", "a"), ("zone", ""), ("zone", "a b"), ("zone", &"a".repeat(41) as &str), ("zone", "+33600000000")] {
 			let e = LeadOffer::parse(Some("estimate"), Some(1), Some("2026-10-01"), [(k.to_owned(), v.to_owned())]).unwrap_err();
 			assert_eq!(e.0, "properties.estimate_inputs keys and values are 1–40 of [a-z0-9_-]", "{k:?} {v:?}");
+		}
+	}
+
+	#[test]
+	fn analytics_ids() {
+		for good in ["0192f1c2-7d1e-7b3a-9c4d-1a2b3c4d5e6f", "18f3a2b-9c1d2e3f", "a", &"x".repeat(128) as &str, "A.b_c:d-1"] {
+			assert_eq!(AnalyticsId::parse(good).unwrap().as_str(), good);
+		}
+		for bad in ["", &"x".repeat(129) as &str, "a b", "a/b", "é", "+33 6 00"] {
+			assert!(AnalyticsId::parse(bad).is_err(), "{bad:?}");
 		}
 	}
 
