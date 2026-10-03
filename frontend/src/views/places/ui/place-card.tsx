@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge, Button, Card, CardAction, CardContent, CardHeader, CardTitle, Progress } from "@evinvest/uikit";
+import { Fragment } from "react";
 
 import { useT } from "@/shared/i18n";
 import { formatShare } from "@/shared/lib/share";
@@ -37,18 +38,19 @@ export function PlaceCard({ row, onOpen }: { row: PlaceRow; onOpen: (() => void)
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-2 px-4">
+        {/* One grid for every row, so the share column — "50%" or "3 of 4" — is as wide in each and the bars line up. */}
         <div className="grid grid-cols-(--grid-place-step) items-center gap-2 text-sm">
           <span className="text-ink-mid">{t("places.leads")}</span>
           <span />
-          <span className="tabular-nums text-ink">{row.leads}</span>
+          <span className="text-right tabular-nums text-ink">{row.leads}</span>
+          {row.steps.map(({ stage, share }) => (
+            <Fragment key={stage}>
+              <span className="text-ink-mid">{t(`places.${stage}`)}</span>
+              {share.small_sample || share.percent === null ? <span /> : <Progress value={share.percent} aria-label={t(`places.${stage}`)} />}
+              <span className="text-right tabular-nums text-ink">{formatShare(share, t)}</span>
+            </Fragment>
+          ))}
         </div>
-        {row.steps.map(({ stage, share }) => (
-          <div key={stage} className="grid grid-cols-(--grid-place-step) items-center gap-2 text-sm">
-            <span className="text-ink-mid">{t(`places.${stage}`)}</span>
-            {share.small_sample || share.percent === null ? <span /> : <Progress value={share.percent} aria-label={t(`places.${stage}`)} />}
-            <span className="tabular-nums text-ink">{formatShare(share, t)}</span>
-          </div>
-        ))}
       </CardContent>
     </Card>
   );

@@ -41,7 +41,10 @@ export function PanelOverlay({ open, onOpenChange, title, description, desktop, 
   if (!isDesktop) {
     return (
       <Drawer open={open} onOpenChange={onOpenChange}>
-        <DrawerContent className="max-h-[90dvh] pb-[env(safe-area-inset-bottom,0px)]">
+        {/* The kit's focus scope falls back to focusing the panel when nothing in it is focusable
+            yet (a card still loading), and a div without a tabindex refuses focus: it stayed on the
+            row behind the drawer, Tab walked the page, and Escape (heard on the panel) did nothing. */}
+        <DrawerContent tabIndex={-1} className="max-h-[90dvh] pb-[env(safe-area-inset-bottom,0px)] outline-none">
           <DrawerHeader>
             <DrawerTitle>{title}</DrawerTitle>
             {description && <DrawerDescription>{description}</DrawerDescription>}

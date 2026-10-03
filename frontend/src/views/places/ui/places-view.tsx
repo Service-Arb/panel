@@ -9,6 +9,7 @@ import { managesPlaces, useMe } from "@/entities/session";
 import { AddPlaceButton } from "@/features/add-place";
 import { type Period, rangeOf } from "@/features/funnel-filters";
 import { useT } from "@/shared/i18n";
+import { useLastNonNull } from "@/shared/lib/use-last-non-null";
 import { useResource } from "@/shared/lib/use-resource";
 import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
@@ -32,6 +33,8 @@ export function PlacesView() {
   const [range] = useState(() => rangeOf(WINDOW_DAYS, new Date()));
   const [version, setVersion] = useState(0);
   const [open, setOpen] = useState<PlaceKey | null>(null);
+  // Title and form stay put while the sheet slides away.
+  const shown = useLastNonNull(open);
   const refresh = () => setVersion((v) => v + 1);
   // The cards count leads, and say whether a place has live data or is withdrawn.
   const data = useResource(
@@ -68,10 +71,10 @@ export function PlacesView() {
         open={open !== null}
         onOpenChange={(o) => !o && setOpen(null)}
         desktop="sheet"
-        title={open ? t("placeSettings.openFor", { brand: open.brand, slug: open.slug }) : ""}
+        title={shown ? t("placeSettings.openFor", { brand: shown.brand, slug: shown.slug }) : ""}
         description={t("placeSettings.description")}
       >
-        {open && <PlaceSettingsPanel key={`${open.brand}/${open.slug}`} place={open} onChanged={refresh} />}
+        {shown && <PlaceSettingsPanel key={`${shown.brand}/${shown.slug}`} place={shown} onChanged={refresh} />}
       </PanelOverlay>
     </ScreenFrame>
   );

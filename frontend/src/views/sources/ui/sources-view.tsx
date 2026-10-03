@@ -1,23 +1,23 @@
 "use client";
 
-import { Badge, Settled, Skeleton, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@evinvest/uikit";
+import { Settled, Skeleton } from "@evinvest/uikit";
 import { useState } from "react";
 
 import { managesSources, useMe } from "@/entities/session";
 import { type AddedSource, fetchSources } from "@/entities/source";
-import { AddSourceForm, RevokeButton, SecretDialog } from "@/features/manage-sources";
+import { AddSourceForm, SecretDialog } from "@/features/manage-sources";
 import { ROUTES } from "@/shared/config/routes";
-import { useLocale, useT } from "@/shared/i18n";
-import { formatDateTime } from "@/shared/lib/format";
+import { useT } from "@/shared/i18n";
 import { useResource } from "@/shared/lib/use-resource";
 import { EmptyState } from "@/shared/ui/empty-state";
 import { ErrorState } from "@/shared/ui/error-state";
 import { ScreenFrame } from "@/shared/ui/screen-frame";
 
+import { SourcesTable } from "./sources-table";
+
 /** Admin only (spec §5.4): the signing keys the sources ingest with. */
 export function SourcesView() {
   const t = useT();
-  const locale = useLocale();
   const { role } = useMe();
   const sources = useResource("sources", fetchSources, "sources", { live: ["sources"] });
   const [added, setAdded] = useState<AddedSource | null>(null);
@@ -42,36 +42,7 @@ export function SourcesView() {
         {sources.status === "error" && <ErrorState failure={sources.failure} onRetry={sources.reload} />}
         {sources.status === "ok" && sources.data.length === 0 && <EmptyState title={t("sources.empty")} description={t("sources.empty.body")} />}
         {sources.status === "ok" && sources.data.length > 0 && (
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t("sources.keyId")}</TableHead>
-                  <TableHead>{t("sources.kind")}</TableHead>
-                  <TableHead>{t("sources.brands")}</TableHead>
-                  <TableHead>{t("sources.created")}</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sources.data.map((s) => (
-                  <TableRow key={s.key_id}>
-                    <TableCell className="font-mono text-sm">{s.key_id}</TableCell>
-                    <TableCell>{s.kind}</TableCell>
-                    <TableCell>{s.brands.join(", ")}</TableCell>
-                    <TableCell className="tabular-nums text-ink-soft">{formatDateTime(s.created_at, locale)}</TableCell>
-                    <TableCell className="text-right">
-                      {s.revoked_at ? (
-                        <Badge variant="outline">{t("sources.revoked", { at: formatDateTime(s.revoked_at, locale) })}</Badge>
-                      ) : (
-                        <RevokeButton keyId={s.key_id} onRevoked={sources.reload} />
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <SourcesTable sources={sources.data} onRevoked={sources.reload} />
         )}
       </Settled>
       <SecretDialog added={added} onClose={() => setAdded(null)} />
