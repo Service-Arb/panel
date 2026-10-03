@@ -24,6 +24,58 @@ body {
   background: var(--color-background);
 }
 
+/* Dialog and Drawer lock the page with `overflow: hidden`; without a reserved
+   gutter the scrollbar's width comes back to the layout and everything shifts
+   sideways on open and again on close. */
+html {
+  scrollbar-gutter: stable;
+}
+
+/* Workarounds for the kit's Sheet, Dialog and AlertDialog (uikit 0.25,
+   generated/{sheet,dialog,alert-dialog}.js); drop them once the kit ships the
+   same. Unlayered, so they win over Tailwind's utilities layer without !important.
+
+   1. The scrim has no duration of its own, so it runs tw-animate's 150ms while
+      the panel runs 500ms in and 300ms out (the dialogs 200ms). tw-animate's
+      fill-mode is `none`: the scrim faded out at 150ms snapped back to full dark
+      until the panel finished leaving and both unmounted — the flash on close.
+      Matching the durations and holding the last frame removes it. */
+[data-slot="sheet-overlay"][data-state="open"] {
+  animation-duration: 500ms;
+}
+[data-slot="sheet-overlay"][data-state="closed"] {
+  animation-duration: 300ms;
+}
+[data-slot="dialog-overlay"],
+[data-slot="alert-dialog-overlay"] {
+  animation-duration: 200ms;
+}
+[data-slot="sheet-overlay"][data-state="closed"],
+[data-slot="sheet-content"][data-state="closed"],
+[data-slot="dialog-overlay"][data-state="closed"],
+[data-slot="dialog-content"][data-state="closed"],
+[data-slot="alert-dialog-overlay"][data-state="closed"],
+[data-slot="alert-dialog-content"][data-state="closed"] {
+  animation-fill-mode: forwards;
+}
+
+/* 2. Reduced motion: the Drawer already fades instead of travelling (the
+      kit's tokens.css); the Sheet slid and the dialogs zoomed regardless. */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="sheet-content"],
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"] {
+    --tw-enter-translate-x: 0;
+    --tw-exit-translate-x: 0;
+    --tw-enter-translate-y: 0;
+    --tw-exit-translate-y: 0;
+    --tw-enter-scale: 1;
+    --tw-exit-scale: 1;
+    --tw-enter-opacity: 0;
+    --tw-exit-opacity: 0;
+  }
+}
+
 /* A row a live update touched (views/leads, `data-flash`): "new" arrives and
    glows, "odd"/"even" glow again on each later change — two names, because an
    animation replays only when its name changes. The glow is colour alone, so
