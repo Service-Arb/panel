@@ -188,15 +188,13 @@
           '';
         };
         # The panel (dev sign-in) and the landings beside its checkout, wired together on this
-        # machine; the script is the source, shellchecked here (docs/LOCAL.md).
+        # machine; the script is the source, shellchecked here (docs/LOCAL.md). It builds the
+        # binary and the front end itself, unless PANEL_BIN / PANEL_WEB_DIR name others: the
+        # app does not depend on them, so naming a cargo build skips the Nix one.
         localStack = pkgs.writeShellApplication {
           name = "local-stack";
           runtimeInputs = with pkgs; [ coreutils curl gawk git gnused ];
-          # this flake's builds, unless the caller names others (a cargo build, say)
-          text = ''
-            export PANEL_BIN="''${PANEL_BIN:-${bin}/bin/${pname}}"
-            export PANEL_WEB_DIR="''${PANEL_WEB_DIR:-${frontend}}"
-          '' + builtins.readFile ./scripts/local-stack.sh;
+          text = builtins.readFile ./scripts/local-stack.sh;
         };
       in
       {

@@ -33,8 +33,7 @@ nix run .#local-stack -- --role operator
 The first run builds the panel and its front end with Nix (minutes), and each site's
 `nix run .#dev` installs its `node_modules` (minutes again). Later runs start in seconds.
 
-What it does (`scripts/local-stack.sh`; the flake app is the same script with this flake's
-builds in `PANEL_BIN` and `PANEL_WEB_DIR`):
+What it does (`scripts/local-stack.sh`, which the flake app runs as is):
 
 1. Keeps its state in `.local/` (ignored by its own `.gitignore`): `panel.db`, the
    `data-key`, the sources' secrets in `secrets/`, each site's `<site>-leads.db`, and the
@@ -61,8 +60,8 @@ builds in `PANEL_BIN` and `PANEL_WEB_DIR`):
    same. Each part runs in a process group of its own, so the caller's shell is never hit.
 
 Iterating on the backend: `cargo build -p panel_server`, then
-`PANEL_BIN=target/debug/panel nix run .#local-stack` (or `scripts/local-stack.sh`, which
-builds what you do not name with `nix build`).
+`PANEL_BIN=$PWD/target/debug/panel nix run .#local-stack` (the same as
+`scripts/local-stack.sh`): what you do not name is built with `nix build`.
 
 ## URLs
 
@@ -188,4 +187,8 @@ Production has no such bypass: there, wait out the 600 s.
   answer means it was withdrawn (Locations → restore).
 - **The sites' checkouts get `AGENTS.md` and `CLAUDE.md`**: `next dev` writes them unless a
   site's `next.config.ts` sets `agentRules: false` (the panel's front end does).
+- **`nix build .#frontend` hangs** in `panel-frontend-…-npm-deps` (seen on a Mac whose Nix
+  daemon could not reach the npm registry from its fetcher): build the export with npm
+  instead and name it — `(cd frontend && npm ci && npm run build)`, then
+  `PANEL_WEB_DIR=$PWD/frontend/out nix run .#local-stack`.
 - **Start over**: `nix run .#local-stack -- --reset`.

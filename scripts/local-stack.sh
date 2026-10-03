@@ -7,8 +7,8 @@
 #   nix run .#local-stack -- --no-sites    the panel alone
 #   nix run .#local-stack -- --role operator
 #
-# The flake app sets PANEL_BIN and PANEL_WEB_DIR to its own builds; run directly, this
-# builds them with `nix build`, or takes yours (PANEL_BIN=target/debug/panel for a cargo
+# The panel and its front end come from `nix build .#bin` / `.#frontend` of this checkout,
+# unless PANEL_BIN / PANEL_WEB_DIR name others (PANEL_BIN=target/debug/panel for a cargo
 # build). AQUAFIX_DIR and VIFNET_DIR name the sites' checkouts, by default beside the panel's.
 set -euo pipefail
 
