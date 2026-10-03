@@ -10,13 +10,12 @@ import { useT } from "@/shared/i18n";
 import { LiveStatusIndicator } from "@/shared/ui/live-status";
 
 /** The desktop rail: the app's name (and the dev sign-in warning), the groups, then who is signed in. */
-export function PanelRail({ groups, footer }: { groups: NavGroup[]; footer: NavGroup[] }) {
+export function PanelRail({ groups }: { groups: NavGroup[] }) {
   const t = useT();
   const router = useRouter();
   return (
     <ShellNav
       groups={groups}
-      footerGroups={footer}
       pathname={usePathname()}
       linkComponent={Link}
       onItemIntent={(item) => {
@@ -29,7 +28,7 @@ export function PanelRail({ groups, footer }: { groups: NavGroup[]; footer: NavG
         </div>
       }
       footer={<AccountBlock />}
-      labels={{ primary: t("nav.primary"), footer: t("nav.account"), badge: (n) => t("nav.badge", { n }) }}
+      labels={{ primary: t("nav.primary"), badge: (n) => t("nav.badge", { n }) }}
     />
   );
 }

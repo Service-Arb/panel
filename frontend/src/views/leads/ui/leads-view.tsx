@@ -10,6 +10,7 @@ import { CallFlowProvider, OutcomeSheet } from "@/features/call-lead";
 import { CreateLeadButton } from "@/features/create-lead";
 import { LeadFilters, leadFilterFrom, narrows, paramsWith } from "@/features/lead-filters";
 import { useT } from "@/shared/i18n";
+import { useLastNonNull } from "@/shared/lib/use-last-non-null";
 import { useResource } from "@/shared/lib/use-resource";
 import { EmptyState } from "@/shared/ui/empty-state";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
@@ -27,6 +28,8 @@ export function LeadsView() {
   const pathname = usePathname();
   const filter = leadFilterFrom(params);
   const open = decodeRef(params.get("lead"));
+  // The card stays filled while the sheet slides away; the param is already gone by then.
+  const shown = decodeRef(useLastNonNull(params.get("lead")));
   const [version, setVersion] = useState(0);
 
   const go = (next: URLSearchParams) => router.replace(`${pathname}?${next.toString()}`, { scroll: false });
@@ -58,6 +61,7 @@ export function LeadsView() {
         <LeadQueue
           filter={filter}
           version={version}
+          selected={open}
           onOpen={openLead}
           empty={
             <EmptyState title={t("leads.empty")} description={t(filtered ? "leads.empty.filtered" : "leads.empty.none")}>
@@ -72,7 +76,9 @@ export function LeadsView() {
         />
       </ScreenFrame>
       <PanelOverlay open={open !== null} onOpenChange={(o) => !o && openLead(null)} title={t("card.title")} desktop="sheet">
-        {open && <LeadCardPanel leadRef={open} version={version} onChanged={changed} />}
+        {/* Keyed by lead, not the overlay: another lead in the open sheet starts a fresh card (what it has
+            seen of the last one is not "changed elsewhere"), and the sheet itself stays mounted. */}
+        {shown && <LeadCardPanel key={encodeRef(shown)} leadRef={shown} version={version} onChanged={changed} />}
       </PanelOverlay>
       <OutcomeSheet />
     </CallFlowProvider>
