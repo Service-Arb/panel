@@ -22,7 +22,7 @@ use panel_core::{
 };
 use panel_server::{
 	DEFAULT_BIND,
-	concierge::Concierge,
+	concierge::{Concierge, DevIdentity},
 	http, posthog,
 	signin::{SignIn, SignInConfig},
 	telegram::{self, BotApi, BotName},
@@ -134,6 +134,15 @@ fn main() -> eyre::Result<()> {
 	}
 	// Exits 78 (EX_CONFIG) on a bad environment, before anything else is built.
 	let settings = ev_lib::settings::or_exit(Settings::from_env());
+	// Refused like a bad environment, whatever the command: in production, or off loopback,
+	// it would let anyone in.
+	let dev_sign_in = match settings.dev_sign_in() {
+		Ok(d) => d,
+		Err(e) => {
+			eprintln!("{e:#}");
+			std::process::exit(ev_lib::settings::EX_CONFIG);
+		}
+	};
 
 	// Held for the life of main: dropping it flushes. A no-op without SENTRY_DSN.
 	let _sentry = error_monitoring::init(&error_monitoring::Config {
@@ -151,7 +160,7 @@ fn main() -> eyre::Result<()> {
 		.enable_all()
 		.build()
 		.wrap_err("building the tokio runtime")?
-		.block_on(run(cli, settings))
+		.block_on(run(cli, settings, dev_sign_in))
 }
 
 /// Logs go to stderr, so a CLI command's stdout stays its output.
@@ -167,7 +176,7 @@ fn init_tracing() -> eyre::Result<()> {
 	Ok(())
 }
 
-async fn run(cli: Cli, settings: Settings) -> eyre::Result<()> {
+async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSignIn>) -> eyre::Result<()> {
 	let connect = || async { eyre::Ok(Panel::new(Store::open(settings.db_path()?).await?, settings.data_key()?)) };
 	match cli.cmd {
 		Cmd::Migrate => {
@@ -175,7 +184,10 @@ async fn run(cli: Cli, settings: Settings) -> eyre::Result<()> {
 			Ok(())
 		}
 		Cmd::Serve { bind } => {
-			let sign_in = settings.sign_in()?;
+			let sign_in = match dev_sign_in {
+				Some(dev) => Some(Identity::Dev(dev)),
+				None => settings.sign_in()?.map(Identity::Concierge),
+			};
 			let telegram = settings.telegram()?;
 			let front_end = settings.web()?;
 			let posthog = settings.posthog()?.map(|p| posthog::QueryApi::new(&p.api_host, &p.project_id, &p.api_key)).transpose()?;
@@ -317,9 +329,16 @@ async fn place(panel: &Panel, cmd: PlaceCmd) -> eyre::Result<()> {
 	print_place(&view)
 }
 
+/// Who signs people in.
+enum Identity {
+	Concierge(settings::SignInSettings),
+	/// `PANEL_DEV_SIGN_IN`, already refused outside development and off loopback.
+	Dev(settings::DevSignIn),
+}
+
 async fn serve(
 	panel: Panel,
-	sign_in: Option<settings::SignInSettings>,
+	sign_in: Option<Identity>,
 	telegram: Option<settings::TelegramSettings>,
 	posthog: Option<posthog::QueryApi>,
 	front_end: Option<Files>,
@@ -339,9 +358,36 @@ async fn serve(
 		}
 	};
 	let app = match sign_in {
-		Some(s) => {
-			let concierge = Concierge::new(&s.concierge_grpc, &s.client_secret)?;
-			tracing::info!(panel_origin = s.panel_origin, "signing in through concierge");
+		Some(identity) => {
+			let (concierge, config) = match identity {
+				Identity::Concierge(s) => {
+					tracing::info!(panel_origin = s.panel_origin, "signing in through concierge");
+					(
+						Concierge::new(&s.concierge_grpc, &s.client_secret)?,
+						SignInConfig {
+							panel_origin: s.panel_origin,
+							concierge_origin: s.concierge_origin,
+						},
+					)
+				}
+				Identity::Dev(d) => {
+					let who = DevIdentity { role: d.role, email: d.email };
+					tracing::warn!(
+						role = who.role.as_str(),
+						email = who.email,
+						user_id = %who.user_id(),
+						panel_origin = d.panel_origin,
+						"DEV SIGN-IN ON (PANEL_DEV_SIGN_IN): /auth/login signs anyone in as this user, no concierge — development only"
+					);
+					(
+						Concierge::dev(who),
+						SignInConfig {
+							concierge_origin: d.panel_origin.clone(),
+							panel_origin: d.panel_origin,
+						},
+					)
+				}
+			};
 			let bot = match telegram {
 				Some(tg) => {
 					let name = BotName::on(tg.username);
@@ -361,18 +407,7 @@ async fn serve(
 					BotName::off()
 				}
 			};
-			http::app_with_telegram(
-				SignIn::new(
-					panel,
-					concierge,
-					SignInConfig {
-						panel_origin: s.panel_origin,
-						concierge_origin: s.concierge_origin,
-					},
-				),
-				http::Limits::default(),
-				bot,
-			)
+			http::app_with_telegram(SignIn::new(panel, concierge, config), http::Limits::default(), bot)
 		}
 		None => {
 			tracing::warn!("sign-in not configured: serving ingest only, no /auth, no /api/v1");

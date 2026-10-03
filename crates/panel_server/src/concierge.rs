@@ -1,14 +1,19 @@
 //! concierge over gRPC: the three calls a relying party makes (spec §4). Redeeming a code
 //! and rotating a refresh token authenticate with the panel's client secret; `GetMe`
 //! with the user's access token, the only RPC that token opens.
+//!
+//! In development there may be no concierge at all: [`Concierge::dev`] answers the same three
+//! calls for one made-up user (`PANEL_DEV_SIGN_IN`, refused outside development and off
+//! loopback by the settings), so the sign-in, the sessions and the gate run as they would.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use jiff::Timestamp;
-use panel::session::{RefreshError, Refresher, Tokens};
+use jiff::{SignedDuration, Timestamp};
+use panel::session::{RefreshError, Refresher, Tokens, random_token};
 use panel_contracts::concierge::v1::{
 	ClientTokenResponse, ExchangeCodeRequest, GetMeRequest, RefreshClientTokenRequest, UserProfile, auth_service_client::AuthServiceClient, user_directory_client::UserDirectoryClient,
 };
+use panel_core::role::{Role, SCOPE};
 use tonic::{
 	Code, Request, Status,
 	metadata::MetadataValue,
@@ -81,6 +86,16 @@ pub struct Issued {
 
 #[derive(Clone)]
 pub struct Concierge {
+	backend: Backend,
+}
+
+#[derive(Clone)]
+enum Backend {
+	Grpc(Arc<Grpc>),
+	Dev(Arc<DevIdentity>),
+}
+
+struct Grpc {
 	auth: AuthServiceClient<Channel>,
 	directory: UserDirectoryClient<Channel>,
 	secret: Zeroizing<String>,
@@ -88,7 +103,61 @@ pub struct Concierge {
 
 impl std::fmt::Debug for Concierge {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("Concierge").finish_non_exhaustive()
+		match &self.backend {
+			Backend::Grpc(_) => f.debug_struct("Concierge").finish_non_exhaustive(),
+			Backend::Dev(who) => f.debug_tuple("Concierge::Dev").field(who).finish(),
+		}
+	}
+}
+
+/// The code `/auth/login` hands straight to the callback under [`Concierge::dev`]: there is no
+/// concierge to issue one. Any other code is refused, as concierge would refuse it.
+pub const DEV_CODE: &str = "dev-sign-in";
+
+/// Who [`Concierge::dev`] signs everyone in as.
+#[derive(Clone, Debug)]
+pub struct DevIdentity {
+	pub role: Role,
+	pub email: String,
+}
+
+impl DevIdentity {
+	/// Fixed, so a local database keeps one user per role across restarts; the last digit
+	/// tells the two apart in the journal.
+	pub fn user_id(&self) -> Uuid {
+		match self.role {
+			Role::Operator => Uuid::from_u128(0xde70_0000_0000_4000_8000_0000_0000_0001),
+			Role::Admin => Uuid::from_u128(0xde70_0000_0000_4000_8000_0000_0000_0002),
+		}
+	}
+
+	/// What the panel shows as the user's name: the sidebar says that this is dev sign-in.
+	pub fn display_name(&self) -> String {
+		format!("Dev sign-in ({})", self.role.as_str())
+	}
+
+	fn me(&self) -> Me {
+		Me {
+			user_id: self.user_id(),
+			email: self.email.clone(),
+			preferred_name: self.display_name(),
+			// No platform role: the panel role comes from the grant, as for a real user.
+			role: "investor".to_owned(),
+			scopes: vec![(SCOPE.to_owned(), self.role.as_str().to_owned())],
+		}
+	}
+
+	/// A pair as concierge would issue one; the access token outlives a working day, so a dev
+	/// session rarely rotates (when it does, it rotates through [`Refresher`] as usual).
+	fn tokens(&self) -> Result<Tokens, ConciergeError> {
+		let now = Timestamp::now();
+		let token = || random_token().map(Zeroizing::new).map_err(|e| ConciergeError::Failed(format!("{e:#}")));
+		Ok(Tokens {
+			access: token()?,
+			access_expires_at: now + SignedDuration::from_hours(12),
+			refresh: token()?,
+			refresh_expires_at: now + SignedDuration::from_hours(24 * 30),
+		})
 	}
 }
 
@@ -101,21 +170,47 @@ impl Concierge {
 			.timeout(CALL_TIMEOUT)
 			.connect_lazy();
 		Ok(Self {
-			auth: AuthServiceClient::new(channel.clone()),
-			directory: UserDirectoryClient::new(channel),
-			secret: Zeroizing::new(client_secret.to_owned()),
+			backend: Backend::Grpc(Arc::new(Grpc {
+				auth: AuthServiceClient::new(channel.clone()),
+				directory: UserDirectoryClient::new(channel),
+				secret: Zeroizing::new(client_secret.to_owned()),
+			})),
 		})
+	}
+
+	/// No concierge: every sign-in is `who`. Development only — the settings refuse
+	/// `PANEL_DEV_SIGN_IN` in any other profile and on any origin but loopback.
+	pub fn dev(who: DevIdentity) -> Self {
+		Self {
+			backend: Backend::Dev(Arc::new(who)),
+		}
+	}
+
+	/// Whether this is [`Concierge::dev`]: `/auth/login` then skips the trip to concierge.
+	pub fn is_dev(&self) -> bool {
+		matches!(self.backend, Backend::Dev(_))
 	}
 
 	/// Redeems the code the browser brought back, with the verifier of the challenge sent to
 	/// authorize.
 	pub async fn exchange_code(&self, code: &str, redirect_uri: &str, verifier: &str) -> Result<Issued, ConciergeError> {
-		let answer = self
-			.auth
+		let (auth, secret) = match &self.backend {
+			Backend::Grpc(g) => (&g.auth, &g.secret),
+			Backend::Dev(who) => {
+				if code != DEV_CODE {
+					return Err(ConciergeError::Refused(Code::Unauthenticated));
+				}
+				return Ok(Issued {
+					user_id: who.user_id(),
+					tokens: who.tokens()?,
+				});
+			}
+		};
+		let answer = auth
 			.clone()
 			.exchange_code(ExchangeCodeRequest {
 				client_id: CLIENT_ID.to_owned(),
-				client_secret: self.secret.to_string(),
+				client_secret: secret.to_string(),
 				code: code.to_owned(),
 				redirect_uri: redirect_uri.to_owned(),
 				code_verifier: verifier.to_owned(),
@@ -127,23 +222,32 @@ impl Concierge {
 
 	/// The user behind an access token.
 	pub async fn me(&self, access: &str) -> Result<Me, ConciergeError> {
+		let directory = match &self.backend {
+			Backend::Grpc(g) => &g.directory,
+			// The token is the session's own, read from its sealed row: whoever holds the
+			// session is the dev user.
+			Backend::Dev(who) => return Ok(who.me()),
+		};
 		let mut req = Request::new(GetMeRequest {});
 		let bearer: MetadataValue<_> = format!("Bearer {access}")
 			.parse()
 			.map_err(|_| ConciergeError::Failed("an access token that is not a header value".into()))?;
 		req.metadata_mut().insert("authorization", bearer);
-		self.directory.clone().get_me(req).await?.into_inner().try_into()
+		directory.clone().get_me(req).await?.into_inner().try_into()
 	}
 }
 
 impl Refresher for Concierge {
 	async fn refresh(&self, refresh_token: &str) -> Result<Tokens, RefreshError> {
-		let answer = self
-			.auth
+		let (auth, secret) = match &self.backend {
+			Backend::Grpc(g) => (&g.auth, &g.secret),
+			Backend::Dev(who) => return who.tokens().map_err(|e| RefreshError::Failed(eyre::eyre!(e))),
+		};
+		let answer = auth
 			.clone()
 			.refresh_client_token(RefreshClientTokenRequest {
 				client_id: CLIENT_ID.to_owned(),
-				client_secret: self.secret.to_string(),
+				client_secret: secret.to_string(),
 				refresh_token: refresh_token.to_owned(),
 			})
 			.await

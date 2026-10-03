@@ -1,7 +1,7 @@
 //! The environment: secrets and the deployment profile. Where to listen is a flag.
 
 use panel::seal::DataKey;
-use panel_core::notify::Locale;
+use panel_core::{notify::Locale, role::Role};
 
 ev_lib::settings! {
 	/// Each secret is needed only by what uses it; a missing one fails that, with an error
@@ -57,6 +57,13 @@ ev_lib::settings! {
 		/// A personal API key with `query:read` on that project, nothing more.
 		#[secret]
 		posthog_personal_api_key: Option<String>,
+		/// Development only: `admin` or `operator`. Signs whoever opens `/auth/login` in as a
+		/// made-up user of that role, without concierge. Refused at start in any profile but
+		/// `development`, beside any concierge variable, and unless PANEL_PUBLIC_ORIGIN is
+		/// `http://localhost[:port]` or `http://127.0.0.1[:port]`.
+		panel_dev_sign_in: Option<String>,
+		/// The dev user's email; `dev-<role>@localhost` by default.
+		panel_dev_sign_in_email: Option<String>,
 		app_env: String = "development",
 	}
 }
@@ -202,6 +209,57 @@ impl Settings {
 	}
 }
 
+/// `PANEL_DEV_SIGN_IN`, checked: who everyone signs in as, and where.
+#[derive(Debug)]
+pub struct DevSignIn {
+	pub role: Role,
+	pub email: String,
+	pub panel_origin: String,
+}
+
+impl Settings {
+	/// `None` without `PANEL_DEV_SIGN_IN`. With it, refused unless this is development on the
+	/// developer's own machine — the way concierge refuses `RP_DEV_REDIRECT_URIS`: anyone who
+	/// reaches `/auth/login` is let in, so it must never be reachable from anywhere else.
+	pub fn dev_sign_in(&self) -> eyre::Result<Option<DevSignIn>> {
+		let set = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
+		let Some(role) = set(&self.panel_dev_sign_in) else {
+			return Ok(None);
+		};
+		eyre::ensure!(
+			self.app_env == ev_lib::settings::DEFAULT_PROFILE,
+			"PANEL_DEV_SIGN_IN must never be set outside development (APP_ENV={}): it signs anyone in without concierge",
+			self.app_env
+		);
+		let concierge: Vec<&str> = [
+			("CONCIERGE_PUBLIC_ORIGIN", &self.concierge_public_origin),
+			("CONCIERGE_GRPC_ADDR", &self.concierge_grpc_addr),
+			("RP_CLIENT_SECRET_SA", &self.rp_client_secret_sa),
+		]
+		.into_iter()
+		.filter(|(_, v)| set(v).is_some())
+		.map(|(name, _)| name)
+		.collect();
+		eyre::ensure!(concierge.is_empty(), "PANEL_DEV_SIGN_IN replaces the concierge sign-in: unset {}", concierge.join(", "));
+		let role: Role = role.parse().map_err(|e| eyre::eyre!("PANEL_DEV_SIGN_IN: {e}"))?;
+		let origin = set(&self.panel_public_origin).ok_or_else(|| eyre::eyre!("PANEL_DEV_SIGN_IN needs PANEL_PUBLIC_ORIGIN, e.g. http://127.0.0.1:59120"))?;
+		loopback_http_origin(&origin)?;
+		let email = set(&self.panel_dev_sign_in_email).unwrap_or_else(|| format!("dev-{}@localhost", role.as_str()));
+		Ok(Some(DevSignIn { role, email, panel_origin: origin }))
+	}
+}
+
+/// `http://localhost[:port]` or `http://127.0.0.1[:port]`, nothing after it: an origin only
+/// this machine's browser reaches.
+fn loopback_http_origin(raw: &str) -> eyre::Result<()> {
+	let refused = || eyre::eyre!("PANEL_DEV_SIGN_IN: PANEL_PUBLIC_ORIGIN must be http://localhost[:port] or http://127.0.0.1[:port], not {raw:?}");
+	let url = url::Url::parse(raw).map_err(|_| refused())?;
+	let loopback = matches!(url.host(), Some(url::Host::Domain("localhost") | url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST)));
+	let bare = url.path() == "/" && url.query().is_none() && url.fragment().is_none() && url.username().is_empty() && url.password().is_none();
+	eyre::ensure!(url.scheme() == "http" && loopback && bare, refused());
+	Ok(())
+}
+
 /// In production an origin the browser is sent to or told about is `https://host[:port]`,
 /// nothing after it: plain http would drop the `__Host-`/`Secure` cookies, and a path would
 /// end up inside the redirect URI concierge compares byte for byte.
@@ -258,6 +316,8 @@ mod tests {
 				"POSTHOG_API_HOST",
 				"POSTHOG_PROJECT_ID",
 				"POSTHOG_PERSONAL_API_KEY",
+				"PANEL_DEV_SIGN_IN",
+				"PANEL_DEV_SIGN_IN_EMAIL",
 				"APP_ENV"
 			]
 		);
@@ -389,5 +449,76 @@ mod tests {
 			.is_ok(),
 			"plain http is for development"
 		);
+	}
+
+	#[test]
+	fn dev_sign_in_is_development_on_loopback_only() {
+		assert!(from(&[]).unwrap().dev_sign_in().unwrap().is_none());
+		let dev = |vars: &[(&str, &str)]| from(vars).unwrap().dev_sign_in();
+		let on = dev(&[("PANEL_DEV_SIGN_IN", "admin"), ("PANEL_PUBLIC_ORIGIN", "http://127.0.0.1:59120")]).unwrap().unwrap();
+		assert_eq!((on.role, on.email.as_str()), (Role::Admin, "dev-admin@localhost"));
+		let op = dev(&[
+			("PANEL_DEV_SIGN_IN", "operator"),
+			("PANEL_DEV_SIGN_IN_EMAIL", "ann@example.com"),
+			("PANEL_PUBLIC_ORIGIN", "http://localhost:3120"),
+		])
+		.unwrap()
+		.unwrap();
+		assert_eq!((op.role, op.email.as_str()), (Role::Operator, "ann@example.com"));
+		assert!(dev(&[("PANEL_DEV_SIGN_IN", "admin"), ("PANEL_PUBLIC_ORIGIN", "http://localhost")]).is_ok(), "port optional");
+
+		for origin in [
+			"https://sa.evinvest.ltd",
+			"http://sa.evinvest.ltd",
+			"https://localhost:59120",
+			"http://localhost.evil.example:59120",
+			"http://127.0.0.1.nip.io:59120",
+			"http://10.0.0.5:59120",
+			"http://0.0.0.0:59120",
+			"http://127.0.0.1:59120/panel",
+			"http://u:p@127.0.0.1:59120",
+			"127.0.0.1:59120",
+		] {
+			let e = format!("{}", dev(&[("PANEL_DEV_SIGN_IN", "admin"), ("PANEL_PUBLIC_ORIGIN", origin)]).unwrap_err());
+			assert!(e.contains("PANEL_PUBLIC_ORIGIN must be http://localhost"), "{origin}: {e}");
+		}
+		let e = format!("{}", dev(&[("PANEL_DEV_SIGN_IN", "admin")]).unwrap_err());
+		assert!(e.contains("needs PANEL_PUBLIC_ORIGIN"), "{e}");
+		let e = format!("{}", dev(&[("PANEL_DEV_SIGN_IN", "owner"), ("PANEL_PUBLIC_ORIGIN", "http://127.0.0.1:59120")]).unwrap_err());
+		assert!(e.contains("not one of operator, admin"), "{e}");
+		let e = format!(
+			"{}",
+			dev(&[
+				("PANEL_DEV_SIGN_IN", "admin"),
+				("PANEL_PUBLIC_ORIGIN", "http://127.0.0.1:59120"),
+				("CONCIERGE_GRPC_ADDR", "http://localhost:55670")
+			])
+			.unwrap_err()
+		);
+		assert!(e.contains("unset CONCIERGE_GRPC_ADDR"), "{e}");
+	}
+
+	#[test]
+	fn dev_sign_in_is_refused_in_production() {
+		let key = "0".repeat(64);
+		let secret = "s".repeat(40);
+		let prod = |profile: &str| {
+			from(&[
+				("APP_ENV", profile),
+				("PANEL_DB_PATH", "/data/panel.db"),
+				("PANEL_DATA_KEY", &key),
+				("PANEL_PUBLIC_ORIGIN", "http://127.0.0.1:59120"),
+				("CONCIERGE_PUBLIC_ORIGIN", "https://evinvest.ltd"),
+				("CONCIERGE_GRPC_ADDR", "http://concierge:55670"),
+				("RP_CLIENT_SECRET_SA", &secret),
+				("PANEL_DEV_SIGN_IN", "admin"),
+			])
+			.unwrap()
+			.dev_sign_in()
+		};
+		for profile in ["production", "staging"] {
+			let e = format!("{}", prod(profile).unwrap_err());
+			assert!(e.contains("must never be set outside development"), "{profile}: {e}");
+		}
 	}
 }
