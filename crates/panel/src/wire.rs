@@ -9,7 +9,7 @@ use panel_contracts::{SCHEMA, v1};
 use panel_core::{
 	Invalid,
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
-	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded},
+	fact::{AnalyticsId, CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
 };
 use serde::de::DeserializeOwned;
@@ -260,6 +260,7 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 				entered_by: bounded("properties.entered_by", p.entered_by)?,
 				suspect: p.suspect.as_deref().map(LeadSuspect::parse).transpose()?,
 				offer: LeadOffer::parse(p.flow.as_deref(), p.quoted_cents, p.pricing_valid_from.as_deref(), p.estimate_inputs)?,
+				analytics_id: p.analytics_id.as_deref().map(AnalyticsId::parse).transpose()?,
 			})
 		}),
 		("lead.contacted", 1) => props::<v1::LeadContactedV1>(key, properties).and_then(|p| {
@@ -341,6 +342,7 @@ mod tests {
 				entered_by: None,
 				suspect: None,
 				offer: LeadOffer::default(),
+				analytics_id: None,
 			})
 		);
 	}
@@ -361,6 +363,7 @@ mod tests {
 					entered_by: None,
 					suspect: Some(mark),
 					offer: LeadOffer::default(),
+					analytics_id: None,
 				})
 			);
 		}
@@ -368,6 +371,27 @@ mod tests {
 			assert_eq!(
 				judge(bad.clone()),
 				Checked::Invalid(panel_core::Invalid::new("properties.suspect is not one of rate_limited, too_fast")),
+				"{bad}"
+			);
+		}
+	}
+
+	#[test]
+	fn a_lead_carries_the_beacon_id_or_is_rejected_for_it() {
+		let judge = |id: Value| {
+			let mut e = event();
+			e["properties"]["analyticsId"] = id;
+			let got = decode(e, now()).unwrap();
+			check(&got.envelope.type_key, got.envelope.source.kind, &got.properties, &got.envelope.subject)
+		};
+		let Checked::Registered(Fact::LeadCreated { analytics_id, .. }) = judge(json!("0192f1c2-7d1e-7b3a-9c4d-1a2b3c4d5e6f")) else {
+			panic!()
+		};
+		assert_eq!(analytics_id.unwrap().as_str(), "0192f1c2-7d1e-7b3a-9c4d-1a2b3c4d5e6f");
+		for bad in [json!(""), json!("a b"), json!("x".repeat(129))] {
+			assert_eq!(
+				judge(bad.clone()),
+				Checked::Invalid(Invalid::new("properties.analytics_id is not 1–128 of [A-Za-z0-9._:-]")),
 				"{bad}"
 			);
 		}

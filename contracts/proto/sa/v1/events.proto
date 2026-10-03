@@ -117,6 +117,11 @@ message LeadCreatedV1 {
   // What the visitor picked for an estimate: input id → value id, the pricing model's slugs
   // (1–40 of [a-z0-9_-] each), at most 12 pairs, never free text. Only with flow estimate.
   map<string, string> estimate_inputs = 7;
+  // The `distinct_id` of the landing's analytics beacon when the form was sent (a random id it
+  // holds in memory, `crypto.randomUUID()`): 1–128 of [A-Za-z0-9._:-]. Not PII. The panel
+  // sends the lead's later life to PostHog under it, so a visit and its lead are one person
+  // there. Absent: the panel uses `sa-lead:<brand>:<lead>`.
+  optional string analytics_id = 8;
 }
 
 // lead.contacted@1 — subject.lead_id required.

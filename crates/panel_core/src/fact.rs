@@ -239,6 +239,27 @@ impl ContactChannel {
 	}
 }
 
+/// The `distinct_id` a landing's analytics beacon gave the visitor who sent a form: 1–128 of
+/// `[A-Za-z0-9._:-]` (a UUID from `crypto.randomUUID()`, or the beacon's fallback). A random
+/// id, not PII; PostHog knows the visit by it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsId(String);
+
+impl AnalyticsId {
+	pub fn parse(raw: &str) -> Result<Self, Invalid> {
+		let ok = (1..=128).contains(&raw.len()) && raw.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
+		if ok {
+			Ok(Self(raw.to_owned()))
+		} else {
+			Err(Invalid::new("properties.analytics_id is not 1–128 of [A-Za-z0-9._:-]"))
+		}
+	}
+
+	pub fn as_str(&self) -> &str {
+		&self.0
+	}
+}
+
 /// How a call ended, as the operator tells it. Only what a person can know without
 /// telephony: no durations, no missed calls (spec §10.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +302,8 @@ pub enum Fact {
 		suspect: Option<LeadSuspect>,
 		/// Its flow and the price it was shown; empty from a landing before the flows.
 		offer: LeadOffer,
+		/// The landing's analytics `distinct_id` when the form was sent ([`AnalyticsId`]).
+		analytics_id: Option<AnalyticsId>,
 	},
 	LeadContacted {
 		channel: Option<ContactChannel>,
@@ -467,6 +490,16 @@ mod tests {
 		for (k, v) in [("Zone", "a"), ("zone", ""), ("zone", "a b"), ("zone", &"a".repeat(41) as &str), ("zone", "+33600000000")] {
 			let e = LeadOffer::parse(Some("estimate"), Some(1), Some("2026-10-01"), [(k.to_owned(), v.to_owned())]).unwrap_err();
 			assert_eq!(e.0, "properties.estimate_inputs keys and values are 1–40 of [a-z0-9_-]", "{k:?} {v:?}");
+		}
+	}
+
+	#[test]
+	fn analytics_ids() {
+		for good in ["0192f1c2-7d1e-7b3a-9c4d-1a2b3c4d5e6f", "18f3a2b-9c1d2e3f", "a", &"x".repeat(128) as &str, "A.b_c:d-1"] {
+			assert_eq!(AnalyticsId::parse(good).unwrap().as_str(), good);
+		}
+		for bad in ["", &"x".repeat(129) as &str, "a b", "a/b", "é", "+33 6 00"] {
+			assert!(AnalyticsId::parse(bad).is_err(), "{bad:?}");
 		}
 	}
 
