@@ -126,13 +126,13 @@ async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result
 	let t = |ts: Option<jiff::Timestamp>| ts.map(to_db);
 	sqlx::query(
 		"INSERT INTO leads (brand_id, lead_id, location_id, job_id, stage, channel, manual, \
-		 created_at, contacted_at, quoted_at, won_at, completed_at, paid_at, lost_at, lost_reason, last_event_id, last_event_at) \
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) \
+		 created_at, contacted_at, quoted_at, won_at, completed_at, paid_at, lost_at, lost_reason, last_event_id, last_event_at, suspect) \
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
 		 ON CONFLICT (brand_id, lead_id) DO UPDATE SET \
 		 location_id = EXCLUDED.location_id, job_id = EXCLUDED.job_id, stage = EXCLUDED.stage, channel = EXCLUDED.channel, manual = EXCLUDED.manual, \
 		 created_at = EXCLUDED.created_at, contacted_at = EXCLUDED.contacted_at, quoted_at = EXCLUDED.quoted_at, won_at = EXCLUDED.won_at, \
 		 completed_at = EXCLUDED.completed_at, paid_at = EXCLUDED.paid_at, lost_at = EXCLUDED.lost_at, lost_reason = EXCLUDED.lost_reason, \
-		 last_event_id = EXCLUDED.last_event_id, last_event_at = EXCLUDED.last_event_at",
+		 last_event_id = EXCLUDED.last_event_id, last_event_at = EXCLUDED.last_event_at, suspect = EXCLUDED.suspect",
 	)
 	.bind(s.brand_id.as_str())
 	.bind(s.lead_id.as_str())
@@ -151,6 +151,7 @@ async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result
 	.bind(s.lost_reason.as_deref())
 	.bind(s.last_event_id.raw())
 	.bind(to_db(s.last_event_at))
+	.bind(s.suspect.map(|m| m.as_str()))
 	.execute(&mut *conn)
 	.await
 	.wrap_err_with(|| format!("writing lead {}/{}", s.brand_id, s.lead_id))?;

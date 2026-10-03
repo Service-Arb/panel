@@ -5,6 +5,7 @@
 use eyre::WrapErr;
 use jiff::{SignedDuration, Timestamp};
 use panel_core::{
+	fact::LeadSuspect,
 	notify::{GLOBAL_PER_SECOND, PER_CHAT_GAP, Rule},
 	role::Role,
 };
@@ -189,16 +190,14 @@ pub async fn unlink_user(conn: &mut SqliteConnection, user: Uuid) -> eyre::Resul
 	Ok(gone == 1)
 }
 
-/// Unlinks a chat (`/stop`); `false` when it was not linked.
-pub async fn unlink_chat(conn: &mut SqliteConnection, chat: i64) -> eyre::Result<bool> {
+/// Unlinks a chat (`/stop`): the user it was linked to, `None` when it was not.
+pub async fn unlink_chat(conn: &mut SqliteConnection, chat: i64) -> eyre::Result<Option<Uuid>> {
 	drop_pending_of_chat(conn, chat, "unlinked").await?;
-	let gone = sqlx::query("DELETE FROM telegram_links WHERE chat_id = $1")
+	sqlx::query_scalar("DELETE FROM telegram_links WHERE chat_id = $1 RETURNING user_id")
 		.bind(chat)
-		.execute(&mut *conn)
+		.fetch_optional(&mut *conn)
 		.await
-		.wrap_err("unlinking a chat")?
-		.rows_affected();
-	Ok(gone == 1)
+		.wrap_err("unlinking a chat")
 }
 
 /// The bot was blocked in `chat`: nothing more goes there until the user links again.
@@ -350,12 +349,29 @@ pub struct LeadCandidate {
 	pub pii: Option<(Vec<u8>, Vec<u8>)>,
 	/// The panel user who typed the lead in (its creation of kind `panel`), if one did.
 	pub entered_by: Option<Uuid>,
+	/// Why the landing's antispam doubted it; `None` for an ordinary lead.
+	pub suspect: Option<LeadSuspect>,
 }
 
-type LeadCandidateDb = (Uuid, String, String, Option<String>, Option<i64>, Option<Vec<u8>>, Option<Vec<u8>>, Option<String>);
+type LeadCandidateDb = (
+	Uuid,
+	String,
+	String,
+	Option<String>,
+	Option<i64>,
+	Option<Vec<u8>>,
+	Option<Vec<u8>>,
+	Option<String>,
+	Option<String>,
+);
 
-fn lead_candidate((event_id, brand_id, lead_id, location_id, created_at, pii, fp, entered_by): LeadCandidateDb) -> eyre::Result<LeadCandidate> {
+fn lead_candidate((event_id, brand_id, lead_id, location_id, created_at, pii, fp, entered_by, suspect): LeadCandidateDb) -> eyre::Result<LeadCandidate> {
 	Ok(LeadCandidate {
+		suspect: suspect
+			.as_deref()
+			.map(LeadSuspect::parse)
+			.transpose()
+			.wrap_err_with(|| format!("stored suspect mark of lead {brand_id}/{lead_id}"))?,
 		event_id,
 		brand_id,
 		lead_id,
@@ -372,7 +388,7 @@ fn lead_candidate((event_id, brand_id, lead_id, location_id, created_at, pii, fp
 pub async fn new_leads(conn: &mut SqliteConnection, since: Timestamp, limit: i64) -> eyre::Result<Vec<LeadCandidate>> {
 	let rows: Vec<LeadCandidateDb> = sqlx::query_as(
 		"SELECT e.id, l.brand_id, l.lead_id, l.location_id, l.created_at, e.pii_sealed, e.data_key_fp, \
-		 CASE WHEN e.source_kind = 'panel' THEN e.source_id END \
+		 CASE WHEN e.source_kind = 'panel' THEN e.source_id END, l.suspect \
 		 FROM events e JOIN leads l ON l.brand_id = e.brand_id AND l.lead_id = e.lead_id \
 		 WHERE e.type = 'lead.created' AND e.status = 'registered' AND e.received_at >= $1 AND l.stage = 'created' \
 		 AND NOT EXISTS (SELECT 1 FROM events f WHERE f.brand_id = e.brand_id AND f.lead_id = e.lead_id AND f.type = 'lead.created' \
@@ -389,17 +405,18 @@ pub async fn new_leads(conn: &mut SqliteConnection, since: Timestamp, limit: i64
 }
 
 /// Leads created in `[since, before)` and still not contacted — past the SLA when `before`
-/// is now minus it — not yet reminded of. Keyed by their creation event.
+/// is now minus it — not yet reminded of. Keyed by their creation event. A lead the antispam
+/// doubted is told of once, as such, and never chased: its SLA is nobody's promise.
 pub async fn overdue_leads(conn: &mut SqliteConnection, since: Timestamp, before: Timestamp, limit: i64) -> eyre::Result<Vec<LeadCandidate>> {
 	let rows: Vec<LeadCandidateDb> = sqlx::query_as(
 		"SELECT c.id, l.brand_id, l.lead_id, l.location_id, l.created_at, c.pii_sealed, c.data_key_fp, \
-		 CASE WHEN c.source_kind = 'panel' THEN c.source_id END FROM leads l \
+		 CASE WHEN c.source_kind = 'panel' THEN c.source_id END, l.suspect FROM leads l \
 		 JOIN events c ON c.id = ( \
 		   SELECT e.id FROM events e \
 		   WHERE e.brand_id = l.brand_id AND e.lead_id = l.lead_id AND e.type = 'lead.created' AND e.status = 'registered' \
 		   ORDER BY e.received_at, e.id LIMIT 1 \
 		 ) \
-		 WHERE l.stage = 'created' AND l.contacted_at IS NULL AND l.created_at >= $1 AND l.created_at < $2 \
+		 WHERE l.stage = 'created' AND l.contacted_at IS NULL AND l.created_at >= $1 AND l.created_at < $2 AND l.suspect IS NULL \
 		 AND NOT EXISTS (SELECT 1 FROM telegram_fanout t WHERE t.rule = 'contact_overdue' AND t.event_id = c.id) \
 		 ORDER BY l.created_at LIMIT $3",
 	)

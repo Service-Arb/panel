@@ -17,7 +17,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jiff::{SignedDuration, Timestamp, civil::Date, tz::TimeZone};
 use panel::{
 	Panel,
-	operator::{ActionError, Actor, CallOutcome, EventView, FunnelBy, FunnelSlice, LeadQuery, LeadView, NewLead, Payment, Pii, StageMove},
+	operator::{ActionError, Actor, CallOutcome, EventView, FunnelBy, FunnelSlice, LeadQuery, LeadView, NewLead, Payment, Pii, StageMove, SuspectFilter},
 };
 use panel_core::{
 	Invalid,
@@ -240,6 +240,8 @@ struct LeadDto {
 	job_id: Option<String>,
 	stage: &'static str,
 	channel: Option<String>,
+	/// `rate_limited` | `too_fast` when the landing's antispam doubted it; null otherwise.
+	suspect: Option<String>,
 	manual: bool,
 	created_at: Option<String>,
 	contacted_at: Option<String>,
@@ -280,6 +282,7 @@ fn lead_dto(v: LeadView, now: Timestamp) -> LeadDto {
 		job_id: r.job_id,
 		stage: r.stage.as_str(),
 		channel: r.channel,
+		suspect: r.suspect,
 		manual: r.manual,
 		created_at: ts(r.created_at),
 		contacted_at: ts(r.contacted_at),
@@ -303,6 +306,8 @@ struct LeadsQuery {
 	/// UTC days, both included.
 	created_from: Option<String>,
 	created_to: Option<String>,
+	/// `only` | `exclude`; absent lists every lead.
+	suspect: Option<String>,
 	cursor: Option<String>,
 	limit: Option<u32>,
 }
@@ -332,6 +337,12 @@ async fn leads(State(panel): State<Panel>, Extension(caller): Extension<Caller>,
 		overdue: q.overdue.unwrap_or(false),
 		created_from: created_from.map(day_start).transpose()?,
 		created_before: created_to.map(next_day).transpose()?,
+		suspect: match q.suspect.as_deref() {
+			None => SuspectFilter::All,
+			Some("only") => SuspectFilter::Only,
+			Some("exclude") => SuspectFilter::Exclude,
+			Some(_) => return Err(ApiError::BadRequest("suspect is not one of only, exclude".into())),
+		},
 		after: q.cursor.as_deref().map(cursor_decode).transpose()?,
 		limit: q.limit.unwrap_or(50),
 	};
@@ -756,7 +767,7 @@ async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Cal
 
 async fn revoke_source(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path(key_id): Path<String>) -> ApiResult<StatusCode> {
 	allow(caller.role.manages_sources())?;
-	if !panel.store().revoke_source(&key_id).await? {
+	if !panel.revoke_source(&key_id).await? {
 		return Err(ApiError::NotFound);
 	}
 	tracing::info!(user_id = %caller.user_id, key_id, "source revoked from the panel");

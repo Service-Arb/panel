@@ -244,7 +244,7 @@ async fn source(panel: &Panel, cmd: SourceCmd) -> eyre::Result<()> {
 			Ok(())
 		}
 		SourceCmd::Revoke { key_id } => {
-			eyre::ensure!(panel.store().revoke_source(&key_id).await?, "no active source {key_id}");
+			eyre::ensure!(panel.revoke_source(&key_id).await?, "no active source {key_id}");
 			Ok(())
 		}
 	}
@@ -356,6 +356,7 @@ async fn serve(
 	bind: SocketAddr,
 ) -> eyre::Result<()> {
 	let (stop, stopped) = tokio::sync::watch::channel(false);
+	let bus = panel.bus().clone();
 	let mut bot_work = None;
 	// Held, and awaited at shutdown, like the bot's.
 	let import_work = match posthog {
@@ -438,6 +439,10 @@ async fn serve(
 	let listener = tokio::net::TcpListener::bind(bind).await.wrap_err_with(|| format!("binding {bind}"))?;
 	tracing::info!(%bind, "serving");
 	let served = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await.wrap_err("HTTP server");
+	// The live sockets outlive the graceful shutdown (an upgraded connection is no longer the
+	// server's): told to close, and given a moment for their close frames to go out.
+	bus.publish(panel::live::Signal::GoingAway);
+	bus.drained(std::time::Duration::from_secs(2)).await;
 	// Nobody may be listening any more: the bot is simply not running then.
 	let _sent = stop.send(true);
 	if let Some(work) = bot_work

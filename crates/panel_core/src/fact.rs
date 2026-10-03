@@ -67,6 +67,33 @@ impl LeadChannel {
 	}
 }
 
+/// Why a landing's antispam doubted a lead it still sent: it may be a person, so it is kept
+/// and shown, marked. A lead the honeypot caught never arrives, so it has no mark here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeadSuspect {
+	/// The visitor's address sent more than the landing allows in its window.
+	RateLimited,
+	/// The form came back sooner after it was shown than a person types.
+	TooFast,
+}
+
+impl LeadSuspect {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::RateLimited => "rate_limited",
+			Self::TooFast => "too_fast",
+		}
+	}
+
+	pub fn parse(raw: &str) -> Result<Self, Invalid> {
+		match raw {
+			"rate_limited" => Ok(Self::RateLimited),
+			"too_fast" => Ok(Self::TooFast),
+			_ => Err(Invalid::new("properties.suspect is not one of rate_limited, too_fast")),
+		}
+	}
+}
+
 /// How the customer was reached.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContactChannel {
@@ -138,6 +165,8 @@ pub enum Fact {
 	LeadCreated {
 		channel: LeadChannel,
 		entered_by: Option<String>,
+		/// Set when the landing's antispam doubted it; `None` for an ordinary lead.
+		suspect: Option<LeadSuspect>,
 	},
 	LeadContacted {
 		channel: Option<ContactChannel>,

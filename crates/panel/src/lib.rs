@@ -12,9 +12,11 @@
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
 //! bot's notifications and buttons; [`posthog`] the hourly import of the site's counts, and
 //! [`counts`] what the screens read of them; [`place`] the places' live settings the sites
-//! read and the panel edits.
+//! read and the panel edits; [`live`] the bus that tells the server's sockets what changed,
+//! published here after each commit.
 
 pub mod counts;
+pub mod live;
 pub mod operator;
 pub mod place;
 pub mod posthog;
@@ -145,12 +147,24 @@ pub fn derived_id(namespace: &[u8], parts: &[&[u8]]) -> uuid::Uuid {
 		.into_uuid()
 }
 
+/// The sources' keys changed: no brand, no single subject a screen would refetch by.
+fn sources_changed() -> live::Change {
+	live::Change {
+		topic: live::Topic::Sources,
+		brand: None,
+		id: None,
+		user: None,
+		at: Timestamp::now(),
+	}
+}
+
 /// The engine.
 #[derive(Clone, Debug)]
 pub struct Panel {
 	store: Store,
 	key: Arc<DataKey>,
 	rotations: Arc<session::Rotations>,
+	live: live::Bus,
 }
 
 impl Panel {
@@ -159,11 +173,23 @@ impl Panel {
 			store,
 			key: Arc::new(key),
 			rotations: Arc::default(),
+			live: live::Bus::default(),
 		}
+	}
+
+	/// This panel on `bus` instead of its own: a bus of another capacity, or one shared.
+	pub fn with_live(mut self, bus: live::Bus) -> Self {
+		self.live = bus;
+		self
 	}
 
 	pub fn store(&self) -> &Store {
 		&self.store
+	}
+
+	/// What changed, after each commit: see [`live`].
+	pub fn bus(&self) -> &live::Bus {
+		&self.live
 	}
 
 	/// Registers a source that may write events of `kind` for `brands`, with a fresh
@@ -179,7 +205,19 @@ impl Panel {
 			brands,
 		};
 		let added = self.store.insert_source(&grant, &sealed, &self.key.fingerprint()).await?;
+		if added {
+			self.live.changed(sources_changed());
+		}
 		Ok(added.then(|| NewSource { key_id: key_id.to_owned(), secret }))
+	}
+
+	/// Revokes a source's key; `false` when there was no such key, or it was revoked already.
+	pub async fn revoke_source(&self, key_id: &str) -> eyre::Result<bool> {
+		let revoked = self.store.revoke_source(key_id).await?;
+		if revoked {
+			self.live.changed(sources_changed());
+		}
+		Ok(revoked)
 	}
 
 	/// Checks a batch's signature, then judges, journals and projects each of its events.
@@ -310,6 +348,7 @@ impl Panel {
 			Inserted::Duplicate => return Ok(Outcome::Duplicate),
 			Inserted::Conflict => return Ok(Outcome::Rejected(Invalid::new("id already names a different event"))),
 		}
+		let mut change = None;
 		if let Some(fact) = fact {
 			let env = &incoming.envelope;
 			let recorded = Recorded {
@@ -321,8 +360,15 @@ impl Panel {
 				fact,
 			};
 			projections::apply(&mut tx, &recorded).await?;
+			change = Some(live::Change::of_event(&recorded, now));
 		}
 		tx.commit().await.wrap_err("committing an event")?;
+		// Every event that reaches the projections passes here, whoever wrote it: this one
+		// publication is what keeps ingest, the operator's actions, the buttons and the import
+		// from forgetting to. An unregistered event changes no read, and says nothing.
+		if let Some(change) = change {
+			self.live.changed(change);
+		}
 		Ok(Outcome::Accepted {
 			unregistered: status == Status::Unregistered,
 		})
@@ -397,6 +443,7 @@ impl Panel {
 		}
 		done.leads = leads.len() as u64;
 		tx.commit().await.wrap_err("committing the rebuild")?;
+		self.live.publish(live::Signal::Resync);
 		Ok(done)
 	}
 }

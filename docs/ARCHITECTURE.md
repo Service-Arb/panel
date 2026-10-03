@@ -48,6 +48,8 @@ crates/panel/                        the engine
   src/store/places.rs                places, place_settings, the place_changes history
   src/store/metrics.rs               daily_location_metrics, daily_experiment_metrics, the
                                      import's lease
+  src/live.rs                        the in-process bus of what changed, published after each
+                                     commit (see "Live updates")
   src/testing.rs                     (feature `testing`) throwaway SQLite files, signed batches
   migrations/                        the schema: the init (`reporting_*` views and the
                                      journal's append-only triggers included), then one file
@@ -60,6 +62,8 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
                                      its development stand-in (PANEL_DEV_SIGN_IN)
   src/cookies.rs                     __Host- cookies, the double-submit CSRF check
   src/api.rs                         the operator API: JSON over the engine's `operator` module
+  src/live.rs                        GET /api/v1/live, the WebSocket that tells the screens what
+                                     changed
   src/places.rs                      a place's settings: the editor's routes, and the sites'
                                      GET /api/internal/…, which has no session
   src/telegram.rs                    the Bot API (reqwest), the bot's background work in
@@ -165,10 +169,11 @@ every request is a new event (`201`).
 
 ```text
 GET    /me                                        {user_id, role, email, preferred_name, dev_sign_in}
-GET    /leads?stage&brand&location&overdue&created_from&created_to&cursor&limit
+GET    /leads?stage&brand&location&overdue&suspect&created_from&created_to&cursor&limit
                                                   {leads: [Lead], next_cursor}; newest created
                                                   first, limit ≤ 200 (default 50); created_*
-                                                  UTC days, both included
+                                                  UTC days, both included; suspect=only |
+                                                  exclude (absent: every lead)
 GET    /leads/counts?brand&location               {stages: {created: n, …, lost: n} (every
                                                   stage, 0 included), overdue, total}
 POST   /leads                                     {brand, location, need, phone?} → 201
@@ -251,11 +256,100 @@ intervals, has none of these faults. The tests check it against the paper's publ
 examples. It treats page views as independent trials, which they only approximately are; no
 correction is made for several variants against one control.
 
-`Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`, …)
+`Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`,
+`suspect` — null, `"rate_limited"` or `"too_fast"`, see [Suspect leads](#suspect-leads) —, …)
 plus `sla` while it waits for its first contact — `{waiting_since, waiting_seconds,
 overdue}`, overdue after 30 minutes — and `pii` (the customer's name, phone, need) for the
 roles that see it. A share is `{n, of, percent, small_sample}`; `percent` is null while `of`
 is under `min_sample` (§10.1), so the front end can only draw "n of of".
+
+## Suspect leads
+
+A landing's antispam sorts what its form receives three ways. A submission the honeypot
+caught is a bot: the landing drops it and the panel never hears of it. One that is plausible
+but doubtful is sent as an ordinary `lead.created` with `properties.suspect` set — it may be a
+person, so it is kept rather than lost:
+
+```text
+suspect absent    an ordinary lead
+"rate_limited"    the visitor's address sent more than the landing allows in its window
+"too_fast"        the form came back sooner after it was shown than a person types
+anything else     the event is rejected, like any word outside a closed vocabulary
+```
+
+The field is an extension of `LeadCreatedV1` (optional, `type_version` stays 1). A build
+before it knows no such field and rejects an event carrying one, so the landings send it only
+once the panel that takes it is live. The mark is the counted creation's (the first
+journaled), so a later clean `lead.created` does not clear it, and progress does not either:
+a suspect lead that is called and won is still one the antispam doubted.
+
+Where it shows: `leads.suspect` (`TEXT`, NULL or one of the two words by CHECK), recomputed
+like every column of the row, so the rebuild restores it from the journal; `suspect` on
+`Lead` in `/api/v1` and the `suspect=only|exclude` filter of `GET /leads`; a `changed{topic:
+leads}` like any new lead. `reporting_leads` carries the column; `reporting_funnel_daily`
+still counts a suspect lead in `leads` and every stage it reaches, and counts it apart in
+`suspect`, so a report that wants them out subtracts. Telegram tells of one under `new_lead`,
+headed as suspect with its reason and with the usual buttons, and does not remind of it past
+the contact SLA: nobody promised to call it back within 30 minutes.
+
+## Live updates, `/api/v1/live`
+
+A screen reads through `/api/v1` and is told, over one WebSocket, when what it read may have
+changed, so it reads again instead of being reloaded. Nothing is sent but the hint: the data
+always comes from the API, under its checks.
+
+```text
+GET /api/v1/live    Origin = PANEL_PUBLIC_ORIGIN exactly (scheme, host, port)   else 403
+                    the session and role, as the /api/v1 gate (cached GetMe)    else 401 / 403 / 503
+                    ≤ 5 sockets per user, ≤ 200 in all                          else 429
+                    → 101; no CSRF token (a GET), the Origin stands in for it
+server → client     {"type":"hello","at","user_id"}                            at once
+(JSON text frames)  {"type":"changed","topic","brand_id"?,"id"?,"at"}          after each commit
+                    {"type":"resync"}                                          read everything again
+                    WS Ping every 25 s; no Pong within 60 s → the socket is dropped
+closes              4401 the session ended   4403 the role is gone   1001 the server is stopping
+```
+
+| `topic` | when | `brand_id` | `id` | who is told |
+| --- | --- | --- | --- | --- |
+| `leads` | a lead came in (`lead.created`: ingest, or typed in) | its brand | the lead | every role |
+| `lead` | a stage, a call, a payment of one lead (the API or a Telegram button) | its brand | the lead | every role |
+| `places` | a place's settings set, reverted, withdrawn, restored, or the place registered | its brand | the slug | every role |
+| `sources` | a source key minted or revoked | — | — | admins |
+| `metrics` | a PostHog count of stages 3–4 written | its brand | — | every role |
+| `experiments` | a PostHog count of an experiment written | its brand | — | every role |
+| `telegram` | the user's link made, undone or found blocked; their rules | — | — | that user |
+
+`at` is when the write committed. `resync` comes when the socket fell behind (below) and after
+`panel rebuild-projections` in the serving process.
+
+- **Who is told what they may read.** `panel::live::Change::visible_to` mirrors the reads:
+  every admitted role reads every brand's leads, places and counts (the grant is
+  `allocation:service_arb`, nothing narrower, §5.4); `GET /sources` is an admin's; a
+  Telegram link is its user's. A narrower scope, if one comes, is one function to change.
+- **Published after the commit, from the engine, in one place per kind of write.** Every
+  event that reaches the projections passes through `Panel::journal`, which publishes once
+  its transaction has committed — ingest, the operator API, the Telegram buttons and the
+  PostHog import alike, so none of them can forget to. A duplicate, a refused event or an
+  unregistered type changed no read and says nothing. Outside the journal: a place's change
+  (`place.rs`, after its transaction), the sources (`Panel::add_source`,
+  `Panel::revoke_source`), the Telegram link (`telegram.rs`: `/start`, `/stop`, the profile's
+  unlink, a chat found blocked, the rules). A write that changes nothing publishes nothing.
+- **The bus is in-process** (`tokio::sync::broadcast`, one pod). Publishing never waits and
+  never fails a write; with no socket open it is dropped. A command run in another process
+  (`panel place set`, `panel source add`, `panel import-posthog`) is not seen by the
+  server's sockets: the screens find it at their next read.
+- **Bounded.** The bus keeps 1024 messages per subscriber; a socket further behind skips
+  the backlog and is sent `resync`. A frame that does not go out within 10 s drops the
+  socket; the socket's write buffer is capped at 256 KiB; a client frame is at most 4 KiB
+  (the client has nothing to say but Pong and Close). Handshakes: 16 at once, 15 s each.
+- **The session is asked again** every 60 s (the gate's `GetMe` cache is 60 s, so a role
+  revoked at concierge closes the socket within about two minutes), and at once when the
+  engine closes a session: a sign-out (every socket of the user), a sign-in replacing the
+  browser's session, concierge refusing a rotation or `GetMe`. Concierge unreachable keeps
+  the socket, as the API keeps the session.
+- **Not told:** time passing. A lead becomes overdue (`sla`) with no write; the screens keep
+  their own clock for it.
 
 ## Place settings
 
@@ -333,8 +427,10 @@ POST /api/v1/telegram/link  GetMe asked afresh; 256 random bits, base64url; SHA-
                             token kept; the reply names the panel account
 /stop, DELETE …/link        unlinked; what the outbox still owed them is dropped
 fan-out (2 s)               new leads (their counted creation ≤ 1 h old, still `created`;
-                            not to whoever typed one in),
-                            leads created 30 min – 6.5 h ago never contacted (once each),
+                            not to whoever typed one in; a suspect one headed "Suspect lead
+                            (antispam: …)" instead of "New lead"),
+                            leads created 30 min – 6.5 h ago never contacted, suspect ones
+                            not (once each),
                             payments (≤ 24 h), sources silent ≥ 24 h (once per full day of
                             it) → telegram_fanout claims (rule, event) once, and in the same
                             transaction one outbox row per recipient, UNIQUE (rule, event, chat)
@@ -536,6 +632,10 @@ journaled        site.metrics / contact.metrics / experiment.metrics, source.kin
 - **PostHog, outbound only.** With the import configured the pods need egress to
   `us.posthog.com:443` (or wherever `POSTHOG_API_HOST` points); the key is a personal API key
   of someone with access to the project, scoped to `query:read` alone, in sops.
+- **`/api/v1/live` through the public IngressRoute, as a WebSocket.** Traefik proxies the
+  upgrade as is; nothing in front of it may buffer the response or strip `Upgrade` /
+  `Connection` / `Origin`, and an idle timeout on the way must be longer than the 25 s ping
+  (Cloudflare's 100 s is). The `/auth` rate limit does not cover it.
 - **Rate-limit `/auth` per client IP at Traefik** (a `RateLimit` middleware on the
   IngressRoute's `/auth` prefix, e.g. 10/min with a burst of 20). The panel bounds how many
   sign-ins run at once, not who starts them; per-IP limits are the edge's.

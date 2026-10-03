@@ -22,9 +22,10 @@ use panel::{
 	operator::{Actor, NewLead, Payment, Pii},
 	session::{RefreshError, Refresher, Tokens},
 	telegram::{Account, Chat, Directory, DirectoryError, Identity, Notifier, Update},
-	testing::{TestDb, panel},
+	testing::{TestDb, event, panel, sign},
 };
 use panel_core::{
+	event::SourceKind,
 	ids::{BrandId, LeadId, LocationId},
 	lead::Stage,
 	notify::{Entity, Locale, Rendered},
@@ -391,6 +392,40 @@ async fn a_new_lead_goes_to_linked_users_with_access_only() {
 	let last = s.mock.calls("sendMessage").pop().unwrap();
 	assert_eq!(last["chat_id"], 2);
 	assert!(last["text"].as_str().unwrap().starts_with("Оплата получена"));
+}
+
+/// A lead the landing's antispam doubted is told of once, headed as such so nobody takes it
+/// for an ordinary one, and is not chased past the SLA.
+#[tokio::test]
+async fn a_suspect_lead_is_told_apart_and_not_chased() {
+	let s = setup().await;
+	let operator = Uuid::now_v7();
+	s.link(operator, Role::Operator, 1, t0()).await;
+	let secret = s.panel.add_source("aquafix-site", SourceKind::Site, [brand()].into()).await.unwrap().unwrap().secret.to_string();
+	let created = |lead: &str, properties: Value| event("lead.created", t0(), "site", json!({"brandId": "aquafix", "locationId": "paris-11", "leadId": lead}), properties);
+	let events = [created("L-1", json!({"channel": "form"})), created("L-2", json!({"channel": "form", "suspect": "too_fast"}))];
+	s.panel.ingest(sign("aquafix-site", &secret, &events, t0()).batch(), t0()).await.unwrap();
+	s.mock.clear();
+
+	assert_eq!(s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap(), 2, "both are told of");
+	assert_eq!(s.n.deliver(t0()).await.unwrap().sent, 1);
+	assert_eq!(s.n.deliver(at(1000)).await.unwrap().sent, 1, "one a second per chat");
+	let sent = s.mock.calls("sendMessage");
+	assert_eq!(
+		texts(&sent),
+		[
+			"Новая заявка\naquafix · paris-11",
+			"Подозрительная заявка (антиспам: форма заполнена слишком быстро)\naquafix · paris-11"
+		]
+	);
+	assert_eq!(sent[1]["reply_markup"]["inline_keyboard"].as_array().unwrap().len(), 2, "it may be a person: the buttons stay");
+
+	let later = t0() + SignedDuration::from_mins(31);
+	s.panel.telegram_access_seen(operator, Some(Role::Operator), "Olga", later).await.unwrap();
+	assert_eq!(s.panel.telegram_fan_out(later, Locale::Ru).await.unwrap(), 1, "only the ordinary lead is overdue");
+	s.n.deliver(later).await.unwrap();
+	let reminder = s.mock.calls("sendMessage").pop().unwrap();
+	assert_eq!(reminder["text"], "Заявка ждёт звонка 31 мин\naquafix · paris-11");
 }
 
 #[tokio::test]
@@ -947,4 +982,43 @@ async fn a_chat_telegram_cannot_find_is_dead() {
 	s.mock.script(400, json!({"ok": false, "error_code": 400, "description": "Bad Request: chat not found"}));
 	assert_eq!(s.n.deliver(t0()).await.unwrap().dead, 1);
 	assert!(s.panel.telegram_settings(user, Role::Operator).await.unwrap().blocked);
+}
+
+/// Each change of a link tells the live sockets of its user, and nobody else's: linked,
+/// `/stop`, the profile's unlink, and the bot found blocked.
+#[tokio::test]
+async fn a_link_changing_tells_its_user() {
+	let s = setup().await;
+	let user = Uuid::now_v7();
+	let mut rx = s.panel.bus().subscribe();
+	let mut told = || {
+		let mut users = Vec::new();
+		while let Ok(signal) = rx.try_recv() {
+			if let panel::live::Signal::Changed(c) = signal
+				&& c.topic == panel::live::Topic::Telegram
+			{
+				assert!(c.visible_to(user, Role::Operator) && !c.visible_to(Uuid::now_v7(), Role::Admin));
+				users.push(c.user);
+			}
+		}
+		users
+	};
+	s.link(user, Role::Operator, 1, t0()).await;
+	assert_eq!(told(), [Some(user)], "linked");
+	s.n.handle(Update::Stop { chat: private(1) }, t0()).await.unwrap();
+	assert_eq!(told(), [Some(user)], "/stop");
+	s.n.handle(Update::Stop { chat: private(1) }, t0()).await.unwrap();
+	assert_eq!(told(), [], "nothing was linked");
+	s.link(user, Role::Operator, 1, t0()).await;
+	assert!(s.panel.telegram_unlink(user).await.unwrap());
+	assert_eq!(told(), [Some(user), Some(user)], "linked, unlinked from the profile");
+
+	s.link(user, Role::Operator, 1, t0()).await;
+	s.lead(t0()).await;
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	told();
+	s.mock
+		.script(403, json!({"ok": false, "error_code": 403, "description": "Forbidden: bot was blocked by the user"}));
+	assert_eq!(s.n.deliver(at(0)).await.unwrap().dead, 1);
+	assert_eq!(told(), [Some(user)], "blocked");
 }

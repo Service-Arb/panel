@@ -9,7 +9,7 @@ use panel_contracts::{SCHEMA, v1};
 use panel_core::{
 	Invalid,
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
-	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, bounded},
+	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, LeadSuspect, bounded},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
 	metrics::{DailyMetric, IntentChannel, MetricValue, Tally},
 };
@@ -259,6 +259,7 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 			Ok(Fact::LeadCreated {
 				channel: LeadChannel::parse(&p.channel)?,
 				entered_by: bounded("properties.entered_by", p.entered_by)?,
+				suspect: p.suspect.as_deref().map(LeadSuspect::parse).transpose()?,
 			})
 		}),
 		("lead.contacted", 1) => props::<v1::LeadContactedV1>(key, properties).and_then(|p| {
@@ -379,9 +380,37 @@ mod tests {
 			check(&got.envelope.type_key, got.envelope.source.kind, &got.properties, &got.envelope.subject),
 			Checked::Registered(Fact::LeadCreated {
 				channel: LeadChannel::Form,
-				entered_by: None
+				entered_by: None,
+				suspect: None,
 			})
 		);
+	}
+
+	#[test]
+	fn a_suspect_mark_is_one_of_its_words() {
+		let judge = |mark: Value| {
+			let mut e = event();
+			e["properties"]["suspect"] = mark;
+			let got = decode(e, now()).unwrap();
+			check(&got.envelope.type_key, got.envelope.source.kind, &got.properties, &got.envelope.subject)
+		};
+		for (word, mark) in [("rate_limited", LeadSuspect::RateLimited), ("too_fast", LeadSuspect::TooFast)] {
+			assert_eq!(
+				judge(json!(word)),
+				Checked::Registered(Fact::LeadCreated {
+					channel: LeadChannel::Form,
+					entered_by: None,
+					suspect: Some(mark),
+				})
+			);
+		}
+		for bad in [json!("honeypot"), json!("RATE_LIMITED"), json!("")] {
+			assert_eq!(
+				judge(bad.clone()),
+				Checked::Invalid(panel_core::Invalid::new("properties.suspect is not one of rate_limited, too_fast")),
+				"{bad}"
+			);
+		}
 	}
 
 	#[test]

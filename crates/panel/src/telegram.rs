@@ -230,6 +230,17 @@ fn derived_event_id(parts: &[&str]) -> Uuid {
 	uuid::Builder::from_custom_bytes(bytes).into_uuid()
 }
 
+/// A user's link or rules changed. Stamped here: the calls that change them take no clock.
+fn telegram_changed(user: Uuid) -> crate::live::Change {
+	crate::live::Change {
+		topic: crate::live::Topic::Telegram,
+		brand: None,
+		id: None,
+		user: Some(user),
+		at: Timestamp::now(),
+	}
+}
+
 fn text_field(pii: &Value, field: &str) -> Option<String> {
 	pii.get(field).and_then(Value::as_str).map(str::to_owned)
 }
@@ -250,7 +261,11 @@ impl Panel {
 	/// Unlinks the user's chat; `false` when there was none.
 	pub async fn telegram_unlink(&self, user: Uuid) -> eyre::Result<bool> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection to unlink")?;
-		db::unlink_user(&mut conn, user).await
+		let gone = db::unlink_user(&mut conn, user).await?;
+		if gone {
+			self.live.changed(telegram_changed(user));
+		}
+		Ok(gone)
 	}
 
 	pub async fn telegram_settings(&self, user: Uuid, role: Role) -> eyre::Result<Settings> {
@@ -281,6 +296,7 @@ impl Panel {
 			db::set_rule(&mut tx, user, *rule, *on).await?;
 		}
 		tx.commit().await.wrap_err("committing a rules change")?;
+		self.live.changed(telegram_changed(user));
 		Ok(())
 	}
 
@@ -309,7 +325,13 @@ impl Panel {
 		let mut queued = 0;
 		for c in &new {
 			let lead = Some((c.brand_id.as_str(), c.lead_id.as_str()));
-			let note = |role| Ok(Note::NewLead(self.lead_note(c, role)?));
+			let note = |role| {
+				let lead = self.lead_note(c, role)?;
+				Ok(match c.suspect {
+					None => Note::NewLead(lead),
+					Some(suspect) => Note::SuspectLead { lead, suspect },
+				})
+			};
 			// Whoever typed the lead in knows of it already.
 			queued += self
 				.fan_out_one(&mut conn, Rule::NewLead, c.event_id, lead, c.entered_by, note, confirmed_since, now, locale)
@@ -582,6 +604,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 				db::chat_dead(&mut conn, d.chat_id, now).await?;
 				db::dead(&mut conn, d.id, &error).await?;
 				tracing::info!(user_id = %d.user_id, "telegram: the chat is gone; marked dead");
+				self.panel.live.changed(telegram_changed(d.user_id));
 				Outcome::Dead
 			}
 		})
@@ -696,7 +719,8 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 				let mut conn = self.panel.store.pool().acquire().await.wrap_err("a connection to unlink")?;
 				let gone = db::unlink_chat(&mut conn, chat.id).await?;
 				drop(conn);
-				if gone {
+				if let Some(user) = gone {
+					self.panel.live.changed(telegram_changed(user));
 					self.reply(chat.id, Reply::Unlinked).await;
 					Ok(())
 				} else {
@@ -749,6 +773,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		tx.commit().await.wrap_err("committing a link")?;
 		drop(conn);
 		tracing::info!(user_id = %redeemed.user_id, "telegram: chat linked");
+		self.panel.live.changed(telegram_changed(redeemed.user_id));
 		self.say(chat, notify::linked_text(self.locale, &redeemed.display_name)).await;
 		Ok(())
 	}
