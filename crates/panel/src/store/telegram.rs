@@ -189,16 +189,14 @@ pub async fn unlink_user(conn: &mut SqliteConnection, user: Uuid) -> eyre::Resul
 	Ok(gone == 1)
 }
 
-/// Unlinks a chat (`/stop`); `false` when it was not linked.
-pub async fn unlink_chat(conn: &mut SqliteConnection, chat: i64) -> eyre::Result<bool> {
+/// Unlinks a chat (`/stop`): the user it was linked to, `None` when it was not.
+pub async fn unlink_chat(conn: &mut SqliteConnection, chat: i64) -> eyre::Result<Option<Uuid>> {
 	drop_pending_of_chat(conn, chat, "unlinked").await?;
-	let gone = sqlx::query("DELETE FROM telegram_links WHERE chat_id = $1")
+	sqlx::query_scalar("DELETE FROM telegram_links WHERE chat_id = $1 RETURNING user_id")
 		.bind(chat)
-		.execute(&mut *conn)
+		.fetch_optional(&mut *conn)
 		.await
-		.wrap_err("unlinking a chat")?
-		.rows_affected();
-	Ok(gone == 1)
+		.wrap_err("unlinking a chat")
 }
 
 /// The bot was blocked in `chat`: nothing more goes there until the user links again.

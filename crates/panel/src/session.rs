@@ -20,6 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::{
 	Panel,
+	live::{Ended, Signal},
 	store::sessions::{self, SealedTokens, SessionRow},
 };
 
@@ -364,6 +365,7 @@ impl Panel {
 			Err(RefreshError::Rejected) => {
 				sessions::delete_refused(&mut conn, key.as_bytes(), seen).await?;
 				tracing::info!(user_id = %row.user_id, "concierge refused a session refresh; session closed");
+				self.live.publish(Signal::SessionsEnded(Ended::Session(key)));
 				Err(SessionError::Rejected)
 			}
 			Err(RefreshError::Unavailable(why)) => {
@@ -382,7 +384,11 @@ impl Panel {
 	/// Whose they were, or `None` when `key` names no session.
 	pub async fn close_all_sessions(&self, key: &SessionKey) -> eyre::Result<Option<Uuid>> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
-		sessions::delete_all_of(&mut conn, key.as_bytes()).await
+		let user = sessions::delete_all_of(&mut conn, key.as_bytes()).await?;
+		if let Some(user) = user {
+			self.live.publish(Signal::SessionsEnded(Ended::User(user)));
+		}
+		Ok(user)
 	}
 
 	/// Redeems a callback's `state`, once: `false` when it was already, and the callback must
@@ -405,7 +411,11 @@ impl Panel {
 	/// Closes a session; `false` when there was none.
 	pub async fn close_session(&self, key: &SessionKey) -> eyre::Result<bool> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a session")?;
-		sessions::delete(&mut conn, key.as_bytes()).await
+		let gone = sessions::delete(&mut conn, key.as_bytes()).await?;
+		if gone {
+			self.live.publish(Signal::SessionsEnded(Ended::Session(*key)));
+		}
+		Ok(gone)
 	}
 
 	fn live(&self, key: SessionKey, row: &SessionRow) -> eyre::Result<Session> {
