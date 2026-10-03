@@ -69,6 +69,9 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum PlaceCmd {
+	/// Make a place known to the panel, as adding it on the Locations screen does; nothing
+	/// changes for one it knows. Journaled as `by = cli`.
+	Register { brand: String, slug: String },
 	/// Set some fields, clear others; the rest stay. Journaled as `by = cli`.
 	Set {
 		brand: String,
@@ -275,6 +278,14 @@ async fn place(panel: &Panel, cmd: PlaceCmd) -> eyre::Result<()> {
 	let now = jiff::Timestamp::now();
 	let cli = Editor::Cli;
 	let view = match cmd {
+		PlaceCmd::Register { brand, slug } => {
+			let (brand, slug) = ids(&brand, &slug)?;
+			let (view, added) = panel.register_place(&cli, &brand, &slug, now).await?;
+			if !added {
+				eprintln!("{brand}/{slug} was known already: nothing changed");
+			}
+			view
+		}
 		PlaceCmd::Set {
 			brand,
 			slug,

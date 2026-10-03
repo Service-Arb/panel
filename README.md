@@ -71,6 +71,7 @@ panel serve
 panel rebuild-projections
 
 # A place's live settings (see "Place settings"): set some fields, clear others, the rest stay
+panel place register aquafix royat             # known to the panel, nothing set; a no-op when known
 panel place set aquafix royat --phone +33423500640 --whatsapp +33612345678 \
   --hours 'Mo-Fr 08:00-19:00,Sa 09:00-12:00' --service-area 'Royat,Chamalières'
 panel place set aquafix royat --clear whatsapp
