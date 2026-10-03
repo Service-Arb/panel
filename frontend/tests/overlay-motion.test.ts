@@ -3,11 +3,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-// The panel's overrides in globals.css patch the kit's Sheet and Dialog motion
-// (the scrim flashed dark again on close). They restate the kit's own panel
-// durations, so a kit release that changes those must fail here, not drift.
+// The panel once patched the kit's Sheet and Dialog motion in globals.css (the
+// scrim flashed dark again on close; a click right after closing landed on the
+// fading scrim). uikit 0.26 ships the fixes itself and the patch is gone: these
+// hold the kit to them, so a release that loses one fails here, not on screen.
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-const css = read("../app/globals.css");
 const kit = (name: string) => read(`../node_modules/@evinvest/uikit/dist/generated/${name}.js`);
 
 function kitConst(source: string, name: string): string {
@@ -23,39 +23,35 @@ function durationOf(classes: string, state?: "open" | "closed"): number {
   return Number(m[1]);
 }
 
-/** The declarations of the unlayered rule whose selector list is exactly `selector`. */
-function rule(selector: string): string {
-  const at = css.indexOf(`${selector} {`);
-  if (at < 0) throw new Error(`no rule for ${selector}`);
-  return css.slice(at, css.indexOf("}", at));
-}
+const OVERLAYS = [
+  ["sheet", "SHEET_OVERLAY", "SHEET_CONTENT"],
+  ["dialog", "DIALOG_OVERLAY", "DIALOG_CONTENT"],
+  ["alert-dialog", "ALERT_DIALOG_OVERLAY", "ALERT_DIALOG_CONTENT"],
+] as const;
 
-const ms = (decls: string) => Number(/animation-duration:\s*(\d+)ms/.exec(decls)?.[1]);
-
-describe("the sheet's scrim", () => {
-  const content = kitConst(kit("sheet"), "SHEET_CONTENT");
-
-  it("fades in and out with the panel, not on tw-animate's 150ms default", () => {
-    expect(kitConst(kit("sheet"), "SHEET_OVERLAY")).not.toMatch(/duration-/);
-    expect(ms(rule('[data-slot="sheet-overlay"][data-state="open"]'))).toBe(durationOf(content, "open"));
-    expect(ms(rule('[data-slot="sheet-overlay"][data-state="closed"]'))).toBe(durationOf(content, "closed"));
-  });
-});
-
-describe("the dialogs' scrim", () => {
-  it("lasts as long as the dialog", () => {
-    const decls = rule('[data-slot="dialog-overlay"],\n[data-slot="alert-dialog-overlay"]');
-    expect(ms(decls)).toBe(durationOf(kitConst(kit("dialog"), "DIALOG_CONTENT")));
-    expect(ms(decls)).toBe(durationOf(kitConst(kit("alert-dialog"), "ALERT_DIALOG_CONTENT")));
-  });
-});
-
-describe("a closing overlay", () => {
-  it("holds its last frame until it unmounts instead of snapping back", () => {
-    const at = css.indexOf("animation-fill-mode: forwards");
-    const selectors = css.slice(css.lastIndexOf("}", at) + 1, css.lastIndexOf("{", at));
-    for (const slot of ["sheet-overlay", "sheet-content", "dialog-overlay", "dialog-content", "alert-dialog-overlay", "alert-dialog-content"]) {
-      expect(selectors).toContain(`[data-slot="${slot}"][data-state="closed"]`);
+describe("the kit's overlays", () => {
+  it.each(OVERLAYS)("%s: the scrim lasts as long as its panel, both ways", (file, overlay, content) => {
+    const scrim = kitConst(kit(file), overlay);
+    const panel = kitConst(kit(file), content);
+    for (const state of ["open", "closed"] as const) {
+      const of = (c: string) => (c.includes(`data-[state=${state}]:duration-`) ? durationOf(c, state) : durationOf(c));
+      expect(of(scrim)).toBe(of(panel));
     }
+  });
+
+  it.each(OVERLAYS)("%s: a closing scrim holds its last frame and lets clicks through", (file, overlay, content) => {
+    const scrim = kitConst(kit(file), overlay);
+    expect(scrim).toContain("data-[state=closed]:fill-mode-forwards");
+    expect(scrim).toContain("data-[state=closed]:pointer-events-none");
+    expect(kitConst(kit(file), content)).toContain("data-[state=closed]:fill-mode-forwards");
+  });
+
+  it("keep only a fade under reduced motion, in the kit's own tokens", () => {
+    const tokens = read("../node_modules/@evinvest/uikit/styles/tokens.css");
+    expect(tokens).toMatch(/prefers-reduced-motion: reduce\)\s*\{\s*\[data-slot="sheet-content"\],\s*\[data-slot="dialog-content"\],\s*\[data-slot="alert-dialog-content"\]/);
+  });
+
+  it("are no longer patched by the panel", () => {
+    expect(read("../app/globals.css")).not.toMatch(/data-slot[$^*]?="[a-z-]*(overlay|content)"/);
   });
 });
