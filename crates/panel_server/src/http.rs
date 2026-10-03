@@ -1,6 +1,7 @@
 //! The HTTP API: ingest, `/health`, the sites' read of a place's live settings
 //! (`/api/internal`, [`crate::places`]), and — when signing in is configured — the sign-in
-//! (`/auth/*`, [`crate::signin`]) and the operator API (`/api/v1/*`, [`crate::api`]).
+//! (`/auth/*`, [`crate::signin`]), the operator API (`/api/v1/*`, [`crate::api`]) and its
+//! live socket (`/api/v1/live`, [`crate::live`]).
 //!
 //! `POST /api/ingest/v1/events` is authenticated by the source's signature alone (see
 //! `panel_core::signature`): no cookie, no CSRF, nothing but the key id and the MAC over the
@@ -38,7 +39,9 @@ use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
 
 use crate::{
-	api, places,
+	api,
+	live::{self, Live, LiveLimits},
+	places,
 	signin::{self, SignIn},
 	telegram::{self, BotName, TelegramState},
 };
@@ -63,6 +66,8 @@ pub struct Limits {
 	pub api_concurrent: usize,
 	/// `/api/v1`: a rotation (which may wait on another replica's) and a few queries.
 	pub api_timeout: Duration,
+	/// `/api/v1/live`.
+	pub live: LiveLimits,
 }
 
 impl Default for Limits {
@@ -75,6 +80,7 @@ impl Default for Limits {
 			auth_timeout: Duration::from_secs(10),
 			api_concurrent: 32,
 			api_timeout: Duration::from_secs(15),
+			live: LiveLimits::default(),
 		}
 	}
 }
@@ -115,7 +121,15 @@ pub fn app_with_telegram(sign_in: SignIn, limits: Limits, bot: BotName) -> Route
 		limits.api_concurrent,
 		limits.api_timeout,
 	);
-	router_with(sign_in.panel, limits).merge(auth).nest("/api/v1", api).layer(middleware::map_response(nosniff))
+	// Its own budget: the bound and the timeout cover the handshake only (the socket lives on
+	// after the 101), and a burst of reconnecting tabs must not shed the API's requests.
+	let live = Router::new().route("/api/v1/live", get(live::upgrade)).with_state(Live::new(sign_in.clone(), limits.live));
+	let live = bounded(live, limits.live.upgrade_concurrent, limits.live.upgrade_timeout);
+	router_with(sign_in.panel, limits)
+		.merge(auth)
+		.merge(live)
+		.nest("/api/v1", api)
+		.layer(middleware::map_response(nosniff))
 }
 
 /// At most `concurrent` at once across `routes`, past it `503` rather than a queue; at most

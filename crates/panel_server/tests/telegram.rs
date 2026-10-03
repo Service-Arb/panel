@@ -948,3 +948,42 @@ async fn a_chat_telegram_cannot_find_is_dead() {
 	assert_eq!(s.n.deliver(t0()).await.unwrap().dead, 1);
 	assert!(s.panel.telegram_settings(user, Role::Operator).await.unwrap().blocked);
 }
+
+/// Each change of a link tells the live sockets of its user, and nobody else's: linked,
+/// `/stop`, the profile's unlink, and the bot found blocked.
+#[tokio::test]
+async fn a_link_changing_tells_its_user() {
+	let s = setup().await;
+	let user = Uuid::now_v7();
+	let mut rx = s.panel.bus().subscribe();
+	let mut told = || {
+		let mut users = Vec::new();
+		while let Ok(signal) = rx.try_recv() {
+			if let panel::live::Signal::Changed(c) = signal
+				&& c.topic == panel::live::Topic::Telegram
+			{
+				assert!(c.visible_to(user, Role::Operator) && !c.visible_to(Uuid::now_v7(), Role::Admin));
+				users.push(c.user);
+			}
+		}
+		users
+	};
+	s.link(user, Role::Operator, 1, t0()).await;
+	assert_eq!(told(), [Some(user)], "linked");
+	s.n.handle(Update::Stop { chat: private(1) }, t0()).await.unwrap();
+	assert_eq!(told(), [Some(user)], "/stop");
+	s.n.handle(Update::Stop { chat: private(1) }, t0()).await.unwrap();
+	assert_eq!(told(), [], "nothing was linked");
+	s.link(user, Role::Operator, 1, t0()).await;
+	assert!(s.panel.telegram_unlink(user).await.unwrap());
+	assert_eq!(told(), [Some(user), Some(user)], "linked, unlinked from the profile");
+
+	s.link(user, Role::Operator, 1, t0()).await;
+	s.lead(t0()).await;
+	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
+	told();
+	s.mock
+		.script(403, json!({"ok": false, "error_code": 403, "description": "Forbidden: bot was blocked by the user"}));
+	assert_eq!(s.n.deliver(at(0)).await.unwrap().dead, 1);
+	assert_eq!(told(), [Some(user)], "blocked");
+}

@@ -237,3 +237,32 @@ async fn one_replica_imports_once_an_hour() {
 	assert!(!panel.posthog_import_lease(b, later(75), false).await.unwrap(), "a failed try waits ten minutes");
 	assert!(panel.posthog_import_lease(b, later(83), false).await.unwrap());
 }
+
+/// An import tells the live sockets what it changed, after each count is committed: the
+/// stages' counts and the experiments', by brand.
+#[tokio::test]
+async fn the_import_tells_the_live_sockets() {
+	let db = TestDb::create().await;
+	let (panel, mock, api, _) = setup(&db).await;
+	let day = today();
+	mock.with(|m| {
+		m.visits = vec![json!([day, "aquafix", "paris-11", "google.com", 40])];
+		m.experiments = vec![json!([day, "aquafix", "hero", "a", "experiment_exposed", null, 150])];
+	});
+	let mut rx = panel.bus().subscribe();
+	import(&panel, &api).await;
+	let mut told = Vec::new();
+	while let Ok(signal) = rx.try_recv() {
+		let panel::live::Signal::Changed(c) = signal else { panic!("{signal:?}") };
+		told.push((c.topic, c.brand.map(|b| b.as_str().to_owned()), c.id));
+	}
+	assert_eq!(
+		told,
+		[
+			(panel::live::Topic::Metrics, Some("aquafix".to_owned()), None),
+			(panel::live::Topic::Experiments, Some("aquafix".to_owned()), None),
+		]
+	);
+	import(&panel, &api).await;
+	assert!(rx.try_recv().is_err(), "the same counts again: nothing written, nothing told");
+}
