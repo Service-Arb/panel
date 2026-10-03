@@ -129,8 +129,9 @@
           # (serve warns); one without the other fails the boot
           optionalEnv = [ "SENTRY_DSN" "TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_USERNAME" "TELEGRAM_LOCALE" "POSTHOG_API_HOST" "POSTHOG_PROJECT_ID" "POSTHOG_PERSONAL_API_KEY" ];
           ingress = {
-            # in-cluster only, by service DNS (docs/ARCHITECTURE.md, Deploy requirements)
-            excludePathPrefixes = [ "/api/ingest" ];
+            # in-cluster only, by service DNS: the landings' ingest and place reads
+            # (docs/ARCHITECTURE.md, Deploy requirements)
+            excludePathPrefixes = [ "/api/ingest" "/api/internal" ];
             # per client IP at the edge; the panel bounds concurrency, not who calls
             rateLimitPathPrefixes = [ "/auth" ];
           };
