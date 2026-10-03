@@ -8,7 +8,7 @@ use jiff::Timestamp;
 
 use crate::{
 	event::{SourceKind, Subject},
-	fact::{Fact, LeadChannel},
+	fact::{Fact, LeadChannel, LeadSuspect},
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 };
 
@@ -121,6 +121,9 @@ pub struct LeadState {
 	pub lost_reason: Option<String>,
 	/// How it came in, from its `lead.created`; `None` when that was never registered.
 	pub channel: Option<LeadChannel>,
+	/// Why the landing's antispam doubted it, from its `lead.created`; `None` for an ordinary
+	/// lead, and when that was never registered.
+	pub suspect: Option<LeadSuspect>,
 	/// Its `lead.created` was typed in by a person (spec §10a).
 	pub manual: bool,
 	pub last_event_id: EventId,
@@ -158,6 +161,7 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		times: StageTimes::default(),
 		lost_reason: None,
 		channel: None,
+		suspect: None,
 		manual: false,
 		last_event_id: first.id,
 		last_event_at: first.occurred_at,
@@ -170,8 +174,9 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		if let Some(job) = &e.subject.job_id {
 			state.job_id = Some(job.clone());
 		}
-		if let Fact::LeadCreated { channel, .. } = &e.fact {
+		if let Fact::LeadCreated { channel, suspect, .. } = &e.fact {
 			state.channel = Some(*channel);
+			state.suspect = *suspect;
 			state.manual = e.source_kind.is_manual();
 		}
 		if let Some(reached) = Stage::of(&e.fact) {
@@ -225,6 +230,7 @@ mod tests {
 		Fact::LeadCreated {
 			channel: LeadChannel::Form,
 			entered_by: None,
+			suspect: None,
 		}
 	}
 
@@ -269,6 +275,7 @@ mod tests {
 				Fact::LeadCreated {
 					channel: LeadChannel::PhoneInbound,
 					entered_by: Some("u1".into()),
+					suspect: None,
 				},
 			),
 			ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None }),
@@ -304,6 +311,7 @@ mod tests {
 			Fact::LeadCreated {
 				channel: LeadChannel::PhoneInbound,
 				entered_by: Some("op-1".into()),
+				suspect: None,
 			},
 		);
 		let mut back_dated = ev(0, SourceKind::Site, created());
@@ -317,11 +325,30 @@ mod tests {
 	}
 
 	#[test]
+	fn the_suspect_mark_is_the_counting_creations() {
+		let doubted = ev(
+			0,
+			SourceKind::Site,
+			Fact::LeadCreated {
+				channel: LeadChannel::Form,
+				entered_by: None,
+				suspect: Some(LeadSuspect::TooFast),
+			},
+		);
+		let s = fold(&[doubted.clone(), ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None })]).unwrap();
+		assert_eq!(s.suspect, Some(LeadSuspect::TooFast), "progress does not clear it");
+		let mut again = ev(1, SourceKind::Site, created());
+		again.received_at = at(30);
+		assert_eq!(fold(&[again, doubted]).unwrap().suspect, Some(LeadSuspect::TooFast), "a later clean creation does not either");
+	}
+
+	#[test]
 	fn a_lead_seen_before_its_creation() {
 		let s = fold(&[ev(5, SourceKind::Panel, Fact::CallAttempted)]).unwrap();
 		assert_eq!(s.stage, Stage::Created);
 		assert_eq!(s.times.created, None);
 		assert_eq!(s.channel, None);
+		assert_eq!(s.suspect, None);
 		assert!(fold(&[]).is_none());
 	}
 }

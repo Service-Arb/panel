@@ -182,6 +182,87 @@ async fn the_callback_migration_keeps_the_leads_both_ways() {
 	assert_eq!(rows().await[1], ("L-2".to_owned(), Some("callback".to_owned())), "the journal still has it");
 }
 
+/// A landing's antispam marks a lead it doubted but kept: either word is taken and kept on the
+/// lead, any other is refused, and an unmarked lead stays unmarked.
+#[tokio::test]
+async fn a_suspect_lead_is_kept_and_marked() {
+	let db = TestDb::create().await;
+	let (panel, secret, _) = setup(&db).await;
+	let events = [
+		event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form", "suspect": "rate_limited"})),
+		event("lead.created", at(1), "site", lead("L-2"), json!({"channel": "callback", "suspect": "too_fast"})),
+		event("lead.created", at(2), "site", lead("L-3"), json!({"channel": "form", "suspect": "honeypot"})),
+		event("lead.created", at(3), "site", lead("L-4"), json!({"channel": "form"})),
+	];
+	let got = panel.ingest(sign("aquafix-site", &secret, &events, now()).batch(), now()).await.unwrap();
+	assert_eq!(
+		outcomes(&got),
+		[
+			ACCEPTED,
+			ACCEPTED,
+			Outcome::Rejected(panel_core::Invalid::new("properties.suspect is not one of rate_limited, too_fast")),
+			ACCEPTED
+		]
+	);
+	let pool = db.pool().await;
+	let marks = || async {
+		sqlx::query_as::<_, (String, Option<String>)>("SELECT lead_id, suspect FROM reporting_leads ORDER BY lead_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap()
+	};
+	let want = [
+		("L-1".to_owned(), Some("rate_limited".to_owned())),
+		("L-2".to_owned(), Some("too_fast".to_owned())),
+		("L-4".to_owned(), None),
+	];
+	assert_eq!(marks().await, want);
+	assert_eq!(count(&pool, "SELECT sum(leads) FROM reporting_funnel_daily").await, 3, "a doubted lead is still a lead");
+	assert_eq!(count(&pool, "SELECT sum(suspect) FROM reporting_funnel_daily").await, 2, "counted apart too");
+	panel.rebuild_projections().await.unwrap();
+	assert_eq!(marks().await, want, "and the rebuild agrees");
+}
+
+/// The suspect migration adds a column and remakes the views: undone, the column is gone and
+/// the leads are not; applied again, the rebuild brings the marks back from the journal.
+#[tokio::test]
+async fn the_suspect_migration_keeps_the_leads_both_ways() {
+	const SUSPECT: i64 = 20261003140000;
+	let db = TestDb::create().await;
+	let (panel, secret, _) = setup(&db).await;
+	let events = [
+		event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"})),
+		event("lead.created", at(1), "site", lead("L-2"), json!({"channel": "form", "suspect": "too_fast"})),
+	];
+	panel.ingest(sign("aquafix-site", &secret, &events, now()).batch(), now()).await.unwrap();
+	let pool = db.pool().await;
+	let funnel = "SELECT sum(leads) FROM reporting_funnel_daily";
+	let marks = || async {
+		sqlx::query_as::<_, (String, Option<String>)>("SELECT lead_id, suspect FROM reporting_leads ORDER BY lead_id")
+			.fetch_all(&pool)
+			.await
+	};
+
+	let migrator = sqlx::migrate!("./migrations");
+	migrator.undo(&pool, SUSPECT - 1).await.unwrap();
+	assert!(marks().await.is_err(), "no suspect column before it");
+	assert!(sqlx::query("SELECT suspect FROM leads").execute(&pool).await.is_err());
+	assert_eq!(count(&pool, "SELECT count(*) FROM reporting_leads").await, 2);
+	assert_eq!(count(&pool, funnel).await, 2);
+
+	migrator.run(&pool).await.unwrap();
+	assert_eq!(marks().await.unwrap(), [("L-1".to_owned(), None), ("L-2".to_owned(), None)]);
+	let refused = sqlx::query("UPDATE leads SET suspect = 'honeypot' WHERE lead_id = 'L-2'").execute(&pool).await;
+	assert!(refused.is_err(), "the CHECK holds the vocabulary");
+	panel.rebuild_projections().await.unwrap();
+	assert_eq!(
+		marks().await.unwrap(),
+		[("L-1".to_owned(), None), ("L-2".to_owned(), Some("too_fast".to_owned()))],
+		"the journal still has it"
+	);
+	assert_eq!(count(&pool, funnel).await, 2);
+}
+
 #[tokio::test]
 async fn unregistered_types_are_kept_not_projected() {
 	let db = TestDb::create().await;
