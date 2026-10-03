@@ -169,11 +169,14 @@ every request is a new event (`201`).
 
 ```text
 GET    /me                                        {user_id, role, email, preferred_name, dev_sign_in}
-GET    /leads?stage&brand&location&overdue&suspect&created_from&created_to&cursor&limit
+GET    /leads?stage&brand&location&overdue&suspect&flow&created_from&created_to&cursor&limit
                                                   {leads: [Lead], next_cursor}; newest created
                                                   first, limit ≤ 200 (default 50); created_*
                                                   UTC days, both included; suspect=only |
-                                                  exclude (absent: every lead)
+                                                  exclude (absent: every lead); flow=quote |
+                                                  estimate | fixed, anything else 400 (absent:
+                                                  every lead; a lead that said no flow is under
+                                                  none of the three)
 GET    /leads/counts?brand&location               {stages: {created: n, …, lost: n} (every
                                                   stage, 0 included), overdue, total}
 POST   /leads                                     {brand, location, need, phone?} → 201
@@ -257,7 +260,9 @@ examples. It treats page views as independent trials, which they only approximat
 correction is made for several variants against one control.
 
 `Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`,
-`suspect` — null, `"rate_limited"` or `"too_fast"`, see [Suspect leads](#suspect-leads) —, …)
+`suspect` — null, `"rate_limited"` or `"too_fast"`, see [Suspect leads](#suspect-leads) —,
+`flow`, `quoted_cents`, `pricing_valid_from`, `estimate_inputs` — see [Flows and
+prices](#flows-and-prices) —, …)
 plus `sla` while it waits for its first contact — `{waiting_since, waiting_seconds,
 overdue}`, overdue after 30 minutes — and `pii` (the customer's name, phone, need) for the
 roles that see it. A share is `{n, of, percent, small_sample}`; `percent` is null while `of`
@@ -291,6 +296,35 @@ still counts a suspect lead in `leads` and every stage it reaches, and counts it
 `suspect`, so a report that wants them out subtracts. Telegram tells of one under `new_lead`,
 headed as suspect with its reason and with the usual buttons, and does not remind of it past
 the contact SLA: nobody promised to call it back within 30 minutes.
+
+## Flows and prices
+
+A landing offers each need through one of three flows (FORM-VARIANTS-SPEC, lib#178): `quote`
+(the customer asks for a price), `estimate` (a price computed from enum choices the visitor
+made — zone, bedrooms, frequency, …) or `fixed` (a fixed price for a well-defined job). The
+landing's server computes the price itself and says, in `lead.created`'s properties, what it
+showed:
+
+```text
+flow                quote | estimate | fixed; absent: a landing from before the flows
+quoted_cents        int64 ≥ 0, integer cents EUR TTC (no currency field yet)       ┐ both, exactly when
+pricing_valid_from  RFC 3339 full-date, the day the pricing model took effect     ┘ flow is estimate|fixed
+estimate_inputs     {input id: value id}, slugs of 1–40 [a-z0-9_-], ≤ 12 pairs; only with estimate
+```
+
+Anything else is rejected like any word outside a closed vocabulary: a price with `quote` or
+no flow, a priced flow without both fields, one of the two alone, inputs with another flow, a
+key or value not a slug (never free text: they sit in the clear), 13 pairs, a date that is
+not a real day. The fields extend `LeadCreatedV1` (optional, `type_version` stays 1); a build
+before them rejects an event carrying one, so kitstart sends them only once this panel is live
+(its `panelFlow` switch).
+
+Like `suspect`, they are the counted creation's (the first journaled): a later `lead.created`
+saying nothing does not clear them. Where they show: `leads.flow`, `quoted_cents`,
+`pricing_valid_from` (`TEXT`, a real day by CHECK) and `estimate_inputs` (JSON object), NULL
+when the lead said nothing, rebuilt from the journal like every column; the same four on `Lead`
+in `/api/v1` (null when absent) and the `flow=` filter of `GET /leads`. `reporting_leads`
+carries the four; `reporting_funnel_daily` counts the `estimate` and `fixed` leads apart.
 
 ## Live updates, `/api/v1/live`
 

@@ -4,13 +4,13 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger, Label, Switch, but
 import { ChevronDown } from "lucide-react";
 import { useId } from "react";
 
-import { type LeadCounts, type LeadFilter, STAGES } from "@/entities/lead";
+import { FLOWS, type LeadCounts, type LeadFilter, STAGES } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
 import { FilterSelect } from "@/shared/ui/filter-select";
 import { useButtonSize } from "@/shared/ui/touch";
 
-import { stageOrNull, suspectFilterOf } from "../model/params";
+import { flowFilterOf, narrows, stageOrNull, suspectFilterOf } from "../model/params";
 import { StageSegments } from "./stage-segments";
 
 type Props = { filter: LeadFilter; brands: string[]; locations: string[]; counts: LeadCounts | null; onChange: (patch: Partial<LeadFilter>) => void };
@@ -41,7 +41,7 @@ export function LeadFilters(props: Props) {
     );
   }
 
-  const more = filter.brand !== null || filter.location !== null || filter.overdue || filter.suspect !== null;
+  const more = narrows(filter, ["brand", "location", "overdue", "suspect", "flow"]);
   return (
     <div className="flex flex-col gap-2">
       <StageSegments stage={filter.stage} counts={props.counts} onChange={(stage) => onChange({ stage })} />
@@ -74,6 +74,13 @@ function SecondaryFilters({ filter, brands, locations, onChange }: Props) {
           { value: "exclude", label: t("filter.suspect.exclude") },
         ]}
         onChange={(v) => onChange({ suspect: suspectFilterOf(v) })}
+      />
+      <FilterSelect
+        label={t("filter.flow")}
+        allLabel={t("filter.flow.all")}
+        value={filter.flow}
+        options={FLOWS.map((f) => ({ value: f, label: t(`flow.${f}`) }))}
+        onChange={(v) => onChange({ flow: flowFilterOf(v) })}
       />
       <div className="flex items-center gap-2 px-1 max-md:min-h-11">
         <Switch id={`${id}-overdue`} checked={filter.overdue} onCheckedChange={(overdue) => onChange({ overdue })} />

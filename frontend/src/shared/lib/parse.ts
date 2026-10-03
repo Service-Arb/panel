@@ -22,6 +22,15 @@ export const str: Parser<string> = (v, path) => (typeof v === "string" ? v : fai
 export const num: Parser<number> = (v, path) =>
   typeof v === "number" && Number.isFinite(v) ? v : fail(path, "a number", v);
 
+/** Integer minor units (cents), never negative: money arrives as a whole number or not at all. */
+export const cents: Parser<number> = (v, path) =>
+  typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : fail(path, "a whole number of cents, 0 or more", v);
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A calendar day, `YYYY-MM-DD`. */
+export const isoDay: Parser<string> = (v, path) => (typeof v === "string" && DAY.test(v) ? v : fail(path, "a day, YYYY-MM-DD", v));
+
 export const bool: Parser<boolean> = (v, path) => (typeof v === "boolean" ? v : fail(path, "a boolean", v));
 
 /** Absent and `null` both read as `null`: the API skips some fields rather than nulling them. */

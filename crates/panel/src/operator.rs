@@ -12,7 +12,7 @@ use jiff::{Timestamp, civil::Date};
 use panel_contracts::SCHEMA;
 use panel_core::{
 	Invalid,
-	fact::bounded,
+	fact::{LeadFlow, bounded},
 	funnel::{self, Totals},
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 	lead::Stage,
@@ -155,6 +155,8 @@ pub struct LeadQuery {
 	/// Only those created before this.
 	pub created_before: Option<Timestamp>,
 	pub suspect: SuspectFilter,
+	/// Only those that came through this flow.
+	pub flow: Option<LeadFlow>,
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: u32,
 }
@@ -432,6 +434,7 @@ impl Panel {
 				SuspectFilter::Only => Some(true),
 				SuspectFilter::Exclude => Some(false),
 			},
+			flow: q.flow,
 			after: q.after.clone(),
 			limit: i64::from(limit) + 1,
 		};

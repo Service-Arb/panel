@@ -22,6 +22,7 @@ use panel::{
 use panel_core::{
 	Invalid,
 	event::SourceKind,
+	fact::LeadFlow,
 	funnel::{MIN_SAMPLE, Share, Totals},
 	ids::{BrandId, JobId, LeadId, LocationId},
 	lead::Stage,
@@ -251,6 +252,14 @@ struct LeadDto {
 	paid_at: Option<String>,
 	lost_at: Option<String>,
 	lost_reason: Option<String>,
+	/// `quote` | `estimate` | `fixed`: the landing's flow; null when it said none.
+	flow: Option<String>,
+	/// The price an estimate or a fixed price showed, integer cents EUR TTC.
+	quoted_cents: Option<i64>,
+	/// `YYYY-MM-DD`: when the pricing model behind `quoted_cents` took effect.
+	pricing_valid_from: Option<String>,
+	/// An estimate's inputs, input id → value id.
+	estimate_inputs: Option<Value>,
 	last_event_at: String,
 	/// Set while it waits for its first contact.
 	sla: Option<SlaDto>,
@@ -292,6 +301,10 @@ fn lead_dto(v: LeadView, now: Timestamp) -> LeadDto {
 		paid_at: ts(r.paid_at),
 		lost_at: ts(r.lost_at),
 		lost_reason: r.lost_reason,
+		flow: r.flow,
+		quoted_cents: r.quoted_cents,
+		pricing_valid_from: r.pricing_valid_from,
+		estimate_inputs: r.estimate_inputs,
 		last_event_at: r.last_event_at.to_string(),
 	}
 }
@@ -308,6 +321,8 @@ struct LeadsQuery {
 	created_to: Option<String>,
 	/// `only` | `exclude`; absent lists every lead.
 	suspect: Option<String>,
+	/// `quote` | `estimate` | `fixed`; absent lists every lead.
+	flow: Option<String>,
 	cursor: Option<String>,
 	limit: Option<u32>,
 }
@@ -343,6 +358,11 @@ async fn leads(State(panel): State<Panel>, Extension(caller): Extension<Caller>,
 			Some("exclude") => SuspectFilter::Exclude,
 			Some(_) => return Err(ApiError::BadRequest("suspect is not one of only, exclude".into())),
 		},
+		flow: q
+			.flow
+			.as_deref()
+			.map(|f| LeadFlow::parse(f).map_err(|_| ApiError::BadRequest("flow is not one of quote, estimate, fixed".into())))
+			.transpose()?,
 		after: q.cursor.as_deref().map(cursor_decode).transpose()?,
 		limit: q.limit.unwrap_or(50),
 	};

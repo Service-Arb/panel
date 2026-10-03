@@ -1,6 +1,7 @@
 import { http, ignoreBody } from "@/shared/api";
 import { object, str } from "@/shared/lib/parse";
 
+import type { Flow } from "../model/pricing";
 import { type LeadCard, type LeadCounts, type LeadPage, type LeadRef, type Stage, leadCardParser, leadCountsParser, leadPageParser, leadPath } from "../model/lead";
 
 export interface LeadFilter {
@@ -13,6 +14,8 @@ export interface LeadFilter {
   createdTo: string | null;
   /** Antispam's doubted leads: only them, none of them, or (null) every lead. */
   suspect: "only" | "exclude" | null;
+  /** The form variant; null is every lead, those without one included. */
+  flow: Flow | null;
 }
 
 export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50): Promise<LeadPage> {
@@ -24,6 +27,7 @@ export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50
     created_from: filter.createdFrom,
     created_to: filter.createdTo,
     suspect: filter.suspect,
+    flow: filter.flow,
     cursor,
     limit,
   });

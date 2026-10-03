@@ -579,6 +579,77 @@ async fn suspect_leads_are_marked_and_filtered() {
 	assert_eq!(card.body["lead"]["suspect"], Value::Null);
 }
 
+/// A lead's flow and price, as the landings send them, on the list and the card, and the
+/// list filtered by flow.
+#[tokio::test]
+async fn leads_carry_their_flow_and_price() {
+	let db = TestDb::create().await;
+	let (app, fake, panel) = setup(&db).await;
+	fake.with(|f| {
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
+	});
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+	let secret = panel
+		.add_source("aquafix-site", SourceKind::Site, [BrandId::parse("aquafix").unwrap()].into())
+		.await
+		.unwrap()
+		.unwrap()
+		.secret
+		.to_string();
+	let now = Timestamp::now();
+	let created = |lead: &str, minutes: i64, properties: Value| {
+		event(
+			"lead.created",
+			now - SignedDuration::from_mins(minutes),
+			"site",
+			json!({"brandId": "aquafix", "locationId": "royat", "leadId": lead}),
+			properties,
+		)
+	};
+	let events = [
+		created("L-1", 4, json!({"channel": "form"})),
+		created("L-2", 3, json!({"channel": "form", "flow": "quote"})),
+		created(
+			"L-3",
+			2,
+			json!({"channel": "form", "flow": "estimate", "quotedCents": 12900, "pricingValidFrom": "2026-10-01", "estimateInputs": {"zone": "a", "bedrooms": "2"}}),
+		),
+		created("L-4", 1, json!({"channel": "callback", "flow": "fixed", "quotedCents": 8000, "pricingValidFrom": "2026-09-15"})),
+	];
+	let got = panel.ingest(sign("aquafix-site", &secret, &events, now).batch(), now).await.unwrap();
+	assert!(got.iter().all(|v| v.outcome == panel::Outcome::Accepted { unregistered: false }), "{got:?}");
+
+	let fields = |l: &Value| json!({"flow": l["flow"], "quoted_cents": l["quoted_cents"], "pricing_valid_from": l["pricing_valid_from"], "estimate_inputs": l["estimate_inputs"]});
+	let all = b.get(&app, "/api/v1/leads").await;
+	assert_eq!(all.status, StatusCode::OK, "{}", all.body);
+	let leads = all.body["leads"].as_array().unwrap();
+	assert_eq!(
+		leads.iter().map(fields).collect::<Vec<_>>(),
+		[
+			json!({"flow": "fixed", "quoted_cents": 8000, "pricing_valid_from": "2026-09-15", "estimate_inputs": null}),
+			json!({"flow": "estimate", "quoted_cents": 12900, "pricing_valid_from": "2026-10-01", "estimate_inputs": {"bedrooms": "2", "zone": "a"}}),
+			json!({"flow": "quote", "quoted_cents": null, "pricing_valid_from": null, "estimate_inputs": null}),
+			json!({"flow": null, "quoted_cents": null, "pricing_valid_from": null, "estimate_inputs": null}),
+		],
+		"the fields always present, null when the lead said nothing"
+	);
+	for (flow, want) in [("estimate", vec!["L-3"]), ("fixed", vec!["L-4"]), ("quote", vec!["L-2"])] {
+		let r = b.get(&app, &format!("/api/v1/leads?flow={flow}")).await;
+		assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+		let ids: Vec<&str> = r.body["leads"].as_array().unwrap().iter().map(|l| l["lead_id"].as_str().unwrap()).collect();
+		assert_eq!(ids, want, "{flow}");
+	}
+	let bad = b.get(&app, "/api/v1/leads?flow=subscription").await;
+	assert_eq!((bad.status, bad.body), (StatusCode::BAD_REQUEST, json!({"error": "flow is not one of quote, estimate, fixed"})));
+
+	let card = b.get(&app, "/api/v1/leads/aquafix/L-3").await;
+	assert_eq!(card.status, StatusCode::OK, "{}", card.body);
+	assert_eq!(fields(&card.body["lead"])["quoted_cents"], 12900);
+	assert_eq!(card.body["lead"]["estimate_inputs"], json!({"bedrooms": "2", "zone": "a"}));
+}
+
 #[tokio::test]
 async fn the_counts_beside_the_funnel_and_the_experiments() {
 	let db = TestDb::create().await;

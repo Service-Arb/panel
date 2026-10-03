@@ -1,4 +1,6 @@
-import { type Infer, arrayOf, bool, nullable, num, object, oneOf, record, recordOf, str } from "@/shared/lib/parse";
+import { type Infer, arrayOf, bool, cents, dictOf, isoDay, nullable, num, object, oneOf, record, recordOf, str } from "@/shared/lib/parse";
+
+import { FLOWS } from "./pricing";
 
 /** `panel_core::lead::Stage`, in its order; `lost` can be reached from any of them. */
 export const STAGES = ["created", "contacted", "quoted", "won", "completed", "paid", "lost"] as const;
@@ -33,6 +35,14 @@ export const leadParser = object({
   sla: nullable(slaParser),
   /** What the customer left, for the roles that see it. */
   pii: nullable(record),
+  /** The form variant the site used; the three fields below are absent from older leads. */
+  flow: nullable(oneOf(FLOWS)),
+  /** EUR TTC in integer cents, with `estimate` and `fixed` only. */
+  quoted_cents: nullable(cents),
+  /** The day the price model used took effect. */
+  pricing_valid_from: nullable(isoDay),
+  /** `estimate` only: input id → value id, as the site's model names them (no labels yet). */
+  estimate_inputs: nullable(dictOf(str)),
 });
 export type Lead = Infer<typeof leadParser>;
 

@@ -8,7 +8,7 @@ use jiff::Timestamp;
 
 use crate::{
 	event::{SourceKind, Subject},
-	fact::{Fact, LeadChannel, LeadSuspect},
+	fact::{Fact, LeadChannel, LeadOffer, LeadSuspect},
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 };
 
@@ -124,6 +124,9 @@ pub struct LeadState {
 	/// Why the landing's antispam doubted it, from its `lead.created`; `None` for an ordinary
 	/// lead, and when that was never registered.
 	pub suspect: Option<LeadSuspect>,
+	/// Its flow and the price it was shown, from its `lead.created`; empty when that said
+	/// nothing of them, or was never registered.
+	pub offer: LeadOffer,
 	/// Its `lead.created` was typed in by a person (spec §10a).
 	pub manual: bool,
 	pub last_event_id: EventId,
@@ -162,6 +165,7 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		lost_reason: None,
 		channel: None,
 		suspect: None,
+		offer: LeadOffer::default(),
 		manual: false,
 		last_event_id: first.id,
 		last_event_at: first.occurred_at,
@@ -174,9 +178,10 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		if let Some(job) = &e.subject.job_id {
 			state.job_id = Some(job.clone());
 		}
-		if let Fact::LeadCreated { channel, suspect, .. } = &e.fact {
+		if let Fact::LeadCreated { channel, suspect, offer, .. } = &e.fact {
 			state.channel = Some(*channel);
 			state.suspect = *suspect;
+			state.offer = offer.clone();
 			state.manual = e.source_kind.is_manual();
 		}
 		if let Some(reached) = Stage::of(&e.fact) {
@@ -231,6 +236,7 @@ mod tests {
 			channel: LeadChannel::Form,
 			entered_by: None,
 			suspect: None,
+			offer: LeadOffer::default(),
 		}
 	}
 
@@ -276,6 +282,7 @@ mod tests {
 					channel: LeadChannel::PhoneInbound,
 					entered_by: Some("u1".into()),
 					suspect: None,
+					offer: LeadOffer::default(),
 				},
 			),
 			ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None }),
@@ -312,6 +319,7 @@ mod tests {
 				channel: LeadChannel::PhoneInbound,
 				entered_by: Some("op-1".into()),
 				suspect: None,
+				offer: LeadOffer::default(),
 			},
 		);
 		let mut back_dated = ev(0, SourceKind::Site, created());
@@ -333,6 +341,7 @@ mod tests {
 				channel: LeadChannel::Form,
 				entered_by: None,
 				suspect: Some(LeadSuspect::TooFast),
+				offer: LeadOffer::default(),
 			},
 		);
 		let s = fold(&[doubted.clone(), ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None })]).unwrap();
@@ -340,6 +349,25 @@ mod tests {
 		let mut again = ev(1, SourceKind::Site, created());
 		again.received_at = at(30);
 		assert_eq!(fold(&[again, doubted]).unwrap().suspect, Some(LeadSuspect::TooFast), "a later clean creation does not either");
+	}
+
+	#[test]
+	fn the_offer_is_the_counting_creations() {
+		let estimate = LeadOffer::parse(Some("estimate"), Some(12_900), Some("2026-10-01"), [("zone".to_owned(), "a".to_owned())]).unwrap();
+		let priced = ev(
+			0,
+			SourceKind::Site,
+			Fact::LeadCreated {
+				channel: LeadChannel::Form,
+				entered_by: None,
+				suspect: None,
+				offer: estimate.clone(),
+			},
+		);
+		let mut again = ev(1, SourceKind::Site, created());
+		again.received_at = at(30);
+		let s = fold(&[again, priced, ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None })]).unwrap();
+		assert_eq!(s.offer, estimate, "a later creation saying nothing does not clear it, nor does progress");
 	}
 
 	#[test]

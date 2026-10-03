@@ -13,7 +13,7 @@ use panel_core::{
 	ids::{BrandId, JobId, LeadId, LocationId},
 	lead::{self, LeadState, Recorded},
 };
-use sqlx::SqliteConnection;
+use sqlx::{SqliteConnection, types::Json};
 
 use super::{
 	events::{self, Stored},
@@ -126,13 +126,16 @@ async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result
 	let t = |ts: Option<jiff::Timestamp>| ts.map(to_db);
 	sqlx::query(
 		"INSERT INTO leads (brand_id, lead_id, location_id, job_id, stage, channel, manual, \
-		 created_at, contacted_at, quoted_at, won_at, completed_at, paid_at, lost_at, lost_reason, last_event_id, last_event_at, suspect) \
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
+		 created_at, contacted_at, quoted_at, won_at, completed_at, paid_at, lost_at, lost_reason, last_event_id, last_event_at, suspect, \
+		 flow, quoted_cents, pricing_valid_from, estimate_inputs) \
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) \
 		 ON CONFLICT (brand_id, lead_id) DO UPDATE SET \
 		 location_id = EXCLUDED.location_id, job_id = EXCLUDED.job_id, stage = EXCLUDED.stage, channel = EXCLUDED.channel, manual = EXCLUDED.manual, \
 		 created_at = EXCLUDED.created_at, contacted_at = EXCLUDED.contacted_at, quoted_at = EXCLUDED.quoted_at, won_at = EXCLUDED.won_at, \
 		 completed_at = EXCLUDED.completed_at, paid_at = EXCLUDED.paid_at, lost_at = EXCLUDED.lost_at, lost_reason = EXCLUDED.lost_reason, \
-		 last_event_id = EXCLUDED.last_event_id, last_event_at = EXCLUDED.last_event_at, suspect = EXCLUDED.suspect",
+		 last_event_id = EXCLUDED.last_event_id, last_event_at = EXCLUDED.last_event_at, suspect = EXCLUDED.suspect, \
+		 flow = EXCLUDED.flow, quoted_cents = EXCLUDED.quoted_cents, pricing_valid_from = EXCLUDED.pricing_valid_from, \
+		 estimate_inputs = EXCLUDED.estimate_inputs",
 	)
 	.bind(s.brand_id.as_str())
 	.bind(s.lead_id.as_str())
@@ -152,6 +155,10 @@ async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result
 	.bind(s.last_event_id.raw())
 	.bind(to_db(s.last_event_at))
 	.bind(s.suspect.map(|m| m.as_str()))
+	.bind(s.offer.flow.map(|f| f.as_str()))
+	.bind(s.offer.price.map(|p| p.cents))
+	.bind(s.offer.price.map(|p| super::day_to_db(p.valid_from)))
+	.bind((!s.offer.estimate_inputs.is_empty()).then_some(Json(&s.offer.estimate_inputs)))
 	.execute(&mut *conn)
 	.await
 	.wrap_err_with(|| format!("writing lead {}/{}", s.brand_id, s.lead_id))?;

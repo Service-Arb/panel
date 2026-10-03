@@ -23,6 +23,7 @@ import { type IncomingMessage, type ServerResponse, createServer } from "node:ht
 import type { Duplex } from "node:stream";
 
 import { changed, every, liveUpgrade } from "./stub-live.ts";
+import { type StubDeal, dealDto, estimate, fixed, flowParam, quote, seedDeals } from "./stub-deals.ts";
 import { addedPlaces, placeFlags, placeSettingsRoute, touchPlace } from "./stub-places.ts";
 
 const PORT = Number(process.env.STUB_PORT ?? 3121);
@@ -54,6 +55,8 @@ interface StubLead {
   pii: Json;
   events: Json[];
   payments: { billed: number; commission: number; currency: string }[];
+  /** The form variant and its price; null on leads from before the variants. */
+  deal: StubDeal | null;
 }
 
 function makeLead(i: number, stage: string, minutes: number, pii: Json, location: string | null = "lyon-3", brand = "aquafix"): StubLead {
@@ -61,7 +64,7 @@ function makeLead(i: number, stage: string, minutes: number, pii: Json, location
   const order = ["created", "contacted", "quoted", "won", "completed", "paid"];
   const times: Record<string, string> = { created_at: created };
   for (const s of order.slice(1, order.indexOf(stage) + 1)) times[`${s}_at`] = minsAgo(minutes - 10);
-  return { brand, lead_id: `stub-${i}`, location, stage, manual: false, times, lost_reason: null, suspect: null, pii, events: [event("lead.created", { channel: "form" }, "site", created)], payments: [] };
+  return { brand, lead_id: `stub-${i}`, location, stage, manual: false, times, lost_reason: null, suspect: null, pii, events: [event("lead.created", { channel: "form" }, "site", created)], payments: [], deal: null };
 }
 
 function event(type: string, properties: Json, kind = "panel", at = iso(now())): Json {
@@ -82,6 +85,7 @@ const leads: StubLead[] = [
 // Two the antispam doubted: one sender too often, one form back too soon.
 leads.push({ ...makeLead(10, "created", 12, { name: "Bot? (stub)", phone: "+33 6 00 00 00 10", need: "hot_water" }), suspect: "rate_limited" });
 leads.push({ ...makeLead(11, "contacted", 60 * 5, { need: "asdf (stub)", locality: "69003", bedrooms: 2 }, "paris-11", "vifnet"), suspect: "too_fast" });
+seedDeals(leads);
 leads[5]!.payments.push({ billed: 23_100, commission: 2_310, currency: "EUR" });
 leads[7]!.payments.push({ billed: 208_000, commission: 20_800, currency: "EUR" }, { billed: 9_050, commission: 0, currency: "GBP" });
 
@@ -99,6 +103,7 @@ function leadDto(l: StubLead): Json {
     last_event_at: String(l.events.at(-1)?.occurred_at ?? since),
     sla: waiting ? { waiting_since: since, waiting_seconds: secs, overdue: secs > 30 * 60 } : null,
     pii: l.pii,
+    ...dealDto(l.deal),
   };
 }
 
@@ -324,8 +329,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const q = url.searchParams;
     const suspect = q.get("suspect");
     if (suspect !== null && suspect !== "only" && suspect !== "exclude") return send(res, 400, { error: "suspect is not one of only, exclude" });
+    const flow = flowParam(q.get("flow"));
+    if (flow === false) return send(res, 400, { error: "flow is not one of quote, estimate, fixed" });
     const list = leads
       .filter((l) => (suspect !== "only" || l.suspect !== null) && (suspect !== "exclude" || l.suspect === null))
+      .filter((l) => flow === null || l.deal?.flow === flow)
       .filter((l) => (!q.get("stage") || l.stage === q.get("stage")) && (!q.get("brand") || l.brand === q.get("brand")) && (!q.get("location") || l.location === q.get("location")))
       .map(leadDto)
       .filter((l) => q.get("overdue") !== "true" || (l.sla as Json | null)?.overdue === true)
@@ -409,6 +417,8 @@ every(LIVE_EVERY, () => {
   l.lead_id = `live-${randomUUID().slice(0, 8)}`;
   // Now and then the antispam doubts one, as a landing would mark it.
   if (Math.random() < 0.3) l.suspect = pick(["rate_limited", "too_fast"]);
+  // And the sites use their form variants: vifnet prices from its model, aquafix asks for a quote.
+  l.deal = brand === "vifnet" ? pick([estimate(10_450, { zone: "paris-intra", bedrooms: "1", surface: "30-50", frequency: "weekly" }), fixed(6_900)]) : pick([quote(), null]);
   leads.push(l);
   changed("leads", l.brand, l.lead_id);
 });
