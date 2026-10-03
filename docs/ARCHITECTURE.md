@@ -581,8 +581,9 @@ experiments.declared@1   the landing at every start (kind site, its key; a new i
                          subject the brand alone: [{key [a-z0-9_]{1,64}, variants 2–32 unique
                          [a-z0-9_-]{1,32} (the first the control), weights one per variant ≥ 0
                          summing > 0, enabled, holdout? [0, 1), summary? ≤ 200}], ≤ 64, a key once
-experiment.configured@1  an admin in the panel (kind panel, source.id the admin), subject the
-                         brand alone: {key, enabled?, weights?, holdout?, reset: [field]} — a
+experiment.configured@1  an admin in the panel (kind panel, source.id the admin's id or cli),
+                         subject the brand alone: {key, enabled?, weights?, holdout?, reset: [field], by —
+                         the admin's email, else their id, as a place's history names them} — a
                          patch: a field absent left, named in reset put back to the declaration
 ```
 
@@ -601,7 +602,7 @@ GET /api/v1/experiments?brand            every role; one brand's, or every brand
      {experiments: [{brand, key, variants,
        declared: {weights, enabled, holdout, summary, declared_at},
        override: null | {weights, enabled, holdout (each null: follows the declaration),
-                         changed_by (the admin's concierge id), changed_at},
+                         changed_by (the admin's email, else their id: by), changed_at},
        effective: {weights, enabled, holdout}, weights_changed_at, retired, posthog_url}]}
 PUT /api/v1/experiments/{brand}/{key}    admin, fresh (gate_fresh, as POST /sources); CSRF
      {enabled?: bool | null, weights?: [n] | null, holdout?: n | null}: absent left, null put

@@ -9,7 +9,7 @@ use panel_contracts::{SCHEMA, v1};
 use panel_core::{
 	Invalid,
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
-	experiment::{Declaration, Patch, check_declared},
+	experiment::{Declaration, Patch, check_declared, label},
 	fact::{AnalyticsId, CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
 };
@@ -301,8 +301,12 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 			check_declared(&declared)?;
 			Ok(Fact::ExperimentsDeclared(declared))
 		}),
-		("experiment.configured", 1) =>
-			props::<v1::ExperimentConfiguredV1>(key, properties).and_then(|p| Ok(Fact::ExperimentConfigured(Patch::parse(&p.key, p.enabled, p.weights, p.holdout, &p.reset)?))),
+		("experiment.configured", 1) => props::<v1::ExperimentConfiguredV1>(key, properties).and_then(|p| {
+			Ok(Fact::ExperimentConfigured {
+				patch: Patch::parse(&p.key, p.enabled, p.weights, p.holdout, &p.reset)?,
+				by: label(&p.by)?,
+			})
+		}),
 		_ => return Checked::Unregistered,
 	};
 	match fact.and_then(|f| f.check_subject(subject).map(|()| f)) {
@@ -562,10 +566,14 @@ mod tests {
 		);
 		let nan = json!({"experiments": [{"key": "k", "variants": ["a", "b"], "weights": ["NaN", 1], "enabled": true}]});
 		assert!(matches!(check(&key("experiments.declared"), SourceKind::Site, &nan, &subject), Checked::Invalid(_)));
-		let configured = json!({"key": "lead_layout", "weights": [3, 1], "reset": ["holdout"]});
+		let Checked::Invalid(e) = check(&key("experiment.configured"), SourceKind::Panel, &json!({"key": "lead_layout", "enabled": false}), &subject) else {
+			panic!("a change naming nobody passed")
+		};
+		assert!(e.0.contains("properties.by"), "{e}");
+		let configured = json!({"key": "lead_layout", "weights": [3, 1], "reset": ["holdout"], "by": "ops@evinvest.ltd"});
 		assert!(matches!(
 			check(&key("experiment.configured"), SourceKind::Panel, &configured, &subject),
-			Checked::Registered(Fact::ExperimentConfigured(_))
+			Checked::Registered(Fact::ExperimentConfigured { .. })
 		));
 		assert_eq!(
 			check(&key("experiment.configured"), SourceKind::Site, &configured, &subject),

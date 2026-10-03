@@ -111,7 +111,7 @@ impl Change {
 			| Fact::CallAttempted
 			| Fact::CallLogged { .. } => (Topic::Lead, lead()),
 			Fact::ExperimentsDeclared(_) => (Topic::Experiments, None),
-			Fact::ExperimentConfigured(p) => (Topic::Experiments, Some(p.key.clone())),
+			Fact::ExperimentConfigured { patch, .. } => (Topic::Experiments, Some(patch.key.clone())),
 			Fact::RetiredCount => return None,
 		};
 		Some(Self {

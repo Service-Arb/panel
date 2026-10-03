@@ -12,12 +12,13 @@ use jiff::Timestamp;
 use panel_contracts::SCHEMA;
 use panel_core::{
 	Invalid,
-	experiment::{Field, Patch, State},
+	experiment::{Field, Patch, State, label},
 	ids::BrandId,
+	place::Editor,
 };
 use serde_json::{Value, json};
 
-use crate::{Panel, operator::Actor, store::experiments as stored};
+use crate::{Panel, store::experiments as stored};
 
 /// The PostHog project the landings send to, for the links to its insights.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,14 +140,17 @@ impl Panel {
 	}
 
 	/// An admin's change to one experiment: journaled as `experiment.configured` when it changes
-	/// what is set, then answered as the screens show it.
-	pub async fn configure_experiment(&self, by: Actor, brand: &BrandId, patch: Patch, now: Timestamp) -> Result<ExperimentView, ExperimentError> {
+	/// what is set — named by the editor's label, from the editor's id (or `cli`) — then
+	/// answered as the screens show it.
+	pub async fn configure_experiment(&self, by: &Editor, brand: &BrandId, patch: Patch, now: Timestamp) -> Result<ExperimentView, ExperimentError> {
+		let name = label(by.label()).map_err(|e| ExperimentError::Invalid(Invalid::new(e.0.trim_start_matches("properties.").to_owned())))?;
+		let source_id = by.user_id().map_or_else(|| "cli".to_owned(), |u| u.to_string());
 		let current = self.experiment(brand, &patch.key).await?.filter(|s| !s.retired).ok_or(ExperimentError::NotFound)?;
 		current.check_patch(&patch).map_err(ExperimentError::Invalid)?;
 		if !current.changes(&patch) {
 			return Ok(self.view(brand.clone(), current));
 		}
-		let mut properties = json!({"key": patch.key});
+		let mut properties = json!({"key": patch.key, "by": name});
 		let mut reset = Vec::new();
 		match &patch.enabled {
 			Field::Keep => {}
@@ -172,7 +176,7 @@ impl Panel {
 			"type": "experiment.configured",
 			"typeVersion": 1,
 			"occurredAt": now.to_string(),
-			"source": {"kind": "panel", "id": by.0.to_string()},
+			"source": {"kind": "panel", "id": source_id},
 			"subject": {"brandId": brand.as_str()},
 			"properties": properties,
 		});
@@ -181,7 +185,7 @@ impl Panel {
 			crate::Outcome::Duplicate => return Err(ExperimentError::Internal(eyre::eyre!("a fresh event id was taken"))),
 			crate::Outcome::Rejected(e) => return Err(ExperimentError::Invalid(e)),
 		}
-		tracing::info!(user_id = %by.0, %brand, key = patch.key, "experiment configured");
+		tracing::info!(source_id, %brand, key = patch.key, "experiment configured");
 		let state = self.experiment(brand, &patch.key).await?.ok_or_else(|| eyre::eyre!("an experiment configured and gone"))?;
 		Ok(self.view(brand.clone(), state))
 	}

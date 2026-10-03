@@ -198,8 +198,8 @@ message ExperimentDeclaration {
 }
 
 // experiment.configured@1 — an admin's change to one of the brand's experiments, written by the
-// panel (source.kind panel, source.id the admin). subject: the brand alone. A field absent is
-// left as it was; named in `reset`, it follows the declaration again.
+// panel (source.kind panel, source.id the admin's concierge id, or `cli`). subject: the brand
+// alone. A field absent is left as it was; named in `reset`, it follows the declaration again.
 message ExperimentConfiguredV1 {
   string key = 1;
   optional bool enabled = 2;
@@ -209,6 +209,10 @@ message ExperimentConfiguredV1 {
   optional double holdout = 4;
   // enabled | weights | holdout.
   repeated string reset = 5;
+  // Who, as the screens show them: the admin's email, or their concierge id when concierge gave
+  // none (as a place's or a price list's history names them). An employee's, not PII. One line,
+  // 1–320 characters.
+  string by = 6;
 }
 
 // ── counts, from the retired PostHog import (spec §2 stages 3–4, §3.4, §7) ─────────────

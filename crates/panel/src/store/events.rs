@@ -203,19 +203,12 @@ pub async fn of_lead(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId
 	.collect()
 }
 
-#[derive(sqlx::FromRow)]
-struct WithSource {
-	#[sqlx(flatten)]
-	row: Row,
-	source_id: String,
-}
-
-/// A brand's registered experiment events, each with its source id (who changed it).
-pub async fn of_experiments(conn: &mut SqliteConnection, brand: &BrandId) -> eyre::Result<Vec<(Stored, String)>> {
-	sqlx::query_as::<_, WithSource>(concat!(
+/// A brand's registered experiment events.
+pub async fn of_experiments(conn: &mut SqliteConnection, brand: &BrandId) -> eyre::Result<Vec<Stored>> {
+	sqlx::query_as::<_, Row>(concat!(
 		"SELECT ",
 		columns!(),
-		", source_id FROM events WHERE brand_id = $1 AND type IN ('experiments.declared', 'experiment.configured') AND status = 'registered' \
+		" FROM events WHERE brand_id = $1 AND type IN ('experiments.declared', 'experiment.configured') AND status = 'registered' \
 		 ORDER BY occurred_at, id"
 	))
 	.bind(brand.as_str())
@@ -223,7 +216,7 @@ pub async fn of_experiments(conn: &mut SqliteConnection, brand: &BrandId) -> eyr
 	.await
 	.wrap_err_with(|| format!("reading the experiment events of {brand}"))?
 	.into_iter()
-	.map(|r| Ok((Stored::try_from(r.row)?, r.source_id)))
+	.map(Stored::try_from)
 	.collect()
 }
 

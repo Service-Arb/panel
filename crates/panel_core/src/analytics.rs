@@ -72,7 +72,7 @@ pub fn capture_of(e: &Recorded) -> Option<Capture> {
 			p.insert("outcome", json!(outcome.as_str()));
 			"sa_call_logged"
 		}
-		Fact::CallAttempted | Fact::RetiredCount | Fact::ExperimentsDeclared(_) | Fact::ExperimentConfigured(_) => return None,
+		Fact::CallAttempted | Fact::RetiredCount | Fact::ExperimentsDeclared(_) | Fact::ExperimentConfigured { .. } => return None,
 	};
 	e.subject.lead_id.as_ref()?;
 	p.insert("brand_id", json!(e.subject.brand_id.as_str()));

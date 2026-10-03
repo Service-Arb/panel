@@ -11,7 +11,8 @@
 //! ```
 //!
 //! Item: `{brand, key, variants, declared: {weights, enabled, holdout, summary, declared_at},
-//! override: null | {weights, enabled, holdout, changed_by, changed_at}, effective: {weights,
+//! override: null | {weights, enabled, holdout, changed_by (the admin's email, else their id),
+//! changed_at}, effective: {weights,
 //! enabled, holdout}, weights_changed_at, retired, posthog_url}`.
 
 use std::time::Duration;
@@ -25,7 +26,6 @@ use jiff::Timestamp;
 use panel::{
 	Panel,
 	experiment::{ExperimentError, ExperimentView, live_json},
-	operator::Actor,
 };
 use panel_core::{
 	Invalid,
@@ -35,7 +35,7 @@ use panel_core::{
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::{api::ApiError, signin::Caller};
+use crate::{api::ApiError, places::editor, signin::Caller};
 
 /// How long a site's read may take before it is answered with no overrides.
 const LIVE_WITHIN: Duration = Duration::from_millis(2500);
@@ -137,7 +137,7 @@ async fn configure(State(panel): State<Panel>, Extension(caller): Extension<Call
 	}
 	let body: Value = serde_json::from_slice(&body).map_err(|_| ApiError::BadRequest("the body is not JSON".into()))?;
 	let patch = patch(&key, &body)?;
-	match panel.configure_experiment(Actor(caller.user_id), &brand, patch, Timestamp::now()).await {
+	match panel.configure_experiment(&editor(&caller), &brand, patch, Timestamp::now()).await {
 		Ok(v) => Ok(Json(item(&v))),
 		Err(ExperimentError::NotFound) => Err(ApiError::NotFound),
 		Err(ExperimentError::Invalid(e)) => Err(ApiError::BadRequest(e.0)),

@@ -159,17 +159,17 @@ async fn a_declaration_an_override_and_what_the_site_is_told() {
 	let (status, hero) = b.write(&admin, Method::PUT, path, json!({"weights": [2, 1, 1], "holdout": 0})).await;
 	assert_eq!(status, StatusCode::OK, "{hero}");
 	assert_eq!(hero["effective"], json!({"weights": [2.0, 1.0, 1.0], "enabled": true, "holdout": 0.0}));
-	assert_eq!(
-		hero["override"]["changed_by"],
-		json!(
-			DevIdentity {
-				role: Role::Admin,
-				email: "dev-admin@localhost".into()
-			}
-			.user_id()
-			.to_string()
-		)
-	);
+	assert_eq!(hero["override"]["changed_by"], "dev-admin@localhost", "named as a place's or a price list's history names them");
+	let source: String = sqlx::query_scalar("SELECT source_id FROM events WHERE type = 'experiment.configured'")
+		.fetch_one(panel.store().pool())
+		.await
+		.unwrap();
+	let admin_id = DevIdentity {
+		role: Role::Admin,
+		email: String::new(),
+	}
+	.user_id();
+	assert_eq!(source, admin_id.to_string(), "the source is the admin's id");
 	assert!(hero["weights_changed_at"].is_string());
 	let (_, hero) = b.write(&admin, Method::PUT, path, json!({"holdout": null, "enabled": false})).await;
 	assert_eq!(hero["effective"], json!({"weights": [2.0, 1.0, 1.0], "enabled": false, "holdout": 0.1}));

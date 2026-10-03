@@ -146,7 +146,9 @@ fn admin(caller: &Caller) -> Result<(), ApiError> {
 }
 
 /// Who the history names: the user's email, their id when concierge gave none.
-fn editor(caller: &Caller) -> Editor {
+/// Who a history names: the user's email, their id when concierge gave none. One rule for a
+/// place's, a price list's and an experiment's changes.
+pub(crate) fn editor(caller: &Caller) -> Editor {
 	let label = if caller.email.trim().is_empty() { caller.user_id.to_string() } else { caller.email.clone() };
 	Editor::User { id: caller.user_id, label }
 }

@@ -339,8 +339,12 @@ pub enum Fact {
 	RetiredCount,
 	/// What a brand's landing declares of its experiments at start: about no lead.
 	ExperimentsDeclared(Vec<Declaration>),
-	/// An admin's change to one experiment of the brand.
-	ExperimentConfigured(Patch),
+	/// An admin's change to one experiment of the brand; `by` names them as the screens show it
+	/// ([`crate::experiment::label`]).
+	ExperimentConfigured {
+		patch: Patch,
+		by: String,
+	},
 }
 
 /// Free text a person typed: bounded, so a source cannot park a document in the journal.
@@ -412,7 +416,7 @@ impl Fact {
 			| Self::CallAttempted
 			| Self::CallLogged { .. } => Needs::Lead,
 			Self::RetiredCount => Needs::NoLeadNoJob,
-			Self::ExperimentsDeclared(_) | Self::ExperimentConfigured(_) => Needs::BrandOnly,
+			Self::ExperimentsDeclared(_) | Self::ExperimentConfigured { .. } => Needs::BrandOnly,
 		};
 		match needs {
 			Needs::NoLeadNoJob if subject.lead_id.is_some() || subject.job_id.is_some() => Err(Invalid::new("a count names no lead and no job")),

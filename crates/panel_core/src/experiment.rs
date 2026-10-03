@@ -178,13 +178,28 @@ fn field<T>(set: Option<T>, name: &str, reset: &[String]) -> Result<Field<T>, In
 	}
 }
 
+/// The longest label of who changed an experiment.
+pub const MAX_LABEL: usize = 320;
+
+/// Who changed an experiment, as the screens show them: the admin's email, or their concierge id
+/// when concierge gave none (`place::Editor::label`, as a place's or a price list's history
+/// names them). An employee's, not a customer's: not PII. One line, 1–320 characters.
+pub fn label(raw: &str) -> Result<String, Invalid> {
+	let l = raw.trim();
+	if (1..=MAX_LABEL).contains(&l.chars().count()) && !l.chars().any(char::is_control) {
+		Ok(l.to_owned())
+	} else {
+		Err(Invalid::new(format!("properties.by is one line of 1–{MAX_LABEL} characters")))
+	}
+}
+
 /// What an admin has set over a declaration; `None` fields follow it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Override {
 	pub enabled: Option<bool>,
 	pub weights: Option<Vec<f64>>,
 	pub holdout: Option<f64>,
-	/// The source id of the last change: the admin's concierge id.
+	/// Who made the last change ([`label`]).
 	pub changed_by: String,
 	pub changed_at: Timestamp,
 }
@@ -384,6 +399,14 @@ mod tests {
 			assert!(e.0.contains(want), "{key}: {e}");
 		}
 		assert!(check_declared(&[decl("a", &["x", "y"], &[1.0, 1.0]), decl("a", &["x", "y"], &[1.0, 1.0])]).is_err());
+	}
+
+	#[test]
+	fn labels() {
+		assert_eq!(label(" ops@evinvest.ltd ").unwrap(), "ops@evinvest.ltd");
+		assert!(label("").is_err());
+		assert!(label("a\nb").is_err());
+		assert!(label(&"x".repeat(321)).is_err());
 	}
 
 	#[test]

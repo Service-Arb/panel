@@ -18,11 +18,11 @@ pub async fn recompute(conn: &mut SqliteConnection, brand: &BrandId) -> eyre::Re
 	let happened: Vec<_> = events::of_experiments(conn, brand)
 		.await?
 		.into_iter()
-		.filter_map(|(stored, source_id)| {
+		.filter_map(|stored| {
 			let r = registered(stored)?;
 			let h = match r.fact {
 				Fact::ExperimentsDeclared(d) => Happened::Declared(d),
-				Fact::ExperimentConfigured(patch) => Happened::Configured { patch, by: source_id },
+				Fact::ExperimentConfigured { patch, by } => Happened::Configured { patch, by },
 				// The query selects these two types only.
 				_ => return None,
 			};

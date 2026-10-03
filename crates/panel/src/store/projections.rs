@@ -36,7 +36,7 @@ pub async fn apply(conn: &mut SqliteConnection, event: &Recorded) -> eyre::Resul
 
 /// Whether a fact is about the brand's experiments, which are folded per brand.
 pub fn is_experiment(fact: &Fact) -> bool {
-	matches!(fact, Fact::ExperimentsDeclared(_) | Fact::ExperimentConfigured(_))
+	matches!(fact, Fact::ExperimentsDeclared(_) | Fact::ExperimentConfigured { .. })
 }
 
 /// The event's own row, if its type has a table: a call, a payment. Idempotent.
@@ -95,7 +95,7 @@ pub async fn insert_row(conn: &mut SqliteConnection, e: &Recorded) -> eyre::Resu
 		| Fact::JobCompleted
 		| Fact::RetiredCount
 		| Fact::ExperimentsDeclared(_)
-		| Fact::ExperimentConfigured(_) => {}
+		| Fact::ExperimentConfigured { .. } => {}
 	}
 	Ok(())
 }
