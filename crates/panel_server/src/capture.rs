@@ -94,7 +94,7 @@ impl Capturer for CaptureApi {
 	}
 }
 
-/// Sends what is due until `shutdown` turns true: a pass every [`TICK`], the next at once while
+/// Sends what is due until `shutdown` turns true: a pass every `TICK`, the next at once while
 /// a full batch went.
 pub async fn run(panel: Panel, api: CaptureApi, shutdown: watch::Receiver<bool>) {
 	crate::every(TICK, shutdown, "sending events to posthog", || async {
