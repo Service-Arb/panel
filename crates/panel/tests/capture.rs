@@ -76,8 +76,10 @@ async fn only_a_fresh_commit_queues_and_never_the_rebuild() {
 	let brand = BrandId::parse("aquafix").unwrap();
 	let by = Actor(uuid::Uuid::now_v7());
 	let l1 = LeadId::parse("L-1").unwrap();
-	panel.move_lead(by, &brand, &l1, StageMove::Contacted { channel: Some("phone".into()) }, now).await.unwrap();
-	panel.attempt_call(by, &brand, &l1, now).await.unwrap();
+	// A minute on: the outbox is read in occurred_at order, and ties fall to the ids' random bits.
+	let later = now + SignedDuration::from_mins(1);
+	panel.move_lead(by, &brand, &l1, StageMove::Contacted { channel: Some("phone".into()) }, later).await.unwrap();
+	panel.attempt_call(by, &brand, &l1, later).await.unwrap();
 
 	let queued = outbox(&panel).await;
 	let names: Vec<(&str, &str)> = queued.iter().map(|(e, d, _)| (e.as_str(), d.as_str())).collect();
