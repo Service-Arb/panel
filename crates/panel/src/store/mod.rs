@@ -10,6 +10,7 @@
 //! Postgres needed advisory locks for, the single writer gives for nothing. A lone statement
 //! outside a transaction is atomic by itself and waits on `busy_timeout` the same way.
 
+pub mod bookings;
 pub mod events;
 pub mod metrics;
 pub mod places;

@@ -8,7 +8,8 @@
 //!
 //! ```text
 //! Panel::journal        every event journaled and projected: ingest, the operator's actions,
-//!                       the Telegram buttons, the PostHog import       → leads | lead | metrics | experiments
+//!                       the Telegram buttons, the PostHog import, the booking adapters
+//!                                                   → leads | lead | metrics | experiments | bookings
 //! Panel::rebuild_…      the projections replaced whole                 → resync
 //! place::edit, register a place's settings, withdrawn, registered      → places
 //! pricing               a brand's model saved or removed, its locales  → pricing
@@ -56,6 +57,8 @@ pub enum Topic {
 	Experiments,
 	/// One user's Telegram link and rules: that user only.
 	Telegram,
+	/// The providers' bookings without a lead: one came, changed, or was joined to a lead.
+	Bookings,
 }
 
 impl Topic {
@@ -69,6 +72,7 @@ impl Topic {
 			Self::Metrics => "metrics",
 			Self::Experiments => "experiments",
 			Self::Telegram => "telegram",
+			Self::Bookings => "bookings",
 		}
 	}
 }
@@ -93,7 +97,7 @@ impl Change {
 	/// admin's; a Telegram link is its own user's.
 	pub fn visible_to(&self, user: Uuid, role: Role) -> bool {
 		match self.topic {
-			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Metrics | Topic::Experiments => true,
+			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Metrics | Topic::Experiments | Topic::Bookings => true,
 			Topic::Sources => role.manages_sources(),
 			Topic::Telegram => self.user == Some(user),
 		}
@@ -111,7 +115,14 @@ impl Change {
 			| Fact::JobCompleted
 			| Fact::PaymentReceived { .. }
 			| Fact::CallAttempted
-			| Fact::CallLogged { .. } => (Topic::Lead, lead()),
+			| Fact::CallLogged { .. }
+			| Fact::BookingRequested { .. }
+			| Fact::BookingCreated { .. }
+			| Fact::BookingCanceled { .. }
+			| Fact::BookingSet { .. }
+			| Fact::BookingStatusChanged(_)
+			| Fact::BookingCleared
+			| Fact::BookingAttached { .. } => (Topic::Lead, lead()),
 			Fact::Metric(m) => match m.value {
 				MetricValue::Visits { .. } | MetricValue::Intents { .. } => (Topic::Metrics, None),
 				MetricValue::Experiment { .. } => (Topic::Experiments, None),
@@ -123,6 +134,38 @@ impl Change {
 			id,
 			user: None,
 			at,
+		}
+	}
+}
+
+impl Change {
+	/// What journaling `event` changed, once projected: as [`Self::of_event`], but a booking
+	/// event tells every lead it changed (a provider's booking may leave one lead and join
+	/// another), and the list of bookings without a lead when that changed — and nothing of a
+	/// lead it did not change.
+	pub fn of_applied(event: &Recorded, applied: &crate::store::projections::Applied, at: Timestamp) -> Vec<Self> {
+		let lead = |l: &panel_core::ids::LeadId| Self {
+			topic: Topic::Lead,
+			brand: Some(event.subject.brand_id.clone()),
+			id: Some(l.as_str().to_owned()),
+			user: None,
+			at,
+		};
+		match &event.fact {
+			Fact::BookingCreated { .. } | Fact::BookingCanceled { .. } | Fact::BookingAttached { .. } => {
+				let mut out: Vec<Self> = applied.leads.iter().map(lead).collect();
+				if applied.unmatched {
+					out.push(Self {
+						topic: Topic::Bookings,
+						brand: Some(event.subject.brand_id.clone()),
+						id: None,
+						user: None,
+						at,
+					});
+				}
+				out
+			}
+			_ => vec![Self::of_event(event, at)],
 		}
 	}
 }
@@ -212,7 +255,7 @@ mod tests {
 	#[test]
 	fn who_is_told() {
 		let (ann, bob) = (Uuid::from_u128(1), Uuid::from_u128(2));
-		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Pricing, Topic::Metrics, Topic::Experiments] {
+		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Pricing, Topic::Metrics, Topic::Experiments, Topic::Bookings] {
 			assert!(change(topic, None).visible_to(ann, Role::Operator), "{topic:?}");
 			assert!(change(topic, None).visible_to(ann, Role::Admin), "{topic:?}");
 		}

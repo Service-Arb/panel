@@ -1,5 +1,5 @@
-//! The projections — `leads`, `calls`, `payments`, and the counts of
-//! [`super::metrics`] — derived from registered events only.
+//! The projections — `leads`, `calls`, `payments`, the counts of [`super::metrics`], and the
+//! bookings of [`super::bookings`] — derived from registered events only.
 //!
 //! A lead is never patched: every event about it recomputes its row from all of its
 //! events ([`panel_core::lead::fold`]), inside the transaction that journaled the event. That
@@ -9,25 +9,53 @@
 
 use eyre::WrapErr;
 use panel_core::{
+	booking::{self, BookingItem, BookingState},
 	fact::Fact,
-	ids::{BrandId, JobId, LeadId, LocationId},
+	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 	lead::{self, LeadState, Recorded},
 };
 use sqlx::{SqliteConnection, types::Json};
 
 use super::{
+	bookings,
 	events::{self, Stored},
 	to_db,
 };
 use crate::wire::Checked;
 
-/// Projects one registered event: its call or payment row, and its lead.
-pub async fn apply(conn: &mut SqliteConnection, event: &Recorded) -> eyre::Result<()> {
+/// What projecting an event changed that a screen reads beyond the event itself.
+#[derive(Clone, Debug, Default)]
+pub struct Applied {
+	/// Every lead recomputed: the event's, and those a provider's booking left or joined.
+	pub leads: Vec<LeadId>,
+	/// The bookings without a lead changed: one came, went, or was joined to a lead.
+	pub unmatched: bool,
+}
+
+/// Projects one registered event: its own row, the provider's booking it is about, and
+/// every lead that changes with them.
+pub async fn apply(conn: &mut SqliteConnection, event: &Recorded) -> eyre::Result<Applied> {
 	insert_row(conn, event).await?;
-	if let Some(lead) = &event.subject.lead_id {
-		recompute_lead(conn, &event.subject.brand_id, lead).await?;
+	let brand = &event.subject.brand_id;
+	let mut applied = Applied::default();
+	if let Some((provider, external_ref)) = bookings::external_key(&event.fact) {
+		let r = bookings::recompute(conn, brand, provider, external_ref).await?;
+		applied.unmatched = r.unmatched_before || r.unmatched_after;
+		for lead in [r.before, r.after].into_iter().flatten() {
+			if !applied.leads.contains(&lead) {
+				applied.leads.push(lead);
+			}
+		}
 	}
-	Ok(())
+	if let Some(lead) = &event.subject.lead_id
+		&& !applied.leads.contains(lead)
+	{
+		applied.leads.push(lead.clone());
+	}
+	for lead in &applied.leads {
+		recompute_lead(conn, brand, lead).await?;
+	}
+	Ok(applied)
 }
 
 /// The event's own row, if its type has a table: a call, a payment, a count. Idempotent.
@@ -79,6 +107,13 @@ pub async fn insert_row(conn: &mut SqliteConnection, e: &Recorded) -> eyre::Resu
 			.wrap_err("projecting a payment")?;
 		}
 		Fact::Metric(m) => super::metrics::project(conn, e, m).await?,
+		Fact::BookingRequested { .. }
+		| Fact::BookingCreated { .. }
+		| Fact::BookingCanceled { .. }
+		| Fact::BookingSet { .. }
+		| Fact::BookingStatusChanged(_)
+		| Fact::BookingCleared
+		| Fact::BookingAttached { .. } => bookings::insert_event_row(conn, e).await?,
 		Fact::LeadCreated { .. } | Fact::LeadContacted { .. } | Fact::LeadQuoted { .. } | Fact::JobWon | Fact::LeadLost { .. } | Fact::JobCompleted => {}
 	}
 	Ok(())
@@ -90,7 +125,10 @@ pub async fn insert_row(conn: &mut SqliteConnection, e: &Recorded) -> eyre::Resu
 pub async fn recompute_lead(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId) -> eyre::Result<()> {
 	let recorded: Vec<Recorded> = events::of_lead(conn, brand, lead).await?.into_iter().filter_map(registered).collect();
 	match lead::fold(&recorded) {
-		Some(state) => upsert_lead(conn, &state).await,
+		Some(state) => {
+			let booking = booking_of(conn, brand, lead, &recorded).await?;
+			upsert_lead(conn, &state, &booking).await
+		}
 		None => {
 			sqlx::query("DELETE FROM leads WHERE brand_id = $1 AND lead_id = $2")
 				.bind(brand.as_str())
@@ -122,20 +160,54 @@ pub fn registered(e: Stored) -> Option<Recorded> {
 	}
 }
 
-async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result<()> {
+/// A lead's booking: its own booking facts, and the events of the providers' bookings joined
+/// to it now — not those a provider's event named it in once, which an operator may have
+/// joined to another lead since.
+async fn booking_of(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId, own: &[Recorded]) -> eyre::Result<BookingState> {
+	let mut items: Vec<(jiff::Timestamp, EventId, BookingItem)> = own
+		.iter()
+		.filter_map(|e| {
+			let item = match &e.fact {
+				Fact::BookingRequested {
+					provider,
+					preferred_date,
+					preferred_part,
+				} => BookingItem::Requested {
+					provider: *provider,
+					date: *preferred_date,
+					part: *preferred_part,
+				},
+				Fact::BookingSet { start_at, end_at } => BookingItem::Set { start: *start_at, end: *end_at },
+				Fact::BookingStatusChanged(c) => BookingItem::Closed(*c),
+				Fact::BookingCleared => BookingItem::Cleared,
+				_ => return None,
+			};
+			Some((e.occurred_at, e.id, item))
+		})
+		.collect();
+	items.extend(bookings::items_of_lead(conn, brand, lead).await?);
+	Ok(booking::fold(&mut items))
+}
+
+async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState, b: &BookingState) -> eyre::Result<()> {
 	let t = |ts: Option<jiff::Timestamp>| ts.map(to_db);
 	sqlx::query(
 		"INSERT INTO leads (brand_id, lead_id, location_id, job_id, stage, channel, manual, \
 		 created_at, contacted_at, quoted_at, won_at, completed_at, paid_at, lost_at, lost_reason, last_event_id, last_event_at, suspect, \
-		 flow, quoted_cents, pricing_valid_from, estimate_inputs) \
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) \
+		 flow, quoted_cents, pricing_valid_from, estimate_inputs, booking_status, booking_provider, booking_start_at, booking_end_at, \
+		 booking_external_ref, booking_match, booking_preferred_date, booking_preferred_part) \
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, \
+		 $23, $24, $25, $26, $27, $28, $29, $30) \
 		 ON CONFLICT (brand_id, lead_id) DO UPDATE SET \
 		 location_id = EXCLUDED.location_id, job_id = EXCLUDED.job_id, stage = EXCLUDED.stage, channel = EXCLUDED.channel, manual = EXCLUDED.manual, \
 		 created_at = EXCLUDED.created_at, contacted_at = EXCLUDED.contacted_at, quoted_at = EXCLUDED.quoted_at, won_at = EXCLUDED.won_at, \
 		 completed_at = EXCLUDED.completed_at, paid_at = EXCLUDED.paid_at, lost_at = EXCLUDED.lost_at, lost_reason = EXCLUDED.lost_reason, \
 		 last_event_id = EXCLUDED.last_event_id, last_event_at = EXCLUDED.last_event_at, suspect = EXCLUDED.suspect, \
 		 flow = EXCLUDED.flow, quoted_cents = EXCLUDED.quoted_cents, pricing_valid_from = EXCLUDED.pricing_valid_from, \
-		 estimate_inputs = EXCLUDED.estimate_inputs",
+		 estimate_inputs = EXCLUDED.estimate_inputs, booking_status = EXCLUDED.booking_status, booking_provider = EXCLUDED.booking_provider, \
+		 booking_start_at = EXCLUDED.booking_start_at, booking_end_at = EXCLUDED.booking_end_at, booking_external_ref = EXCLUDED.booking_external_ref, \
+		 booking_match = EXCLUDED.booking_match, booking_preferred_date = EXCLUDED.booking_preferred_date, \
+		 booking_preferred_part = EXCLUDED.booking_preferred_part",
 	)
 	.bind(s.brand_id.as_str())
 	.bind(s.lead_id.as_str())
@@ -159,6 +231,14 @@ async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result
 	.bind(s.offer.price.map(|p| p.cents))
 	.bind(s.offer.price.map(|p| super::day_to_db(p.valid_from)))
 	.bind((!s.offer.estimate_inputs.is_empty()).then_some(Json(&s.offer.estimate_inputs)))
+	.bind((b.status != booking::BookingStatus::None).then(|| b.status.as_str()))
+	.bind(b.provider.map(|p| p.as_str()))
+	.bind(t(b.start_at))
+	.bind(t(b.end_at))
+	.bind(b.external_ref.as_deref())
+	.bind(b.matched.map(|m| m.as_str()))
+	.bind(b.preferred_date.map(super::day_to_db))
+	.bind(b.preferred_part.map(|p| p.as_str()))
 	.execute(&mut *conn)
 	.await
 	.wrap_err_with(|| format!("writing lead {}/{}", s.brand_id, s.lead_id))?;
@@ -169,9 +249,12 @@ async fn upsert_lead(conn: &mut SqliteConnection, s: &LeadState) -> eyre::Result
 /// waits for it to commit rather than writing into a half-built state, and readers keep
 /// seeing the projections as they were until then.
 pub async fn clear(conn: &mut SqliteConnection) -> eyre::Result<()> {
-	sqlx::raw_sql("DELETE FROM leads; DELETE FROM calls; DELETE FROM payments; DELETE FROM daily_location_metrics; DELETE FROM daily_experiment_metrics")
-		.execute(&mut *conn)
-		.await
-		.wrap_err("clearing the projections")?;
+	sqlx::raw_sql(
+		"DELETE FROM leads; DELETE FROM calls; DELETE FROM payments; DELETE FROM daily_location_metrics; DELETE FROM daily_experiment_metrics; \
+		 DELETE FROM bookings; DELETE FROM booking_events",
+	)
+	.execute(&mut *conn)
+	.await
+	.wrap_err("clearing the projections")?;
 	Ok(())
 }

@@ -4,6 +4,7 @@
 use eyre::WrapErr;
 use jiff::{Timestamp, civil::Date};
 use panel_core::{
+	booking::{BookingMatch, BookingState, BookingStatus, DayPart, Provider},
 	fact::LeadFlow,
 	funnel::Totals,
 	ids::{BrandId, LeadId, LocationId},
@@ -44,6 +45,8 @@ pub struct LeadRow {
 	pub pricing_valid_from: Option<String>,
 	/// An estimate's inputs, input id → value id.
 	pub estimate_inputs: Option<Value>,
+	/// Its booking: none, asked for, booked, …
+	pub booking: BookingState,
 	pub last_event_at: Timestamp,
 	/// When it sorts in the list: its creation, or its first event when never created.
 	pub sort_at: Timestamp,
@@ -80,6 +83,14 @@ struct Row {
 	quoted_cents: Option<i64>,
 	pricing_valid_from: Option<String>,
 	estimate_inputs: Option<Json<Value>>,
+	booking_status: Option<String>,
+	booking_provider: Option<String>,
+	booking_start_at: Option<i64>,
+	booking_end_at: Option<i64>,
+	booking_external_ref: Option<String>,
+	booking_match: Option<String>,
+	booking_preferred_date: Option<String>,
+	booking_preferred_part: Option<String>,
 	last_event_at: i64,
 	sort_at: i64,
 	creation_id: Option<Uuid>,
@@ -92,7 +103,19 @@ impl TryFrom<Row> for LeadRow {
 
 	fn try_from(r: Row) -> eyre::Result<Self> {
 		let t = |ts: Option<i64>| ts.map(from_db).transpose();
+		let at = || format!("stored booking of lead {}/{}", r.brand_id, r.lead_id);
+		let booking = BookingState {
+			status: r.booking_status.as_deref().map(BookingStatus::parse).transpose().wrap_err_with(at)?.unwrap_or_default(),
+			provider: r.booking_provider.as_deref().map(Provider::parse).transpose().wrap_err_with(at)?,
+			start_at: t(r.booking_start_at)?,
+			end_at: t(r.booking_end_at)?,
+			external_ref: r.booking_external_ref,
+			matched: r.booking_match.as_deref().map(BookingMatch::parse).transpose().wrap_err_with(at)?,
+			preferred_date: r.booking_preferred_date.as_deref().map(super::day_from_db).transpose()?,
+			preferred_part: r.booking_preferred_part.as_deref().map(DayPart::parse).transpose().wrap_err_with(at)?,
+		};
 		Ok(Self {
+			booking,
 			flow: r.flow,
 			quoted_cents: r.quoted_cents,
 			pricing_valid_from: r.pricing_valid_from,
@@ -129,6 +152,8 @@ macro_rules! lead_select {
 		"SELECT l.brand_id, l.lead_id, l.location_id, l.job_id, l.stage, l.channel, l.suspect, l.manual, \
 		 l.created_at, l.contacted_at, l.quoted_at, l.won_at, l.completed_at, l.paid_at, l.lost_at, l.lost_reason, l.last_event_at, \
 		 l.flow, l.quoted_cents, l.pricing_valid_from, l.estimate_inputs, \
+		 l.booking_status, l.booking_provider, l.booking_start_at, l.booking_end_at, l.booking_external_ref, l.booking_match, \
+		 l.booking_preferred_date, l.booking_preferred_part, \
 		 COALESCE(l.created_at, l.last_event_at) AS sort_at, \
 		 c.id AS creation_id, c.pii_sealed, c.data_key_fp \
 		 FROM leads l \
@@ -156,6 +181,8 @@ pub struct LeadFilter {
 	pub suspect: Option<bool>,
 	/// Only the leads of this flow (`quote`, `estimate`, `fixed`).
 	pub flow: Option<LeadFlow>,
+	/// Only the leads whose booking stands here (`none`: no booking at all).
+	pub booking: Option<BookingStatus>,
 	/// The last lead of the page before: `(sort_at, brand, lead)`.
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: i64,
@@ -174,6 +201,7 @@ pub async fn leads(conn: &mut SqliteConnection, f: &LeadFilter) -> eyre::Result<
 		 AND ($5 IS NULL OR (COALESCE(l.created_at, l.last_event_at), l.brand_id, l.lead_id) < ($5, $6, $7)) \
 		 AND ($9 IS NULL OR l.created_at >= $9) AND ($10 IS NULL OR l.created_at < $10) \
 		 AND ($11 IS NULL OR (l.suspect IS NOT NULL) = $11) AND ($12 IS NULL OR l.flow = $12) \
+		 AND ($13 IS NULL OR COALESCE(l.booking_status, 'none') = $13) \
 		 ORDER BY sort_at DESC, l.brand_id DESC, l.lead_id DESC LIMIT $8"
 	))
 	.bind(f.stage.map(Stage::as_str))
@@ -188,6 +216,7 @@ pub async fn leads(conn: &mut SqliteConnection, f: &LeadFilter) -> eyre::Result<
 	.bind(f.created_before.map(to_db))
 	.bind(f.suspect)
 	.bind(f.flow.map(LeadFlow::as_str))
+	.bind(f.booking.map(BookingStatus::as_str))
 	.fetch_all(&mut *conn)
 	.await
 	.wrap_err("listing leads")?

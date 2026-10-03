@@ -8,8 +8,9 @@ use jiff::Timestamp;
 use panel_contracts::{SCHEMA, v1};
 use panel_core::{
 	Invalid,
+	booking::{self, BookingMatch, Closed},
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
-	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded},
+	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded, day, instant},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
 	metrics::{DailyMetric, IntentChannel, MetricValue, Tally},
 };
@@ -240,6 +241,13 @@ pub const REGISTERED: &[(&str, u32, &str)] = &[
 	("site.metrics", 1, "sa.v1.SiteMetricsV1"),
 	("contact.metrics", 1, "sa.v1.ContactMetricsV1"),
 	("experiment.metrics", 1, "sa.v1.ExperimentMetricsV1"),
+	("booking.requested", 1, "sa.v1.BookingRequestedV1"),
+	("booking.created", 1, "sa.v1.BookingCreatedV1"),
+	("booking.canceled", 1, "sa.v1.BookingCanceledV1"),
+	("booking.set", 1, "sa.v1.BookingSetV1"),
+	("booking.status_changed", 1, "sa.v1.BookingStatusChangedV1"),
+	("booking.cleared", 1, "sa.v1.BookingClearedV1"),
+	("booking.attached", 1, "sa.v1.BookingAttachedV1"),
 ];
 
 /// Checks an event's properties against its `type@version`, and what the type needs of its
@@ -322,6 +330,58 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 					},
 				},
 			)
+		}),
+		("booking.requested", 1) => {
+			// A field set to null is refused, not read as absent: the contract has no null.
+			if properties.as_object().is_some_and(|m| m.values().any(Value::is_null)) {
+				return Checked::Invalid(Invalid::new("properties of booking.requested hold no null"));
+			}
+			props::<v1::BookingRequestedV1>(key, properties).and_then(|p| {
+				// The site names its lead twice, in the subject and as kitstart's leadRef: they
+				// must be the one id, or the booking would join another lead than it says.
+				let date = p.preferred_date.as_deref().map(|d| day("properties.preferred_date", d)).transpose()?;
+				let (provider, preferred_date, preferred_part) = booking::requested(&p.lead_ref, &p.provider, date, p.preferred_part.as_deref())?;
+				if subject.lead_id.as_ref().map(|l| l.as_str()) != Some(p.lead_ref.as_str()) {
+					return Err(Invalid::new("properties.lead_ref is not subject.lead_id"));
+				}
+				Ok(Fact::BookingRequested {
+					provider,
+					preferred_date,
+					preferred_part,
+				})
+			})
+		}
+		("booking.created", 1) => props::<v1::BookingCreatedV1>(key, properties).and_then(|p| {
+			let (provider, external_ref, version) = Fact::external(&p.provider, &p.external_ref, Some(&p.version))?;
+			let (start_at, end_at) = Fact::slot(&p.start_at, p.end_at.as_deref())?;
+			Ok(Fact::BookingCreated {
+				provider,
+				external_ref,
+				start_at,
+				end_at,
+				matched: p
+					.r#match
+					.as_deref()
+					.map(|m| BookingMatch::parse(m).map_err(|e| Invalid::new(format!("properties.{e}"))))
+					.transpose()?,
+				version,
+				booked_at: p.booked_at.as_deref().map(|b| instant("properties.booked_at", b)).transpose()?,
+			})
+		}),
+		("booking.canceled", 1) => props::<v1::BookingCanceledV1>(key, properties).and_then(|p| {
+			let (provider, external_ref, version) = Fact::external(&p.provider, &p.external_ref, Some(&p.version))?;
+			Ok(Fact::BookingCanceled { provider, external_ref, version })
+		}),
+		("booking.set", 1) => props::<v1::BookingSetV1>(key, properties).and_then(|p| {
+			let (start_at, end_at) = Fact::slot(&p.start_at, p.end_at.as_deref())?;
+			Ok(Fact::BookingSet { start_at, end_at })
+		}),
+		("booking.status_changed", 1) =>
+			props::<v1::BookingStatusChangedV1>(key, properties).and_then(|p| Closed::parse(&p.status).map(Fact::BookingStatusChanged).map_err(|e| Invalid::new(format!("properties.{e}")))),
+		("booking.cleared", 1) => props::<v1::BookingClearedV1>(key, properties).map(|_| Fact::BookingCleared),
+		("booking.attached", 1) => props::<v1::BookingAttachedV1>(key, properties).and_then(|p| {
+			let (provider, external_ref, _) = Fact::external(&p.provider, &p.external_ref, None)?;
+			Ok(Fact::BookingAttached { provider, external_ref })
 		}),
 		_ => return Checked::Unregistered,
 	};

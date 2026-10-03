@@ -157,6 +157,8 @@ pub struct LeadQuery {
 	pub suspect: SuspectFilter,
 	/// Only those that came through this flow.
 	pub flow: Option<LeadFlow>,
+	/// Only those whose booking stands here.
+	pub booking: Option<panel_core::booking::BookingStatus>,
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: u32,
 }
@@ -207,7 +209,7 @@ pub struct LeadCounts {
 pub const MAX_PAGE: u32 = 200;
 
 impl<T> Done<T> {
-	fn map<U>(self, f: impl FnOnce(T) -> U) -> Done<U> {
+	pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> Done<U> {
 		Done {
 			value: f(self.value),
 			replayed: self.replayed,
@@ -221,7 +223,7 @@ fn opaque_new(prefix: &str, now: Timestamp) -> String {
 	format!("{prefix}-{}", new_uuid(now).simple())
 }
 
-fn new_uuid(now: Timestamp) -> Uuid {
+pub(crate) fn new_uuid(now: Timestamp) -> Uuid {
 	let nanos = u32::try_from(now.subsec_nanosecond().rem_euclid(1_000_000_000)).unwrap_or(0);
 	let secs = u64::try_from(now.as_second()).unwrap_or(0);
 	Uuid::new_v7(uuid::Timestamp::from_unix(uuid::NoContext, secs, nanos))
@@ -358,7 +360,7 @@ impl Panel {
 
 	/// The event an idempotent action made before, if it did: `(lead, event)`. An id taken by
 	/// anyone else than this user acting in the panel cannot be a retry of theirs.
-	async fn replayed(&self, by: Actor, id: Option<Uuid>) -> Result<Option<Done<(LeadId, EventId)>>, ActionError> {
+	pub(crate) async fn replayed(&self, by: Actor, id: Option<Uuid>) -> Result<Option<Done<(LeadId, EventId)>>, ActionError> {
 		let Some(id) = id else { return Ok(None) };
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
 		let Some((kind, source, lead)) = reads::event_origin(&mut conn, id).await? else {
@@ -378,7 +380,16 @@ impl Panel {
 	/// `id`: the event's, when the action is idempotent; else a fresh one. Answers the lead
 	/// and the event.
 	#[expect(clippy::too_many_arguments, reason = "an event's fields, each named at the call site")]
-	async fn act(&self, by: Actor, id: Option<Uuid>, r#type: &str, subject: Value, properties: Value, pii: Option<Value>, now: Timestamp) -> Result<Done<(LeadId, EventId)>, ActionError> {
+	pub(crate) async fn act(
+		&self,
+		by: Actor,
+		id: Option<Uuid>,
+		r#type: &str,
+		subject: Value,
+		properties: Value,
+		pii: Option<Value>,
+		now: Timestamp,
+	) -> Result<Done<(LeadId, EventId)>, ActionError> {
 		let mut raw = json!({
 			"id": id.unwrap_or_else(|| new_uuid(now)).to_string(),
 			"schema": SCHEMA,
@@ -404,17 +415,17 @@ impl Panel {
 			}
 			// The same key twice at once: the other request journaled it first (with its own
 			// `occurredAt`, hence other content). What it recorded is the answer.
-			outcome @ (crate::Outcome::Duplicate | crate::Outcome::Rejected(_)) => match self.replayed(by, id).await? {
+			outcome @ (crate::Outcome::Duplicate | crate::Outcome::Rejected(_) | crate::Outcome::Deferred(_)) => match self.replayed(by, id).await? {
 				Some(done) => Ok(done),
 				None => match outcome {
-					crate::Outcome::Rejected(e) => Err(ActionError::Invalid(e)),
+					crate::Outcome::Rejected(e) | crate::Outcome::Deferred(e) => Err(ActionError::Invalid(e)),
 					_ => Err(ActionError::Internal(eyre::eyre!("a fresh event id was taken"))),
 				},
 			},
 		}
 	}
 
-	async fn lead_row(&self, brand: &BrandId, lead: &LeadId) -> eyre::Result<Option<LeadRow>> {
+	pub(crate) async fn lead_row(&self, brand: &BrandId, lead: &LeadId) -> eyre::Result<Option<LeadRow>> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
 		reads::lead(&mut conn, brand, lead).await
 	}
@@ -435,6 +446,7 @@ impl Panel {
 				SuspectFilter::Exclude => Some(false),
 			},
 			flow: q.flow,
+			booking: q.booking,
 			after: q.after.clone(),
 			limit: i64::from(limit) + 1,
 		};
@@ -539,7 +551,7 @@ impl Panel {
 		})
 	}
 
-	fn open_pii(&self, sealed: &Sealed) -> eyre::Result<Option<Value>> {
+	pub(crate) fn open_pii(&self, sealed: &Sealed) -> eyre::Result<Option<Value>> {
 		let Some((blob, fp)) = &sealed.pii else { return Ok(None) };
 		let id = sealed.event_id;
 		eyre::ensure!(fp.as_slice() == self.key.fingerprint(), "the PII of event {id} was sealed under another PANEL_DATA_KEY");
@@ -550,7 +562,7 @@ impl Panel {
 
 /// The subject of an action on a lead: its brand and id, and its location and job as the
 /// projection has them.
-fn subject_of(lead: &LeadRow) -> Value {
+pub(crate) fn subject_of(lead: &LeadRow) -> Value {
 	let mut subject = json!({"brandId": lead.brand_id, "leadId": lead.lead_id});
 	if let Some(location) = &lead.location_id {
 		subject["locationId"] = json!(location);

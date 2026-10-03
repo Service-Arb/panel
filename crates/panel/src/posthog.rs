@@ -327,7 +327,7 @@ impl Panel {
 				Ok((Outcome::Accepted { .. }, _)) => done.written += 1,
 				// The same recount, written by another replica first.
 				Ok((Outcome::Duplicate, _)) => {}
-				Ok((Outcome::Rejected(e), env)) => {
+				Ok((Outcome::Rejected(e) | Outcome::Deferred(e), env)) => {
 					tracing::warn!(r#type, brand = %env.subject.brand_id, reason = %e, "posthog import: a count was journaled first under the same revision");
 					done.conflicts += 1;
 				}

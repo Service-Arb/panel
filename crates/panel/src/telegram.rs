@@ -36,7 +36,7 @@ use jiff::{SignedDuration, Timestamp};
 use panel_core::{
 	funnel::CONTACT_SLA,
 	ids::{BrandId, LeadId},
-	notify::{self, Button, Entity, Failure, LeadNote, Locale, Next, Note, Rendered, Reply, Rule},
+	notify::{self, BookingChange, Button, Entity, Failure, LeadNote, Locale, Next, Note, Rendered, Reply, Rule},
 	role::Role,
 };
 use serde_json::Value;
@@ -84,6 +84,9 @@ const OVERDUE_WINDOW: SignedDuration = SignedDuration::from_hours(6);
 
 /// A payment is told of while its record is younger than this.
 const PAYMENT_WINDOW: SignedDuration = SignedDuration::from_hours(24);
+
+/// A booking made, moved or canceled is told of while its event is younger than this.
+const BOOKING_WINDOW: SignedDuration = SignedDuration::from_hours(6);
 
 /// Fan-out marks and finished messages are kept this long; the windows above are shorter.
 const KEEP: SignedDuration = SignedDuration::from_hours(24 * 7);
@@ -311,8 +314,8 @@ impl Panel {
 		}
 	}
 
-	/// Queues what the rules say is due at `now`: new leads, overdue leads, payments and
-	/// silent sources, each told once per recipient. Safe on several replicas at once: each
+	/// Queues what the rules say is due at `now`: new leads, overdue leads, payments, silent
+	/// sources and bookings, each told once per recipient. Safe on several replicas at once: each
 	/// candidate is claimed, and the outbox refuses a second `(rule, event, chat)`. How many
 	/// messages were queued.
 	pub async fn telegram_fan_out(&self, now: Timestamp, locale: Locale) -> eyre::Result<usize> {
@@ -374,6 +377,43 @@ impl Panel {
 			queued += self
 				.fan_out_one(&mut conn, Rule::SourceSilent, event, None, None, |_| Ok(note.clone()), confirmed_since, now, locale)
 				.await?;
+		}
+		for t in crate::store::bookings::to_tell(&mut conn, now - BOOKING_WINDOW, BATCH).await? {
+			let change = match (t.kind.as_str(), t.moved) {
+				("created", true) => BookingChange::Moved,
+				("created" | "set", _) => BookingChange::Booked,
+				_ => BookingChange::Canceled,
+			};
+			let lead = match &t.lead_id {
+				Some(l) => {
+					let (brand, lead) = (BrandId::parse(&t.brand_id)?, LeadId::parse(l)?);
+					crate::store::reads::lead(&mut conn, &brand, &lead).await?
+				}
+				None => None,
+			};
+			let candidate = lead.map(|row| LeadCandidate {
+				event_id: row.creation.as_ref().map_or(t.event_id, |c| c.event_id),
+				pii: row.creation.and_then(|c| c.pii),
+				brand_id: row.brand_id,
+				lead_id: row.lead_id,
+				location_id: row.location_id,
+				created_at: row.created_at,
+				entered_by: None,
+				suspect: None,
+			});
+			let slot = t.start_at.map(place_time);
+			let note = |role| {
+				Ok(Note::Booking {
+					change,
+					brand: t.brand_id.clone(),
+					lead: candidate.as_ref().map(|c| self.lead_note(c, role)).transpose()?,
+					slot: slot.clone(),
+					provider: t.provider.clone().unwrap_or_else(|| "manual".to_owned()),
+				})
+			};
+			let lead = candidate.as_ref().map(|c| (c.brand_id.as_str(), c.lead_id.as_str()));
+			// Whoever set or closed the slot knows of it already.
+			queued += self.fan_out_one(&mut conn, Rule::Booked, t.event_id, lead, t.by, note, confirmed_since, now, locale).await?;
 		}
 		Ok(queued)
 	}
@@ -467,6 +507,15 @@ impl Panel {
 			note.phone = text_field(&pii, "phone");
 		}
 		Ok(note)
+	}
+}
+
+/// A slot as the place reads it: Paris time (every place is in France, v1), or UTC, said so,
+/// where the system has no time zone database.
+fn place_time(at: Timestamp) -> String {
+	match jiff::tz::TimeZone::get("Europe/Paris") {
+		Ok(tz) => at.to_zoned(tz).strftime("%Y-%m-%d %H:%M (Paris)").to_string(),
+		Err(_) => at.strftime("%Y-%m-%d %H:%M UTC").to_string(),
 	}
 }
 

@@ -12,9 +12,12 @@
 //! [`session`] is signing in through concierge and the sessions that follow; [`telegram`] the
 //! bot's notifications and buttons; [`posthog`] the hourly import of the site's counts, and
 //! [`counts`] what the screens read of them; [`place`] the places' live settings the sites
-//! read and the panel edits; [`pricing`] the brands' price lists, the same; [`live`] the bus that tells the server's sockets what changed,
-//! published here after each commit.
+//! read and the panel edits; [`pricing`] the brands' price lists, the same; [`booking`] the
+//! leads' bookings, the providers' seam and the matching of their bookings to leads;
+//! [`live`] the bus that tells the server's sockets what changed, published here after each
+//! commit.
 
+pub mod booking;
 pub mod counts;
 pub mod live;
 pub mod operator;
@@ -83,6 +86,10 @@ pub enum Outcome {
 	/// Already journaled.
 	Duplicate,
 	Rejected(Invalid),
+	/// Not journaled yet, and not refused: it names what has not arrived (a
+	/// `booking.requested` before its lead's `lead.created` — a source's outbox keeps no
+	/// order). The batch is answered with a status the source retries.
+	Deferred(Invalid),
 }
 
 /// One event's verdict, with where it was in the batch and the id it claimed.
@@ -198,6 +205,9 @@ impl Panel {
 	pub async fn add_source(&self, key_id: &str, kind: SourceKind, brands: BTreeSet<BrandId>) -> eyre::Result<Option<NewSource>> {
 		eyre::ensure!(panel_core::ids::is_slug(key_id), "a key id is a lowercase slug of 1–64 of [a-z0-9_-]");
 		eyre::ensure!(!brands.is_empty(), "a source writes for at least one brand");
+		// The booking adapters are the panel's own: what a provider says arrives through its
+		// webhook's signature or the panel's pull, never a key.
+		eyre::ensure!(kind != SourceKind::Booking, "a key of kind booking is not issued: the panel's booking adapters write without one");
 		let secret = Zeroizing::new(DataKey::generate_hex()?);
 		let sealed = self.key.seal(&source_secret_aad(key_id), secret.as_bytes())?;
 		let grant = KeyGrant {
@@ -295,6 +305,21 @@ impl Panel {
 			Checked::Unregistered => None,
 			Checked::Invalid(e) => return Ok(Outcome::Rejected(e)),
 		};
+		if let Some(panel_core::fact::Fact::BookingRequested { preferred_date, .. }) = &fact {
+			// The wish is judged against the day it arrives, here and not in the registry: a
+			// rebuild a year on must not refuse what was fine then.
+			let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
+			if preferred_date.is_some_and(|d| !panel_core::booking::preferred_date_in_window(d, today)) {
+				return Ok(Outcome::Rejected(Invalid::new("properties.preferred_date is not within 2 days back and 366 ahead")));
+			}
+			let env = &incoming.envelope;
+			if let Some(lead) = &env.subject.lead_id {
+				let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+				if !store::bookings::lead_exists(&mut conn, &env.subject.brand_id, lead).await? {
+					return Ok(Outcome::Deferred(Invalid::new("subject.lead_id names no lead yet: send again after its lead.created")));
+				}
+			}
+		}
 		self.journal(&incoming, Some(&grant.key_id), status, fact, now).await
 	}
 
@@ -349,7 +374,7 @@ impl Panel {
 			Inserted::Duplicate => return Ok(Outcome::Duplicate),
 			Inserted::Conflict => return Ok(Outcome::Rejected(Invalid::new("id already names a different event"))),
 		}
-		let mut change = None;
+		let mut changes = Vec::new();
 		if let Some(fact) = fact {
 			let env = &incoming.envelope;
 			let recorded = Recorded {
@@ -360,14 +385,15 @@ impl Panel {
 				subject: env.subject.clone(),
 				fact,
 			};
-			projections::apply(&mut tx, &recorded).await?;
-			change = Some(live::Change::of_event(&recorded, now));
+			let applied = projections::apply(&mut tx, &recorded).await?;
+			changes = live::Change::of_applied(&recorded, &applied, now);
 		}
 		tx.commit().await.wrap_err("committing an event")?;
 		// Every event that reaches the projections passes here, whoever wrote it: this one
-		// publication is what keeps ingest, the operator's actions, the buttons and the import
-		// from forgetting to. An unregistered event changes no read, and says nothing.
-		if let Some(change) = change {
+		// publication is what keeps ingest, the operator's actions, the buttons, the import and
+		// the booking adapters from forgetting to. An unregistered event changes no read, and
+		// says nothing.
+		for change in changes {
 			self.live.changed(change);
 		}
 		Ok(Outcome::Accepted {
@@ -401,6 +427,7 @@ impl Panel {
 		projections::clear(&mut tx).await?;
 		let mut done = Rebuilt::default();
 		let mut leads: BTreeSet<(BrandId, LeadId)> = BTreeSet::new();
+		let mut external = BTreeSet::new();
 		let mut after = None;
 		loop {
 			let page = events::page(&mut tx, after, PAGE).await?;
@@ -434,9 +461,18 @@ impl Panel {
 					fact,
 				};
 				projections::insert_row(&mut tx, &recorded).await?;
+				if let Some((provider, external_ref)) = store::bookings::external_key(&recorded.fact) {
+					external.insert((recorded.subject.brand_id.clone(), provider, external_ref.to_owned()));
+				}
 				if let Some(lead) = recorded.subject.lead_id {
 					leads.insert((recorded.subject.brand_id, lead));
 				}
+			}
+		}
+		// The providers' bookings before the leads: a lead's booking reads the ones joined to it.
+		for (brand, provider, external_ref) in &external {
+			if let Some(lead) = store::bookings::recompute(&mut tx, brand, *provider, external_ref).await?.after {
+				leads.insert((brand.clone(), lead));
 			}
 		}
 		for (brand, lead) in &leads {
