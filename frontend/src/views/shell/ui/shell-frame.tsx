@@ -24,7 +24,7 @@ export function ShellFrame({ children }: { children: ReactNode }) {
   const nav = panelNav(t, me.role, marks);
   return (
     <NavMarksProvider value={{ [ROUTES.experiments]: marks.experiments, [ROUTES.sources]: marks.sources }}>
-      <AppShell breakpoint="md" rail={<PanelRail groups={nav.groups} footer={nav.footer} />} tabBar={<PanelTabs items={nav.tabs} />}>
+      <AppShell breakpoint="md" rail={<PanelRail groups={nav.groups} />} tabBar={<PanelTabs items={nav.tabs} />}>
         {children}
       </AppShell>
     </NavMarksProvider>

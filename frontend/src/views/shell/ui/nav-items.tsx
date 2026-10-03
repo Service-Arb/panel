@@ -9,7 +9,6 @@ import type { Marks } from "../model/use-marks";
 
 export interface PanelNav {
   groups: NavGroup[];
-  footer: NavGroup[];
   tabs: NavItem[];
 }
 
@@ -47,12 +46,11 @@ export function panelNav(t: T, role: Role, marks: Marks): PanelNav {
 
   const groups: NavGroup[] = [
     { id: "work", label: t("nav.group.work"), items: [overview, leads, places] },
-    { id: "analysis", label: t("nav.group.analysis"), items: [experiments] },
+    { id: "analysis", label: t("nav.group.analysis"), items: [experiments, grafana] },
   ];
   if (admin) groups.push({ id: "admin", label: t("nav.group.admin"), items: [sources] });
   return {
     groups,
-    footer: [{ id: "account", label: t("nav.group.account"), items: [grafana] }],
     tabs: [overview, leads, places, more],
   };
 }
