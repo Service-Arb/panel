@@ -1,4 +1,4 @@
-import { http, ignoreBody } from "@/shared/api";
+import { http } from "@/shared/api";
 
 import { type PricingChange, type PricingItem, pricingChangesParser, pricingItemParser, pricingListParser, previewParser } from "../model/item";
 import type { PricingAnswers, PricingModel } from "../model/model";
@@ -21,9 +21,12 @@ export function savePricing(brand: string, model: PricingModel, expectedUpdatedA
   return http.send("PUT", brandPath(brand), { model, expected_updated_at: expectedUpdatedAt }, pricingItemParser);
 }
 
-/** Admin only: the brand's sites go back to their baked prices. Guarded like a save. */
-export async function clearPricing(brand: string, expectedUpdatedAt: string | null): Promise<void> {
-  await http.send("DELETE", brandPath(brand), { expected_updated_at: expectedUpdatedAt }, ignoreBody);
+/**
+ * Admin only: the brand's sites go back to their baked prices. Guarded like a
+ * save, and answered like one: the pricing as it now is (no model, the removal's stamp).
+ */
+export function clearPricing(brand: string, expectedUpdatedAt: string | null): Promise<PricingItem> {
+  return http.send("DELETE", brandPath(brand), { expected_updated_at: expectedUpdatedAt }, pricingItemParser);
 }
 
 export async function fetchPricingChanges(brand: string): Promise<PricingChange[]> {

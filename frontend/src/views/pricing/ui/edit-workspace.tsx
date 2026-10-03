@@ -43,7 +43,7 @@ export function EditWorkspace({ base, fresher, today, version, focusStatus, onWr
     <WorkspaceLayout
       main={
         <>
-          <PricingStatus item={base} focusOnMount={focusStatus} action={<ClearPricingButton item={base} onCleared={() => onWritten()} />} />
+          <PricingStatus item={base} focusOnMount={focusStatus} action={<ClearPricingButton item={base} onCleared={onWritten} />} />
           <PricingEditorForm
             editor={editor}
             fresher={fresher}

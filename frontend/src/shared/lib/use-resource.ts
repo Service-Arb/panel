@@ -23,20 +23,46 @@ export interface ResourceOptions {
 
 const NO_TOPICS: LiveMatch = [];
 
+interface Answered<T> {
+  key: string;
+  group: string;
+  tick: number;
+  value: Resource<T>;
+}
+
+/**
+ * What a read shows for `key` at `tick`, given the last answer that landed.
+ * `fresh` is false while that answer is to an earlier key or tick of the same
+ * group: shown so the screen does not blank, but not yet what was asked for.
+ */
+export function shownOf<T>(answered: Answered<T>, key: string, group: string, tick: number): { value: Resource<T>; fresh: boolean } {
+  const fresh = answered.key === key && answered.tick === tick;
+  if (fresh) return { value: answered.value, fresh };
+  const stale = answered.group === group && answered.value.status === "ok";
+  return { value: stale ? answered.value : { status: "loading" }, fresh };
+}
+
 /**
  * One read, redone whenever `key` changes or `reload` is called. The answer to
  * an earlier key never overwrites a later one.
  *
  * Stale-while-revalidate: a reload, or a new key in the same `group` (the same
  * record at a newer version), keeps showing the last answer until the next one
- * lands, so a refresh after an action does not blank the screen.
+ * lands, so a refresh after an action does not blank the screen. `fresh` tells
+ * the two apart: anything that must act on the answer asked for — not the one
+ * before it — waits for it.
  *
  * A live re-read (a change on a followed topic, a resync) is quiet: if it
  * fails, the last answer stays on screen — the person did not ask for it, and
  * a blip in the background must not replace figures with an error.
  */
-export function useResource<T>(key: string, load: () => Promise<T>, group: string = key, options: ResourceOptions = {}): Resource<T> & { reload: () => void } {
-  const [state, setState] = useState<{ key: string; group: string; tick: number; value: Resource<T> }>({
+export function useResource<T>(
+  key: string,
+  load: () => Promise<T>,
+  group: string = key,
+  options: ResourceOptions = {},
+): Resource<T> & { reload: () => void; fresh: boolean } {
+  const [state, setState] = useState<Answered<T>>({
     key,
     group,
     tick: 0,
@@ -72,8 +98,6 @@ export function useResource<T>(key: string, load: () => Promise<T>, group: strin
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, tick]);
 
-  const fresh = state.key === key && state.tick === tick;
-  const stale = state.group === group && state.value.status === "ok";
-  const current: Resource<T> = fresh || stale ? state.value : { status: "loading" };
-  return { ...current, reload };
+  const { value, fresh } = shownOf(state, key, group, tick);
+  return { ...value, reload, fresh };
 }

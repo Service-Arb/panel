@@ -8,6 +8,7 @@ import { managesPricing, useMe } from "@/entities/session";
 import { useResource } from "@/shared/lib/use-resource";
 import { ErrorState } from "@/shared/ui/error-state";
 
+import { pinFrom } from "../model/pin";
 import { EditWorkspace } from "./edit-workspace";
 import { ReadWorkspace } from "./read-workspace";
 
@@ -25,9 +26,10 @@ export function BrandPricing({ brand, today }: { brand: string; today: string })
   const [chosen, setChosen] = useState<PricingItem | null>(null);
   const data = useResource(`pricing:${brand}:${version}`, () => fetchPricing(brand), `pricing:${brand}`, { live: followsPricing(brand) });
   const latest = data.status === "ok" ? data.data : null;
-  if (latest !== null && pinned === null) setPinned(latest);
+  const toPin = pinFrom(pinned, latest, data.fresh);
+  if (toPin !== null) setPinned(toPin);
 
-  /** After a write: `item` is what the server now holds; without one, read it again. */
+  /** After a write: `item` is what the server now holds; without one, read it again and pin that read once it lands. */
   const written = useCallback((item?: PricingItem) => {
     setPinned(item ?? null);
     setVersion((v) => v + 1);
