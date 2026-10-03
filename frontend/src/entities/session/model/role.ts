@@ -34,3 +34,8 @@ export function managesPlaces(role: Role): boolean {
 export function managesPricing(role: Role): boolean {
   return role === "admin";
 }
+
+/** Switching a landing's experiment off and moving its traffic: an admin's (it changes what visitors see). */
+export function managesExperiments(role: Role): boolean {
+  return role === "admin";
+}
