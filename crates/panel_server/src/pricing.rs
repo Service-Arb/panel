@@ -36,11 +36,11 @@ use panel::{
 	place::Expected,
 	pricing::{PricingError, PricingView},
 };
-use panel_core::{ids::BrandId, place::Editor, pricing::Problem};
+use panel_core::{ids::BrandId, pricing::Problem};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{api::ApiError, signin::Caller};
+use crate::{api::ApiError, places::editor, signin::Caller};
 
 /// How long the sites' read may take before they are answered `{}`: kitstart gives up at 3 s.
 const LIVE_WITHIN: Duration = Duration::from_millis(2500);
@@ -121,12 +121,6 @@ fn item_json(v: &PricingView) -> Value {
 
 fn admin(caller: &Caller) -> Result<(), ApiError> {
 	if caller.role.edits_pricing() { Ok(()) } else { Err(ApiError::Forbidden) }
-}
-
-/// Who the history names: the user's email, their id when concierge gave none.
-fn editor(caller: &Caller) -> Editor {
-	let label = if caller.email.trim().is_empty() { caller.user_id.to_string() } else { caller.email.clone() };
-	Editor::User { id: caller.user_id, label }
 }
 
 fn json_body<T: serde::de::DeserializeOwned>(b: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {

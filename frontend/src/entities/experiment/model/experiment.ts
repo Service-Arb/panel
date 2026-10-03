@@ -1,60 +1,72 @@
-import { aggregateSourceParser } from "@/shared/lib/aggregate-source";
-import { type Infer, arrayOf, bool, nullable, num, object, oneOf, str } from "@/shared/lib/parse";
-import { shareParser } from "@/shared/lib/share";
+import { type Infer, type Parser, ParseError, arrayOf, bool, nullable, num, object, str } from "@/shared/lib/parse";
 
 /**
- * The difference of a variant's rate and the control's, in percentage points
- * (variant − control), and its 95 % interval — rounded by the backend to
- * `decimals` (whole points for a wide interval, tenths for a narrow one).
+ * Only http(s): the link is put in an `href`, and a `javascript:` one from a
+ * misconfigured backend must not become a click away from running.
  */
-const differenceParser = object({ estimate: num, low: num, high: num, decimals: num });
-export type Difference = Infer<typeof differenceParser>;
+const webUrl: Parser<string> = (v, path) => {
+  const s = str(v, path);
+  let url: URL;
+  try {
+    url = new URL(s);
+  } catch {
+    throw new ParseError(`${path}: expected a URL, got ${JSON.stringify(s)}`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new ParseError(`${path}: expected an http(s) URL`);
+  return s;
+};
+
+/** How a landing splits its traffic: one weight per variant (same order), off or on, and the share kept out of it. */
+const settingsParser = object({ weights: arrayOf(num), enabled: bool, holdout: nullable(num) });
+export type ExperimentSettings = Infer<typeof settingsParser>;
+
+/** What the brand's landing declared in code at its last start. */
+const declaredParser = object({
+  weights: arrayOf(num),
+  enabled: bool,
+  holdout: nullable(num),
+  summary: nullable(str),
+  declared_at: str,
+});
+
+/** The operator's changes over the declaration; a null field follows the code. */
+const overrideParser = object({
+  weights: nullable(arrayOf(num)),
+  enabled: nullable(bool),
+  holdout: nullable(num),
+  changed_by: str,
+  changed_at: str,
+});
+export type ExperimentOverride = Infer<typeof overrideParser>;
 
 /**
- * A variant against the control on one rate. `difference` is null while an arm is
- * under `min_exposures` (`small_sample`); with it, `insufficient` still holds while
- * the interval contains zero. There is no winner field, and none is drawn here.
+ * An experiment as config, not as numbers: the statistics are PostHog's, and
+ * `posthog_url` opens them (null while the panel has no PostHog project). The
+ * first variant is the control. A retired one is no longer declared and cannot
+ * be changed.
  */
-const comparisonParser = object({
-  difference: nullable(differenceParser),
-  insufficient: bool,
-  reason: nullable(oneOf(["small_sample", "interval_includes_zero"])),
-});
-export type Comparison = Infer<typeof comparisonParser>;
-
-export const RATES = ["lead", "contact"] as const;
-export type Rate = (typeof RATES)[number];
-
-const variantParser = object({
-  variant: str,
-  control: bool,
-  exposures: num,
-  leads: num,
-  intents: object({ phone: num, whatsapp: num, form_open: num, booking: num }),
-  rates: object({ lead: shareParser, contact: shareParser }),
-  vs_control: nullable(object({ lead: comparisonParser, contact: comparisonParser })),
-});
-export type Variant = Infer<typeof variantParser>;
-
-const experimentParser = object({
+export const experimentParser = object({
   brand: str,
-  experiment: str,
-  first_day: str,
-  last_day: str,
-  control: str,
-  variants: arrayOf(variantParser),
+  key: str,
+  variants: arrayOf(str),
+  declared: declaredParser,
+  override: nullable(overrideParser),
+  effective: settingsParser,
+  weights_changed_at: nullable(str),
+  retired: bool,
+  posthog_url: nullable(webUrl),
 });
 export type Experiment = Infer<typeof experimentParser>;
 
-/** `GET /experiments`: the control first in each experiment's variants. */
-export const experimentsParser = object({
-  from: str,
-  to: str,
-  brand: nullable(str),
-  min_sample: num,
-  min_exposures: num,
-  confidence: num,
-  source: aggregateSourceParser,
-  experiments: arrayOf(experimentParser),
-});
-export type Experiments = Infer<typeof experimentsParser>;
+/** `GET /experiments`. */
+export const experimentsParser = object({ experiments: arrayOf(experimentParser) });
+
+/**
+ * The body of `PUT /experiments/{brand}/{key}`: an absent field is left as it
+ * is, a null one goes back to what the code declares.
+ */
+export interface ExperimentPatch {
+  enabled?: boolean | null;
+  weights?: number[] | null;
+  holdout?: number | null;
+}

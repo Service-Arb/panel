@@ -1,5 +1,6 @@
-//! The HTTP API: ingest, `/health`, the sites' reads of a place's live settings and a brand's
-//! pricing (`/api/internal`, [`crate::places`], [`crate::pricing`]), and — when signing in is
+//! The HTTP API: ingest, `/health`, the sites' reads of a place's live settings, a brand's
+//! pricing and its experiments' overrides (`/api/internal`, [`crate::places`], [`crate::pricing`],
+//! [`crate::experiments`]), and — when signing in is
 //! configured — the sign-in (`/auth/*`, [`crate::signin`]), the operator API (`/api/v1/*`,
 //! [`crate::api`]) and its live socket (`/api/v1/live`, [`crate::live`]).
 //!
@@ -43,7 +44,7 @@ use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
 
 use crate::{
-	api, booking,
+	api, booking, experiments,
 	live::{self, Live, LiveLimits},
 	places, pricing,
 	signin::{self, SignIn},
@@ -113,13 +114,15 @@ pub fn app_with_telegram(sign_in: SignIn, limits: Limits, bot: BotName) -> Route
 		.merge(booking::routes())
 		.merge(places::reads())
 		.merge(pricing::reads())
+		.merge(experiments::reads())
 		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate));
-	// Minting and revoking source keys, changing a place or a brand's pricing, ask concierge
+	// Minting and revoking source keys, changing a place, a brand's pricing or its experiments, ask concierge
 	// afresh: a grant revoked a moment ago must not still mint a key, move a phone number or
 	// change a price from the cache.
 	let key_changes = api::key_changes()
 		.merge(places::writes())
 		.merge(pricing::writes())
+		.merge(experiments::writes())
 		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate_fresh));
 	let telegram_state = TelegramState { panel: sign_in.panel.clone(), bot };
 	let telegram = telegram::routes()

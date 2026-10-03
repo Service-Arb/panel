@@ -12,8 +12,9 @@
 
 pub mod bookings;
 pub mod events;
-pub mod metrics;
+pub mod experiments;
 pub mod places;
+pub mod posthog;
 pub mod pricing;
 pub mod projections;
 pub mod reads;

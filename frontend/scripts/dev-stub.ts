@@ -7,7 +7,7 @@
  *   STUB_ROLE=admin npm run dev:stub  # as an admin
  *   STUB_ME=403 npm run dev:stub      # the gate refusing: 401 | 403 | 503
  *   STUB_MIN_SAMPLE=2 npm run dev:stub  # percents (and bars) from 2 leads, not 30
- *   STUB_POSTHOG=off npm run dev:stub   # no PostHog import yet: no day counts, no experiments
+ *   STUB_POSTHOG=off npm run dev:stub   # no PostHog project: experiments without a PostHog link
  *   STUB_PLACES_CONFLICT=1 npm run dev:stub  # every place-settings save answers 409
  *   STUB_PRICING_CONFLICT=1 npm run dev:stub # every pricing save and removal answers 409
  *   STUB_PRICING_INVALID=inputs.zone.labels.en npm run dev:stub  # every pricing save and preview answers 422 there
@@ -17,8 +17,8 @@
  *
  * Live: every write above is announced on the socket, and someone else is busy
  * too — a new lead every 20–40 s, now and then a lead moved on, a place saved,
- * vifnet's pricing saved, an experiment re-imported, a booking without a lead,
- * a provider moving a booked slot.
+ * vifnet's pricing saved, a landing re-declaring its experiments, a booking
+ * without a lead, a provider moving a booked slot.
  *
  * then `npm run dev` in another shell. Data is made up and says so ("stub").
  */
@@ -30,6 +30,7 @@ import { BOOKING_STATUSES, arriveUnmatched, bookingDto, bookingWrite, bookingsRo
 import { changed, every, liveUpgrade } from "./stub-live.ts";
 import { type StubDeal, dealDto, estimate, fixed, flowParam, quote, seedDeals } from "./stub-deals.ts";
 import { addedPlaces, placeFlags, placeSettingsRoute, touchPlace } from "./stub-places.ts";
+import { experimentsRoute } from "./stub-experiments.ts";
 import { pricingRoute, touchPricing } from "./stub-pricing.ts";
 
 const PORT = Number(process.env.STUB_PORT ?? 3121);
@@ -37,11 +38,8 @@ const ROLE = process.env.STUB_ROLE === "admin" ? "admin" : "operator";
 const ME_FAILURE = process.env.STUB_ME;
 const CSRF = "stub-csrf";
 const MIN_SAMPLE = Number(process.env.STUB_MIN_SAMPLE ?? 30);
-const POSTHOG = process.env.STUB_POSTHOG !== "off";
-const MIN_EXPOSURES = 100;
 const LIVE_EVERY = process.env.STUB_LIVE_EVERY ? Number(process.env.STUB_LIVE_EVERY) : null;
 const USER_ID = "00000000-0000-7000-8000-000000000001";
-const Z95 = 1.959963984540054;
 
 type Json = Record<string, unknown>;
 const now = () => new Date();
@@ -140,14 +138,12 @@ function slice(ls: StubLead[]): Json {
 
 function funnel(brand: string | null, by: string | null): Json {
   const ls = leads.filter((l) => !brand || l.brand === brand);
-  const head = { from: iso(new Date(now().getTime() - 29 * 86_400_000)).slice(0, 10), to: iso(now()).slice(0, 10), brand, min_sample: MIN_SAMPLE, aggregate_source: aggregateSource() };
-  const sites = POSTHOG ? Object.keys(SITE).filter((k) => !brand || k.startsWith(`${brand}/`)) : [];
-  if (by !== "location") return { ...head, ...slice(ls), aggregate: aggregate(sites) };
-  // A location with visits and no lead is a row too, as the backend has it.
-  const places = [...new Set([...ls.map((l) => `${l.brand}/${l.location ?? ""}`), ...sites])].sort();
+  const head = { from: iso(new Date(now().getTime() - 29 * 86_400_000)).slice(0, 10), to: iso(now()).slice(0, 10), brand, min_sample: MIN_SAMPLE };
+  if (by !== "location") return { ...head, ...slice(ls) };
+  const places = [...new Set(ls.map((l) => `${l.brand}/${l.location ?? ""}`))].sort();
   const locations = places.map((key) => {
     const [b, loc] = key.split("/") as [string, string];
-    return { brand: b, location: loc || null, ...slice(ls.filter((l) => l.brand === b && (l.location ?? "") === loc)), aggregate: aggregate([key]) };
+    return { brand: b, location: loc || null, ...slice(ls.filter((l) => l.brand === b && (l.location ?? "") === loc)) };
   });
   return { ...head, by: "location", locations };
 }
@@ -172,116 +168,6 @@ function counts(brand: string | null, location: string | null): Json {
   const stages = Object.fromEntries(["created", "contacted", "quoted", "won", "completed", "paid", "lost"].map((s) => [s, ls.filter((l) => l.stage === s).length]));
   const overdue = ls.map(leadDto).filter((l) => (l.sla as Json | null)?.overdue === true).length;
   return { stages, overdue, total: ls.length };
-}
-
-// ---- PostHog counts (stages 3–4) and experiments ---------------------------------------
-
-const CHANNELS = ["phone", "whatsapp", "form_open", "booking"] as const;
-type Channels = Record<(typeof CHANNELS)[number], number>;
-
-/** A location's made-up day: visits by source and intents by channel. Villeurbanne has visits and no lead. */
-const SITE: Record<string, { sources: Record<string, number>; intents: Channels }> = {
-  "aquafix/lyon-3": { sources: { google: 22, direct: 9, bing: 2, "chatgpt.com": 1, facebook: 1 }, intents: { phone: 3, whatsapp: 1, form_open: 4, booking: 0 } },
-  "aquafix/lyon-7": { sources: { google: 14, direct: 5, bing: 1 }, intents: { phone: 2, whatsapp: 0, form_open: 2, booking: 0 } },
-  "aquafix/villeurbanne": { sources: { google: 4, direct: 1 }, intents: { phone: 0, whatsapp: 0, form_open: 1, booking: 0 } },
-  "vifnet/paris-11": { sources: { google: 6 }, intents: { phone: 0, whatsapp: 0, form_open: 1, booking: 1 } },
-};
-
-/** The window's days, newest last; every third day has no count, as an import gap would leave. */
-function windowDays(): string[] {
-  return Array.from({ length: 30 }, (_, i) => iso(new Date(now().getTime() - (29 - i) * 86_400_000)).slice(0, 10)).filter((_, i) => i % 3 !== 1);
-}
-
-function aggregate(keys: string[]): Json {
-  const days = windowDays();
-  const bySource: Record<string, number> = {};
-  const byChannel: Channels = { phone: 0, whatsapp: 0, form_open: 0, booking: 0 };
-  let visitsPerDay = 0;
-  for (const key of keys) {
-    const site = SITE[key];
-    if (!site) continue;
-    for (const [src, n] of Object.entries(site.sources)) bySource[src] = (bySource[src] ?? 0) + n * days.length;
-    for (const c of CHANNELS) byChannel[c] += site.intents[c] * days.length;
-    visitsPerDay += Object.values(site.sources).reduce((a, b) => a + b, 0);
-  }
-  const perDay = Object.fromEntries(CHANNELS.map((c) => [c, byChannel[c] / days.length])) as Channels;
-  const intentsPerDay = CHANNELS.reduce((a, c) => a + perDay[c], 0);
-  return {
-    stages: [
-      { stage: "site.visit", total: visitsPerDay * days.length, by_source: bySource, days: visitsPerDay ? days.map((day) => ({ day, n: visitsPerDay })) : [] },
-      { stage: "contact.intent", total: intentsPerDay * days.length, by_channel: byChannel, days: intentsPerDay ? days.map((day) => ({ day, n: intentsPerDay, by_channel: perDay })) : [] },
-    ],
-  };
-}
-
-const aggregateSource = (): Json => ({ source: "posthog", kind: "aggregate", imported_at: POSTHOG ? minsAgo(37) : null });
-
-/** Wilson's interval of x successes in n trials. */
-function wilson(x: number, n: number): [number, number] {
-  const p = x / n;
-  const d = 1 + (Z95 * Z95) / n;
-  const c = (p + (Z95 * Z95) / (2 * n)) / d;
-  const h = (Z95 * Math.sqrt((p * (1 - p)) / n + (Z95 * Z95) / (4 * n * n))) / d;
-  return [c - h, c + h];
-}
-
-/** Variant − control in points, Newcombe's hybrid score interval, rounded as the backend rounds it. */
-function compare(c: number, cn: number, t: number, tn: number): Json {
-  if (cn < MIN_EXPOSURES || tn < MIN_EXPOSURES) return { difference: null, insufficient: true, reason: "small_sample" };
-  const [p1, p2] = [t / tn, c / cn];
-  const [l1, u1] = wilson(t, tn);
-  const [l2, u2] = wilson(c, cn);
-  const d = p1 - p2;
-  const low = (d - Math.sqrt((p1 - l1) ** 2 + (u2 - p2) ** 2)) * 100;
-  const high = (d + Math.sqrt((u1 - p1) ** 2 + (p2 - l2) ** 2)) * 100;
-  const decimals = high - low >= 2 ? 0 : 1;
-  const round = (v: number) => Math.round(v * 10 ** decimals) / 10 ** decimals;
-  const zero = low <= 0 && high >= 0;
-  return { difference: { estimate: round(d * 100), low: round(low), high: round(high), decimals }, insufficient: zero, reason: zero ? "interval_includes_zero" : null };
-}
-
-interface Arm {
-  variant: string;
-  exposures: number;
-  leads: number;
-  intents: Channels;
-}
-
-/** hero_cta: B's interval includes zero and C has too few views; quote_form: an interval clear of zero. */
-const EXPERIMENTS: { brand: string; experiment: string; days: number; arms: Arm[] }[] = [
-  {
-    brand: "aquafix", experiment: "hero_cta", days: 21, arms: [
-      { variant: "a", exposures: 412, leads: 9, intents: { phone: 14, whatsapp: 3, form_open: 31, booking: 0 } },
-      { variant: "b", exposures: 398, leads: 13, intents: { phone: 18, whatsapp: 4, form_open: 36, booking: 0 } },
-      { variant: "c", exposures: 64, leads: 2, intents: { phone: 3, whatsapp: 0, form_open: 5, booking: 0 } },
-    ],
-  },
-  {
-    brand: "vifnet", experiment: "quote_form", days: 28, arms: [
-      { variant: "control", exposures: 2400, leads: 48, intents: { phone: 20, whatsapp: 12, form_open: 210, booking: 9 } },
-      { variant: "short_form", exposures: 2380, leads: 95, intents: { phone: 22, whatsapp: 15, form_open: 260, booking: 11 } },
-    ],
-  },
-];
-
-function experiments(brand: string | null): Json {
-  const head = { from: iso(new Date(now().getTime() - 29 * 86_400_000)).slice(0, 10), to: iso(now()).slice(0, 10), brand };
-  const contacts = (a: Arm) => Math.min(a.exposures, a.leads + a.intents.phone + a.intents.whatsapp);
-  const list = POSTHOG ? EXPERIMENTS.filter((e) => !brand || e.brand === brand) : [];
-  return {
-    ...head, min_sample: MIN_SAMPLE, min_exposures: MIN_EXPOSURES, confidence: 0.95, z: Z95, interval: "newcombe_hybrid_score", source: aggregateSource(),
-    experiments: list.map((e) => {
-      const control = e.arms[0]!;
-      return {
-        brand: e.brand, experiment: e.experiment, first_day: iso(new Date(now().getTime() - e.days * 86_400_000)).slice(0, 10), last_day: head.to, control: control.variant,
-        variants: e.arms.map((a) => ({
-          variant: a.variant, control: a === control, exposures: a.exposures, leads: a.leads, intents: a.intents,
-          rates: { lead: share(a.leads, a.exposures), contact: share(contacts(a), a.exposures) },
-          vs_control: a === control ? null : { lead: compare(control.leads, control.exposures, a.leads, a.exposures), contact: compare(contacts(control), control.exposures, contacts(a), a.exposures) },
-        })),
-      };
-    }),
-  };
 }
 
 function send(res: ServerResponse, status: number, body?: unknown, headers: Record<string, string | string[]> = {}): void {
@@ -321,7 +207,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   // The stub signs anyone in, as the backend's dev sign-in does: it says so.
   if (path === "/me") return send(res, 200, { user_id: USER_ID, role: ROLE, email: "stub@example.test", preferred_name: `Stub ${ROLE}`, dev_sign_in: true });
   if (path === "/funnel") return send(res, 200, funnel(url.searchParams.get("brand"), url.searchParams.get("by")));
-  if (path === "/experiments") return send(res, 200, experiments(url.searchParams.get("brand")));
+  if (path.startsWith("/experiments")) {
+    const reply = experimentsRoute(req.method ?? "GET", path, url.searchParams, write ? await readJson(req) : {}, ROLE, `stub-${ROLE}@example.test`);
+    if (reply?.changed) changed("experiments", reply.changed);
+    if (reply) return send(res, reply.status, reply.body);
+  }
   if (path === "/places" && req.method === "GET") return send(res, 200, places());
   if (path.startsWith("/places")) {
     const reply = placeSettingsRoute(req.method ?? "GET", path, write ? await readJson(req) : {}, ROLE, `stub-${ROLE}@example.test`);

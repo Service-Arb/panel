@@ -439,13 +439,12 @@ pub struct PlaceRow {
 	pub withdrawn: bool,
 }
 
-/// Every place the panel knows, by brand: the locations a lead names or the PostHog import
-/// counted, and those registered by hand or by an edit of their settings.
+/// Every place the panel knows, by brand: the locations a lead names, and those registered by
+/// hand or by an edit of their settings.
 pub async fn places(conn: &mut SqliteConnection) -> eyre::Result<Vec<PlaceRow>> {
 	let rows: Vec<(String, String, Option<i64>, bool, bool)> = sqlx::query_as(
 		"WITH known AS ( \
 		   SELECT brand_id, location_id FROM leads WHERE location_id IS NOT NULL \
-		   UNION SELECT brand_id, location_id FROM daily_location_metrics WHERE location_id IS NOT NULL \
 		   UNION SELECT brand_id, location_id FROM places) \
 		 SELECT k.brand_id, k.location_id, \
 		   (SELECT max(l.created_at) FROM leads l WHERE l.brand_id = k.brand_id AND l.location_id = k.location_id), \

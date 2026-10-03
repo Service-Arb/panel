@@ -10,9 +10,9 @@ use panel_core::{
 	Invalid,
 	booking::{self, BookingMatch, Closed},
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
-	fact::{CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded, day, instant},
+	experiment::{Declaration, Patch, check_declared, label},
+	fact::{AnalyticsId, CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded, day, instant},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
-	metrics::{DailyMetric, IntentChannel, MetricValue, Tally},
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -248,6 +248,8 @@ pub const REGISTERED: &[(&str, u32, &str)] = &[
 	("booking.status_changed", 1, "sa.v1.BookingStatusChangedV1"),
 	("booking.cleared", 1, "sa.v1.BookingClearedV1"),
 	("booking.attached", 1, "sa.v1.BookingAttachedV1"),
+	("experiments.declared", 1, "sa.v1.ExperimentsDeclaredV1"),
+	("experiment.configured", 1, "sa.v1.ExperimentConfiguredV1"),
 ];
 
 /// Checks an event's properties against its `type@version`, and what the type needs of its
@@ -269,6 +271,7 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 				entered_by: bounded("properties.entered_by", p.entered_by)?,
 				suspect: p.suspect.as_deref().map(LeadSuspect::parse).transpose()?,
 				offer: LeadOffer::parse(p.flow.as_deref(), p.quoted_cents, p.pricing_valid_from.as_deref(), p.estimate_inputs)?,
+				analytics_id: p.analytics_id.as_deref().map(AnalyticsId::parse).transpose()?,
 			})
 		}),
 		("lead.contacted", 1) => props::<v1::LeadContactedV1>(key, properties).and_then(|p| {
@@ -292,44 +295,25 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 				attempt_id: bounded("properties.attempt_id", p.attempt_id)?,
 			})
 		}),
-		("site.metrics", 1) => props::<v1::SiteMetricsV1>(key, properties).and_then(|p| {
-			metric(
-				&p.day,
-				p.revision,
-				MetricValue::Visits {
-					source: DailyMetric::source(&p.source)?,
-					visits: DailyMetric::count("visits", p.visits)?,
-				},
-			)
+		// The retired PostHog import's counts: their shape is still checked, so what the journal
+		// holds keeps its status, but they say nothing the panel shows any more.
+		("site.metrics", 1) => props::<v1::SiteMetricsV1>(key, properties).map(|_| Fact::RetiredCount),
+		("contact.metrics", 1) => props::<v1::ContactMetricsV1>(key, properties).map(|_| Fact::RetiredCount),
+		("experiment.metrics", 1) => props::<v1::ExperimentMetricsV1>(key, properties).map(|_| Fact::RetiredCount),
+		("experiments.declared", 1) => props::<v1::ExperimentsDeclaredV1>(key, properties).and_then(|p| {
+			let declared = p
+				.experiments
+				.into_iter()
+				.map(|e| Declaration::parse(&e.key, e.variants, e.weights, e.enabled, e.holdout, e.summary))
+				.collect::<Result<Vec<_>, _>>()?;
+			check_declared(&declared)?;
+			Ok(Fact::ExperimentsDeclared(declared))
 		}),
-		("contact.metrics", 1) => props::<v1::ContactMetricsV1>(key, properties).and_then(|p| {
-			metric(
-				&p.day,
-				p.revision,
-				MetricValue::Intents {
-					channel: IntentChannel::parse(&p.channel)?,
-					intents: DailyMetric::count("intents", p.intents)?,
-				},
-			)
-		}),
-		("experiment.metrics", 1) => props::<v1::ExperimentMetricsV1>(key, properties).and_then(|p| {
-			let count = DailyMetric::count;
-			metric(
-				&p.day,
-				p.revision,
-				MetricValue::Experiment {
-					experiment: DailyMetric::name("experiment", &p.experiment)?,
-					variant: DailyMetric::name("variant", &p.variant)?,
-					tally: Tally {
-						exposures: count("exposures", p.exposures)?,
-						leads: count("leads", p.leads)?,
-						phone: count("phone", p.phone)?,
-						whatsapp: count("whatsapp", p.whatsapp)?,
-						form_open: count("form_open", p.form_open)?,
-						booking: count("booking", p.booking)?,
-					},
-				},
-			)
+		("experiment.configured", 1) => props::<v1::ExperimentConfiguredV1>(key, properties).and_then(|p| {
+			Ok(Fact::ExperimentConfigured {
+				patch: Patch::parse(&p.key, p.enabled, p.weights, p.holdout, &p.reset)?,
+				by: label(&p.by)?,
+			})
 		}),
 		("booking.requested", 1) => {
 			// A field set to null is refused, not read as absent: the contract has no null.
@@ -391,14 +375,6 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 	}
 }
 
-fn metric(day: &str, revision: u32, value: MetricValue) -> Result<Fact, Invalid> {
-	Ok(Fact::Metric(DailyMetric {
-		day: DailyMetric::parse_day(day)?,
-		revision: DailyMetric::revision(revision)?,
-		value,
-	}))
-}
-
 fn props<T: DeserializeOwned>(key: &TypeKey, properties: &Value) -> Result<T, Invalid> {
 	serde_json::from_value(properties.clone()).map_err(|e| Invalid::new(format!("properties do not match {key}: {}", redact(&e))))
 }
@@ -444,6 +420,7 @@ mod tests {
 				entered_by: None,
 				suspect: None,
 				offer: LeadOffer::default(),
+				analytics_id: None,
 			})
 		);
 	}
@@ -464,6 +441,7 @@ mod tests {
 					entered_by: None,
 					suspect: Some(mark),
 					offer: LeadOffer::default(),
+					analytics_id: None,
 				})
 			);
 		}
@@ -471,6 +449,27 @@ mod tests {
 			assert_eq!(
 				judge(bad.clone()),
 				Checked::Invalid(panel_core::Invalid::new("properties.suspect is not one of rate_limited, too_fast")),
+				"{bad}"
+			);
+		}
+	}
+
+	#[test]
+	fn a_lead_carries_the_beacon_id_or_is_rejected_for_it() {
+		let judge = |id: Value| {
+			let mut e = event();
+			e["properties"]["analyticsId"] = id;
+			let got = decode(e, now()).unwrap();
+			check(&got.envelope.type_key, got.envelope.source.kind, &got.properties, &got.envelope.subject)
+		};
+		let Checked::Registered(Fact::LeadCreated { analytics_id, .. }) = judge(json!("0192f1c2-7d1e-7b3a-9c4d-1a2b3c4d5e6f")) else {
+			panic!()
+		};
+		assert_eq!(analytics_id.unwrap().as_str(), "0192f1c2-7d1e-7b3a-9c4d-1a2b3c4d5e6f");
+		for bad in [json!(""), json!("a b"), json!("x".repeat(129))] {
+			assert_eq!(
+				judge(bad.clone()),
+				Checked::Invalid(Invalid::new("properties.analytics_id is not 1–128 of [A-Za-z0-9._:-]")),
 				"{bad}"
 			);
 		}
@@ -580,7 +579,7 @@ mod tests {
 	}
 
 	#[test]
-	fn counts() {
+	fn the_retired_counts_still_pass_and_say_nothing() {
 		let key = |name| TypeKey::parse(name, 1).unwrap();
 		let mut subject = decode(event(), now()).unwrap().envelope.subject;
 		let visits = json!({"day": "2026-09-30", "source": "google.com", "visits": "12", "revision": 2});
@@ -589,50 +588,58 @@ mod tests {
 			Checked::Invalid(Invalid::new("a count names no lead and no job"))
 		);
 		subject.lead_id = None;
-		let Checked::Registered(Fact::Metric(m)) = check(&key("site.metrics"), SourceKind::Posthog, &visits, &subject) else {
-			panic!("visits refused")
-		};
-		assert_eq!((m.day.to_string(), m.revision, m.dimension()), ("2026-09-30".into(), 2, "google.com"));
+		assert_eq!(check(&key("site.metrics"), SourceKind::Posthog, &visits, &subject), Checked::Registered(Fact::RetiredCount));
 		assert_eq!(
 			check(&key("site.metrics"), SourceKind::Site, &visits, &subject),
 			Checked::Invalid(Invalid::new("a site source may not write site.metrics")),
-			"a landing cannot write its own counts"
+			"a landing never wrote its own counts"
 		);
-		for (name, props, want) in [
-			(
-				"site.metrics",
-				json!({"day": "2026-09-30", "source": "x", "visits": -1, "revision": 1}),
-				"properties.visits is negative",
-			),
-			("site.metrics", json!({"day": "2026-09-30", "source": "x", "visits": 1}), "properties.revision must be 1"),
-			("contact.metrics", json!({"day": "30.09.2026", "channel": "phone", "intents": 1, "revision": 1}), "properties.day"),
-			(
-				"contact.metrics",
-				json!({"day": "2026-09-30", "channel": "email", "intents": 1, "revision": 1}),
-				"properties.channel",
-			),
-			(
-				"experiment.metrics",
-				json!({"day": "2026-09-30", "experiment": "hero", "variant": "b", "exposures": 3, "revision": 1}),
-				"names no location",
-			),
-		] {
-			let Checked::Invalid(e) = check(&key(name), SourceKind::Posthog, &props, &subject) else {
-				panic!("{name} {props} passed")
-			};
-			assert!(e.0.contains(want), "{name}: {e}");
-		}
+		let intents = json!({"day": "2026-09-30", "channel": "phone", "intents": 1, "revision": 1});
+		assert_eq!(check(&key("contact.metrics"), SourceKind::Posthog, &intents, &subject), Checked::Registered(Fact::RetiredCount));
 		subject.location_id = None;
-		let Checked::Registered(Fact::Metric(m)) = check(
-			&key("experiment.metrics"),
-			SourceKind::Posthog,
-			&json!({"day": "2026-09-30", "experiment": "hero", "variant": "b", "exposures": 300, "formOpen": 4, "revision": 1}),
-			&subject,
-		) else {
-			panic!("an experiment's count refused")
+		let arm = json!({"day": "2026-09-30", "experiment": "hero", "variant": "b", "exposures": 300, "formOpen": 4, "revision": 1});
+		assert_eq!(check(&key("experiment.metrics"), SourceKind::Posthog, &arm, &subject), Checked::Registered(Fact::RetiredCount));
+		let Checked::Invalid(e) = check(&key("experiment.metrics"), SourceKind::Posthog, &json!({"day": "2026-09-30", "clicks": 1}), &subject) else {
+			panic!("an unknown field passed")
 		};
-		let MetricValue::Experiment { tally, .. } = m.value else { panic!("{m:?}") };
-		assert_eq!((tally.exposures, tally.form_open, tally.leads), (300, 4, 0));
+		assert!(e.0.contains("clicks"), "the shape is still checked: {e}");
+	}
+
+	#[test]
+	fn experiments_are_the_brands_and_their_writers() {
+		let key = |name| TypeKey::parse(name, 1).unwrap();
+		let mut subject = decode(event(), now()).unwrap().envelope.subject;
+		let declared = json!({"experiments": [{"key": "lead_layout", "variants": ["a", "b"], "weights": [1, 1], "enabled": true, "holdout": 0.1, "summary": "One step converts better"}]});
+		assert!(
+			matches!(check(&key("experiments.declared"), SourceKind::Site, &declared, &subject), Checked::Invalid(_)),
+			"names a lead"
+		);
+		subject.lead_id = None;
+		subject.location_id = None;
+		let Checked::Registered(Fact::ExperimentsDeclared(d)) = check(&key("experiments.declared"), SourceKind::Site, &declared, &subject) else {
+			panic!("a declaration refused")
+		};
+		assert_eq!((d[0].key.as_str(), d[0].weights.as_slice(), d[0].holdout), ("lead_layout", &[1.0, 1.0][..], Some(0.1)));
+		assert_eq!(
+			check(&key("experiments.declared"), SourceKind::Panel, &declared, &subject),
+			Checked::Invalid(Invalid::new("a panel source may not write experiments.declared"))
+		);
+		let nan = json!({"experiments": [{"key": "k", "variants": ["a", "b"], "weights": ["NaN", 1], "enabled": true}]});
+		assert!(matches!(check(&key("experiments.declared"), SourceKind::Site, &nan, &subject), Checked::Invalid(_)));
+		let Checked::Invalid(e) = check(&key("experiment.configured"), SourceKind::Panel, &json!({"key": "lead_layout", "enabled": false}), &subject) else {
+			panic!("a change naming nobody passed")
+		};
+		assert!(e.0.contains("properties.by"), "{e}");
+		let configured = json!({"key": "lead_layout", "weights": [3, 1], "reset": ["holdout"], "by": "ops@evinvest.ltd"});
+		assert!(matches!(
+			check(&key("experiment.configured"), SourceKind::Panel, &configured, &subject),
+			Checked::Registered(Fact::ExperimentConfigured { .. })
+		));
+		assert_eq!(
+			check(&key("experiment.configured"), SourceKind::Site, &configured, &subject),
+			Checked::Invalid(Invalid::new("a site source may not write experiment.configured")),
+			"a landing cannot set its own overrides"
+		);
 	}
 
 	#[test]

@@ -59,7 +59,9 @@ pub async fn insert_event_row(conn: &mut SqliteConnection, e: &Recorded) -> eyre
 		| Fact::PaymentReceived { .. }
 		| Fact::CallAttempted
 		| Fact::CallLogged { .. }
-		| Fact::Metric(_) => return Ok(()),
+		| Fact::RetiredCount
+		| Fact::ExperimentsDeclared(_)
+		| Fact::ExperimentConfigured { .. } => return Ok(()),
 	};
 	sqlx::query(
 		"INSERT INTO booking_events (event_id, brand_id, kind, provider, external_ref, lead_id, status, start_at, occurred_at) \

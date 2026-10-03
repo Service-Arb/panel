@@ -223,7 +223,12 @@ fn opaque_new(prefix: &str, now: Timestamp) -> String {
 	format!("{prefix}-{}", new_uuid(now).simple())
 }
 
-pub(crate) fn new_uuid(now: Timestamp) -> Uuid {
+/// A fresh UUIDv7 at `now`: a new event's id.
+pub(crate) fn new_event_id(now: Timestamp) -> Uuid {
+	new_uuid(now)
+}
+
+fn new_uuid(now: Timestamp) -> Uuid {
 	let nanos = u32::try_from(now.subsec_nanosecond().rem_euclid(1_000_000_000)).unwrap_or(0);
 	let secs = u64::try_from(now.as_second()).unwrap_or(0);
 	Uuid::new_v7(uuid::Timestamp::from_unix(uuid::NoContext, secs, nanos))

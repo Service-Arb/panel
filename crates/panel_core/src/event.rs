@@ -149,11 +149,12 @@ impl Envelope {
 /// Whether a kind of source may write a type (spec §2, the "source" column). What only an
 /// operator can know — a quote, a win, a loss, a finished job — comes from the panel alone,
 /// and payments too, which are entered by hand (owner, 2026-09-30); calls and contacts also
-/// from telephony, once there is one. The site's counts come from the PostHog import alone
-/// (§3.4). A booking a site asks for is the site's; what a provider says of a booking is its
-/// adapter's (kind booking); what an operator does to one is the panel's. A type the panel
-/// does not know is open to every kind (§3.2): it is stored, not projected, and judged again
-/// once it is registered.
+/// from telephony, once there is one. The counts of the retired PostHog import were its alone
+/// (§3.4), and stay so. A booking a site asks for is the site's; what a provider says of a
+/// booking is its adapter's (kind booking); what an operator does to one is the panel's. A
+/// landing declares its experiments; only an admin in the panel lays a setting over them. A
+/// type the panel does not know is open to every kind (§3.2): it is stored, not projected,
+/// and judged again once it is registered.
 pub fn may_write(kind: SourceKind, type_name: &str) -> bool {
 	use SourceKind::{Booking, Panel, Posthog, Site, Telephony};
 	match type_name {
@@ -162,6 +163,8 @@ pub fn may_write(kind: SourceKind, type_name: &str) -> bool {
 		"booking.created" | "booking.canceled" => matches!(kind, Booking),
 		"booking.set" | "booking.status_changed" | "booking.cleared" | "booking.attached" => matches!(kind, Panel),
 		"site.metrics" | "contact.metrics" | "experiment.metrics" => matches!(kind, Posthog),
+		"experiments.declared" => matches!(kind, Site),
+		"experiment.configured" => matches!(kind, Panel),
 		"lead.contacted" | "call.attempted" | "call.logged" => matches!(kind, Panel | Telephony),
 		"lead.quoted" | "job.won" | "lead.lost" | "job.completed" | "payment.received" => matches!(kind, Panel),
 		_ => true,
@@ -240,7 +243,7 @@ mod tests {
 	#[test]
 	fn who_writes_what() {
 		use SourceKind::*;
-		let table: [(&str, &[SourceKind]); 19] = [
+		let table: [(&str, &[SourceKind]); 21] = [
 			("lead.created", &[Site, Panel]),
 			("lead.contacted", &[Panel, Telephony]),
 			("lead.quoted", &[Panel]),
@@ -260,6 +263,8 @@ mod tests {
 			("booking.status_changed", &[Panel]),
 			("booking.cleared", &[Panel]),
 			("booking.attached", &[Panel]),
+			("experiments.declared", &[Site]),
+			("experiment.configured", &[Panel]),
 		];
 		for (name, allowed) in table {
 			for kind in SourceKind::ALL {

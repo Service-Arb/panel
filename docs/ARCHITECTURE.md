@@ -21,10 +21,11 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
   src/role.rs                        operator / admin and what each may do (§5.4)
   src/notify.rs                      Telegram: the rules and who gets each, the texts, the
                                      buttons' signed data, retry and pacing constants
-  src/metrics.rs                     the day counts of stages 3–4 and of the experiments; a
-                                     recount's revision; traffic sources bounded
-  src/experiment.rs                  a variant against its control: Wilson, Newcombe, the
-                                     `insufficient` rule
+  src/experiment.rs                  a brand's experiments as configuration: a declaration
+                                     checked, an admin's patch, the fold to declared / override /
+                                     effective, the landings' rules for an override field
+  src/analytics.rs                   what PostHog is told of a lead event (name, properties
+                                     without PII, the person)
   src/place.rs                       a place's live settings (kitstart's PlaceLive), checked
                                      field by field; a change and who made it
   src/pricing.rs                     a brand's price list (kitstart's PricingModel): checked,
@@ -45,9 +46,10 @@ crates/panel/                        the engine
   src/store/telegram.rs              links, rules, fan-out marks, the outbox and its pacing
   src/telegram.rs                    linking, the rules' fan-out, delivery, the buttons; the
                                      Bot and Directory ports
-  src/posthog.rs                     the hourly PostHog import: HogQL → counts → journal; the
-                                     Hogql port
-  src/counts.rs                      what the screens read of the counts
+  src/experiment.rs                  the experiments listed, changed by an admin (journaled), and
+                                     what a landing is answered; the link to PostHog's funnel
+  src/capture.rs                     the PostHog outbox sent in batches, retried, given up; the
+                                     Capturer port
   src/place.rs                       a place's settings changed (optimistic concurrency, revert,
                                      withdraw) and what a site is answered
   src/store/places.rs                places, place_settings, the place_changes history
@@ -57,8 +59,8 @@ crates/panel/                        the engine
   src/booking.rs                     operators' slots, the providers' seam (PushSource,
                                      PullSource), matching, the leased pull
   src/store/bookings.rs              booking_events, bookings, booking_sync
-  src/store/metrics.rs               daily_location_metrics, daily_experiment_metrics, the
-                                     import's lease
+  src/store/experiments.rs           experiments, each brand's folded from its events
+  src/store/posthog.rs               posthog_outbox
   src/live.rs                        the in-process bus of what changed, published after each
                                      commit (see "Live updates")
   src/testing.rs                     (feature `testing`) throwaway SQLite files, signed batches
@@ -81,8 +83,9 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
                                      the sites' GET /api/internal/brands/{brand}/pricing
   src/telegram.rs                    the Bot API (reqwest), the bot's background work in
                                      `serve`, and /api/v1/telegram
-  src/posthog.rs                     PostHog's query API (reqwest) and the import's schedule
-  src/counts.rs                      stages 3–4 in /api/v1/funnel, GET /api/v1/experiments
+  src/experiments.rs                 /api/v1/experiments and the sites' GET
+                                     /api/internal/brands/{brand}/experiments
+  src/capture.rs                     PostHog's capture API (reqwest) and the sender in `serve`
   src/booking.rs                     /api/v1 booking routes, POST /api/hooks/booking/…
   src/google_calendar.rs             the google_calendar pull adapter (reqwest), its schedule,
                                      the CLI's OAuth consent
@@ -113,7 +116,8 @@ registry: type@version known?
              INSERT events … ON CONFLICT (id) DO NOTHING
                ├─ id taken, same content                                  → duplicate
                ├─ id taken, other content                                 → rejected
-               └─ new: a call / payment / count row; its lead recomputed → accepted
+               └─ new: a call / payment row; its lead or its brand's experiments
+                  recomputed; a PostHog outbox row for a lead event         → accepted
 ```
 
 ## Signing in (§4)
@@ -215,14 +219,11 @@ GET    /funnel?from&to&brand&by                   days, UTC, default the last 30
                                                    manual, payments}]}, one per brand's location
                                                    (location null for the leads naming none);
                                                    an empty window has no rows
-                                                  every answer: aggregate_source {source:
-                                                   "posthog", kind: "aggregate", imported_at};
-                                                   each slice: aggregate (stages 3–4, below)
-GET    /experiments?from&to&brand                 days as /funnel; below
+GET    /experiments?brand                         see [Experiments](#experiments)
 GET    /places                                    {places: [{brand, location, last_lead_at,
                                                   has_settings, withdrawn}]}: every location a
-                                                  lead names or PostHog counted, and every
-                                                  place registered (below)
+                                                  lead names, and every place registered
+                                                  (below)
 GET    /sources                     admin         {sources: [{key_id, kind, brands, created_at,
                                                   revoked_at}]}
 POST   /sources                     admin, fresh  {key_id, kind, brands} → 201 {key_id, secret}
@@ -246,34 +247,10 @@ The funnel counts the leads that came in (were created) within the window, and `
 sums the payments of those same leads, whenever they were paid; so a slice's money and its
 `paid` step are about the same leads.
 
-**Stages 3–4 beside 5–10, never divided by them** (§10.1). A slice's `aggregate` is
-`{stages: [{stage: "site.visit", total, by_source: {source: n}, days: [{day, n}]},
-{stage: "contact.intent", total, by_channel: {phone, whatsapp, form_open, booking}, days:
-[{day, n, by_channel}]}]}` — page views and intents as PostHog counted them, per UTC day (the
-days with a count only; a day missing is nothing counted, or not imported yet — see
-`imported_at`). By location, a location with visits and no lead is a row too. Stages 1–2
-(Maps) come with the GBP import.
-
-`/experiments` answers `{from, to, brand, min_sample, min_exposures: 100, confidence: 0.95,
-z, interval: "newcombe_hybrid_score", source, experiments: [{brand, experiment, first_day,
-last_day, control, variants: [{variant, control, exposures, leads, intents: {phone, whatsapp,
-form_open, booking}, rates: {lead: Share, contact: Share}, vs_control: null | {lead: Cmp,
-contact: Cmp}}]}]}`, the control first. `lead` is leads per exposure, `contact` (leads +
-phone + WhatsApp) per exposure, as the landings' own reports define them; successes past the
-exposures are capped. `Cmp` is `{difference: null | {estimate, low, high, decimals},
-insufficient, reason}` in percentage points, treatment − control: `difference` is null and
-`reason` `small_sample` while either arm has under `min_exposures`; `insufficient` with
-`interval_includes_zero` while the 95 % interval holds 0 (judged before rounding). Rounding
-follows the interval: whole points while it is 2 points wide or more, tenths when narrower
-(`decimals`). The control is the variant named `control`, else `a`, else the first by name —
-PostHog never sees the landing's config. There is no winner field, and none is to be drawn.
-
-Why Newcombe's hybrid score interval (method 10 of Newcombe 1998), not `d ± z·SE`: the Wald
-interval collapses at 0 successes, leaves [−1, 1] and undercovers badly at the rates (a few
-percent) and arm sizes (hundreds) the landings have; Newcombe's, built from the two Wilson
-intervals, has none of these faults. The tests check it against the paper's published
-examples. It treats page views as independent trials, which they only approximately are; no
-correction is made for several variants against one control.
+**Stages 3–4 (visits, intents) and the experiments' numbers are PostHog's**, looked at there:
+the panel does not count them again (owner, 2026-10-04). It sends PostHog the leads' life after
+the form instead ([PostHog](#posthog)), so the funnel from a visit to a payment is one funnel
+there.
 
 `Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`,
 `suspect` — null, `"rate_limited"` or `"too_fast"`, see [Suspect leads](#suspect-leads) —,
@@ -367,8 +344,7 @@ closes              4401 the session ended   4403 the role is gone   1001 the se
 | `places` | a place's settings set, reverted, withdrawn, restored, or the place registered | its brand | the slug | every role |
 | `pricing` | a brand's pricing saved or removed, or its locales set | its brand | — | every role |
 | `sources` | a source key minted or revoked | — | — | admins |
-| `metrics` | a PostHog count of stages 3–4 written | its brand | — | every role |
-| `experiments` | a PostHog count of an experiment written | its brand | — | every role |
+| `experiments` | a landing's declaration, or an admin's change | its brand | the key (a change) | every role |
 | `telegram` | the user's link made, undone or found blocked; their rules | — | — | that user |
 | `bookings` | a provider's booking without a lead came, changed, or was attached | its brand | — | every role |
 
@@ -379,20 +355,20 @@ elsewhere tells the lead it left and the one it joined.
 `panel rebuild-projections` in the serving process.
 
 - **Who is told what they may read.** `panel::live::Change::visible_to` mirrors the reads:
-  every admitted role reads every brand's leads, places and counts (the grant is
+  every admitted role reads every brand's leads, places and experiments (the grant is
   `allocation:service_arb`, nothing narrower, §5.4); `GET /sources` is an admin's; a
   Telegram link is its user's. A narrower scope, if one comes, is one function to change.
 - **Published after the commit, from the engine, in one place per kind of write.** Every
   event that reaches the projections passes through `Panel::journal`, which publishes once
-  its transaction has committed — ingest, the operator API, the Telegram buttons and the
-  PostHog import alike, so none of them can forget to. A duplicate, a refused event or an
+  its transaction has committed — ingest, the operator API, the Telegram buttons and an
+  admin's experiment changes alike, so none of them can forget to. A duplicate, a refused event or an
   unregistered type changed no read and says nothing. Outside the journal: a place's change
   (`place.rs`, after its transaction), a brand's pricing (`pricing.rs`, the same), the sources (`Panel::add_source`,
   `Panel::revoke_source`), the Telegram link (`telegram.rs`: `/start`, `/stop`, the profile's
   unlink, a chat found blocked, the rules). A write that changes nothing publishes nothing.
 - **The bus is in-process** (`tokio::sync::broadcast`, one pod). Publishing never waits and
   never fails a write; with no socket open it is dropped. A command run in another process
-  (`panel place set`, `panel source add`, `panel import-posthog`) is not seen by the
+  (`panel place set`, `panel source add`) is not seen by the
   server's sockets: the screens find it at their next read.
 - **Bounded.** The bus keeps 1024 messages per subscriber; a socket further behind skips
   the backlog and is sent `resync`. A frame that does not go out within 10 s drops the
@@ -610,52 +586,101 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
   and the buttons removed ("Не дозвонился" leaves "Взял").
 - Language: `TELEGRAM_LOCALE` (`ru` default, `en`).
 
-## The PostHog import (§3.4, §7)
+## Experiments
 
-With `POSTHOG_PROJECT_ID` and `POSTHOG_PERSONAL_API_KEY` (a personal key, `query:read` on the
-project the landings send to), `serve` imports once an hour; without them it warns and does
-not, and one without the other fails the boot. `POSTHOG_API_HOST` defaults to
-`https://us.posthog.com`: the query API is on the app host, not on the capture host the
-landings' `POSTHOG_HOST` names (`us.i.posthog.com`). `panel import-posthog --days N` runs one
-now (a backfill: up to 400 days, as long as each query stays under 10 000 rows).
+A landing's experiments live in its code (`@evinvest/experiments`); the panel holds them as
+configuration — what each brand runs, and an admin's kill switch, weights and holdout over it.
+Exposures, leads and their comparison are PostHog's: each experiment links to its funnel there.
 
 ```text
-every 5 min      posthog_import: leased (10 min) if none holds it, the last import finished
-                 ≥ 1 h ago and the last try ≥ 10 min ago — one process, once an hour
-three HogQL      the last 3 UTC days (today included), days cut in UTC whatever the project's
-queries          zone, LIMIT 10 000 (a full table is an error, not a short count):
-                 location_page_view{brand_id, location_id, source}         → visits by source
-                 contact_intent_click{brand_id, location_id, channel}      → intents by channel
-                 experiment_exposed / experiment_contact{channel} / experiment_lead
-                   {brand_id, experiment, variant, forced}, forced (QA) left out
-rows → counts    brands a source key writes for only (a landing's PostHog key is public: anyone
-                 can send events naming any brand); malformed days, locations, names, channels
-                 left out and counted; sources lowercased, ≤ 20 per location and day, the rest
-                 "other"
-compared         with the projection's counts of those days: a slice new or changed → an event
-                 at the next revision; a slice no longer found → 0 at the next revision; the
-                 same count → nothing
-journaled        site.metrics / contact.metrics / experiment.metrics, source.kind posthog,
-                 source.id posthog-<project>, no key; occurred_at the day's start; the id from
-                 (type, day, brand, location, slice, revision)
+experiments.declared@1   the landing at every start (kind site, its key; a new id each time),
+                         subject the brand alone: [{key [a-z0-9_]{1,64}, variants 2–32 unique
+                         [a-z0-9_-]{1,32} (the first the control), weights one per variant ≥ 0
+                         summing > 0, enabled, holdout? [0, 1), summary? ≤ 200}], ≤ 64, a key once
+experiment.configured@1  an admin in the panel (kind panel, source.id the admin's id or cli),
+                         subject the brand alone: {key, enabled?, weights?, holdout?, reset: [field], by —
+                         the admin's email, else their id, as a place's history names them} — a
+                         patch: a field absent left, named in reset put back to the declaration
 ```
 
-- **A recount replaces, the journal stays append-only.** A day's count changes for days as
-  late events land, so the projection holds the highest revision of each slice
-  (`INSERT … ON CONFLICT … WHERE revision < EXCLUDED.revision`, so a rebuild in any order
-  lands on the newest). Upserting the projection without an event was the other way; it would
-  make the counts the one projection the journal cannot rebuild. Writing only on a change
-  keeps the journal's growth to the changes, not 24 × 3 copies a day.
-- **Two writers of one revision.** The id derives from the revision and the content is
-  deterministic, so the same recount from two processes (a lease lapsed mid-import) is a
-  duplicate; different counts under one revision is a conflict, the second refused, and the
-  next import writes the revision after.
-- **Only the import writes counts**: `may_write` lets `posthog` alone write the three types.
-  A count names no lead and no job; an experiment's no location (the landings' server-side
-  `experiment_lead` names none). `experiment_step` (vifnet) is not imported.
-- **Reporting.** `reporting_daily_location_metrics` (day, brand, location, metric `visits` |
-  `contact_intent`, dimension: the source or channel, value) and `reporting_experiment_daily`;
-  neither has anything personal — the events they come from carry no PII.
+Both are folded per brand (`panel_core::experiment::fold`, by `(occurred_at, id)`, so arrival
+order does not matter) into `experiments`, recomputed in the transaction that journals either and
+by the rebuild. The latest declaration is the brand's: an experiment it does not name is
+`retired` — listed, never changed, never sent to a site. An override is kept as set; a field of
+it is applied only while valid against the latest declaration, by the landings' own rules
+(`applyOverrides`): weights as many as the variants, each ≥ 0, sum > 0; holdout in [0, 1);
+enabled a boolean. So `effective` is what the landings run even after a declaration changed the
+variants under an admin's weights. `weights_changed_at` is the last time the effective weights
+changed, by a declaration or an admin.
+
+```text
+GET /api/v1/experiments?brand            every role; one brand's, or every brand's without it
+     {experiments: [{brand, key, variants,
+       declared: {weights, enabled, holdout, summary, declared_at},
+       override: null | {weights, enabled, holdout (each null: follows the declaration),
+                         changed_by (the admin's email, else their id: by), changed_at},
+       effective: {weights, enabled, holdout}, weights_changed_at, retired, posthog_url}]}
+PUT /api/v1/experiments/{brand}/{key}    admin, fresh (gate_fresh, as POST /sources); CSRF
+     {enabled?: bool | null, weights?: [n] | null, holdout?: n | null}: absent left, null put
+     back → 200 the item; 400 {error} invalid (weights against the declared variants); 404 an
+     unknown or retired experiment, or a brand or key that cannot be one; a change that changes
+     nothing journals nothing
+GET /api/internal/brands/{brand}/experiments   no session, with the places' and pricing's reads
+     ≤ 32 at once (shed: no overrides), 2.5 s (then none)
+     200 {experiments: {key: {enabled?, weights?, holdout?}}}: the valid override fields of the
+     current experiments; {experiments: {}} for none, an unknown brand, a brand id that cannot be
+     one, any failure — never a 404 or 5xx
+```
+
+`posthog_url` is `{POSTHOG_APP_HOST}/project/{POSTHOG_PROJECT_ID}/insights/new#q=<query>`: an
+`InsightVizNode` with a `FunnelsQuery` `experiment_exposed` → `experiment_lead`, event properties
+`experiment = key`, `brand_id = brand`, `forced` not `true`, broken down by `variant`, from
+`weights_changed_at` or the first declaration. Null without `POSTHOG_PROJECT_ID`.
+
+## PostHog
+
+The panel tells PostHog what happens to a lead after the form, so a visit and its payment are one
+funnel there (`panel_core::analytics`):
+
+```text
+queued       Panel::journal, in the event's own transaction, when POSTHOG_PROJECT_API_KEY is
+             set: a new lead.created (the one that counts), lead.contacted, lead.quoted,
+             job.won, lead.lost, job.completed, payment.received, call.logged, every booking.*
+             → posthog_outbox
+             never: the rebuild (it projects without passing there), a duplicate, a second
+             lead.created, call.attempted, what names no lead (a provider's booking.created or
+             booking.canceled no lead was matched to)
+event        sa_ + the type, dots made underscores (sa_lead_created, sa_payment_received, …);
+             booking.status_changed is sa_booking_closed
+uuid         the journal's event id: PostHog deduplicates a resend
+timestamp    occurred_at
+distinct_id  the lead's analytics_id (lead.created's, the landing beacon's distinct_id), else
+             sa-lead:<brand>:<lead>
+properties   brand_id, location_id, manual; channel, flow, quoted_cents, suspect (created);
+             channel (contacted); amount_cents, currency (quoted); reason (lost — the slug,
+             never the note); billed_cents, commission_cents, currency (paid); outcome (call);
+             provider, preferred_date, preferred_part (booking requested); provider, match,
+             lead_time_hours (booking created: start_at − booked_at, else − occurred_at);
+             provider (canceled); lead_time_hours (set); closed (closed); provider, match =
+             manual (attached); nothing more (cleared).
+             No PII: no need, name, phone, note, attendee; no external_ref, version or slot
+sent (5 s)   ≤ 100 due rows → POST {POSTHOG_HOST}/batch/ → deleted; 5xx, 429, no answer: each
+             row again from 10 s, doubling to 15 min; another 4xx: a batch is retried row by
+             row, a row refused alone dropped (warned); a row failing for 7 days dropped (warned)
+```
+
+Without `POSTHOG_PROJECT_API_KEY` nothing is queued and nothing sent; `serve` warns and starts.
+The key is the project's `phc_` key — public like the landings' — not a personal one (`phx_` is
+refused at boot). A booking's slot is told as `lead_time_hours` alone: its weekday and part of
+the day would need the place's time zone, which a fact does not carry.
+
+### The retired import
+
+Up to v0.3 an hourly HogQL import journaled `site.metrics`, `contact.metrics` and
+`experiment.metrics` and projected them (`daily_location_metrics`, `daily_experiment_metrics`,
+their `reporting_*` views, the `posthog_import` lease). The import and those tables are gone
+(migration `20261005100000`); the three types stay registered, checked as before and projected
+into nothing, so a journal holding them still passes and rebuilds.
 
 ## Booking
 
@@ -816,8 +841,7 @@ Booking:      {id, brand, provider, external_ref, status: booked | canceled, sta
   The free text a customer typed goes in `pii`, not `properties`. Sources' HMAC secrets are
   sealed the same way (they must be usable to verify, so they cannot be hashed).
 - **Reporting has no PII.** The `reporting_*` views over the projections and a daily ingest
-  count select no `properties`, `pii_sealed` or secret: what the screens read of the counts,
-  and what anything reading a copy of the database (a dashboard on the replica, an export)
+  count select no `properties`, `pii_sealed` or secret: what anything reading a copy of the database (a dashboard on the replica, an export)
   should be pointed at instead of the tables. SQLite has no roles to enforce that; whoever
   holds the file holds everything, sealed PII included — which is why PII is sealed.
 - **The schema guards the journal.** SQLite has no roles, so what a runtime role's grants
@@ -831,8 +855,8 @@ Booking:      {id, brand, provider, external_ref, status: booked | canceled, sta
   is let be: that is a rollback onto a schema moved on. Timestamps are INTEGER microseconds
   since the epoch, days `YYYY-MM-DD` text, UUIDs 16-byte blobs, JSON text that must parse.
 - **Secrets come from the environment only** (`PANEL_DATA_KEY`, `SENTRY_DSN`,
-  `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`, `POSTHOG_PERSONAL_API_KEY`,
-  `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>`),
+  `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+  `GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>`),
   through `ev_lib::settings`; with `APP_ENV=production`, `PANEL_DB_PATH`, `PANEL_DATA_KEY` and
   the four sign-in variables are required at boot (`panel --print-required-vars` lists them).
 
@@ -854,8 +878,8 @@ Booking:      {id, brand, provider, external_ref, status: booked | canceled, sta
   the egress the pods need. `checks.contract-env` fails the flake when its
   list of required variables and the binary's `--print-required-vars` disagree.
 
-- **`/api/internal` stays inside the cluster.** The landings read their places' settings
-  and their brand's pricing there by service DNS; it has no session, so the IngressRoute must exclude the prefix
+- **`/api/internal` stays inside the cluster.** The landings read their places' settings,
+  their brand's pricing and its experiments' overrides there by service DNS; it has no session, so the IngressRoute must exclude the prefix
   (`excludePathPrefixes`) and the NetworkPolicy admit only the landings' pods.
 - **Ingest stays inside the cluster.** Its sources (the landings, review_archive) reach it
   by service DNS (§3.3); the IngressRoute that publishes `sa.evinvest.ltd` must not route
@@ -869,9 +893,10 @@ Booking:      {id, brand, provider, external_ref, status: booked | canceled, sta
 - **Telegram, outbound only.** With `TELEGRAM_BOT_TOKEN` (the panel bot's, in sops; not
   `telegram_token_main`) the pods need egress to `api.telegram.org:443`; nothing inbound. No
   webhook is set on the bot (`getUpdates` refuses to run while one is).
-- **PostHog, outbound only.** With the import configured the pods need egress to
-  `us.posthog.com:443` (or wherever `POSTHOG_API_HOST` points); the key is a personal API key
-  of someone with access to the project, scoped to `query:read` alone, in sops.
+- **PostHog, outbound only.** With `POSTHOG_PROJECT_API_KEY` the pods need egress to
+  `us.i.posthog.com:443` (or wherever `POSTHOG_HOST` points). The key is the project's public
+  `phc_` key, not a secret. The experiments' links (`POSTHOG_PROJECT_ID`, `POSTHOG_APP_HOST`)
+  are opened by the browser: no egress for them.
 - **Google, outbound only.** With the booking pull configured the pods need egress to
   `oauth2.googleapis.com:443` and `www.googleapis.com:443`. `/api/hooks/booking` is public
   (no push provider is registered yet: 404s) and rate-limited per IP at the edge.

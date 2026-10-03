@@ -57,7 +57,7 @@ pub async fn pricing(conn: &mut SqliteConnection, brand: &BrandId) -> eyre::Resu
 	stored(row)
 }
 
-/// Every brand the panel knows — named by a lead, a place, a PostHog count or a source key, or
+/// Every brand the panel knows — named by a lead, a place or a source key, or
 /// given pricing or locales — with its pricing, by brand. A stored id that is not a brand id
 /// (none should be: every writer checks) is left out rather than failing the list.
 pub async fn all(conn: &mut SqliteConnection) -> eyre::Result<Vec<(BrandId, StoredPricing)>> {
@@ -67,7 +67,6 @@ pub async fn all(conn: &mut SqliteConnection) -> eyre::Result<Vec<(BrandId, Stor
 		"WITH known (brand_id) AS ( \
 		   SELECT brand_id FROM leads \
 		   UNION SELECT brand_id FROM places \
-		   UNION SELECT brand_id FROM daily_location_metrics \
 		   UNION SELECT b.value FROM sources s, json_each(s.brand_ids) b \
 		   UNION SELECT brand_id FROM pricing \
 		   UNION SELECT brand_id FROM brand_locales) \

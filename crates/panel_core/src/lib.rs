@@ -5,18 +5,18 @@
 //! - [`event`]: the envelope of a `sa.funnel.v1` event, and what a signing key may write;
 //! - [`fact`]: the registered event types, typed and checked;
 //! - [`lead`]: a lead's stage and stage times, folded from its facts;
+//! - [`experiment`]: a brand's experiments as its landing declares them and an admin sets them;
 //! - [`funnel`]: shares no more precise than the data, and the contact SLA;
-//! - [`metrics`]: the aggregate stages and the experiments' daily counts, and how a newer
-//!   count of a day replaces an older one;
-//! - [`experiment`]: a variant against its control, no more sure than the data;
 //! - [`signature`]: how a source signs a batch, and how the panel checks it;
 //! - [`role`]: who may do what inside the panel;
 //! - [`place`]: a place's live settings (phones, hours, …), checked as the sites read them;
 //! - [`pricing`]: a brand's price list, checked and priced as kitstart does, to the cent;
+//! - [`analytics`]: what PostHog is told of a lead's life, without PII;
 //! - [`notify`]: the Telegram rules, their messages and buttons, and how a delivery is retried;
 //! - [`booking`]: the booking providers and a place's choice of them, and a lead's booking
 //!   folded from its facts; [`phone`]: a phone number as the sites normalize it.
 
+pub mod analytics;
 pub mod booking;
 pub mod event;
 pub mod experiment;
@@ -24,7 +24,6 @@ pub mod fact;
 pub mod funnel;
 pub mod ids;
 pub mod lead;
-pub mod metrics;
 pub mod notify;
 pub mod phone;
 pub mod place;

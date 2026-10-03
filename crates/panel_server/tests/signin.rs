@@ -651,7 +651,7 @@ async fn leads_carry_their_flow_and_price() {
 }
 
 #[tokio::test]
-async fn the_counts_beside_the_funnel_and_the_experiments() {
+async fn the_retired_counts_are_still_taken_and_shown_nowhere() {
 	let db = TestDb::create().await;
 	let (app, fake, panel) = setup(&db).await;
 	fake.with(|f| {
@@ -661,7 +661,8 @@ async fn the_counts_beside_the_funnel_and_the_experiments() {
 	let mut b = Browser::default();
 	b.sign_in(&app, &fake, None).await;
 
-	// Counts as the import journals them, sent here through a key of kind posthog.
+	// What the retired import journaled up to v0.3, sent through a key of kind posthog: still
+	// registered, so a journal holding them rebuilds, and nothing on any screen.
 	let secret = panel
 		.add_source("posthog-test", SourceKind::Posthog, [BrandId::parse("aquafix").unwrap()].into())
 		.await
@@ -672,82 +673,33 @@ async fn the_counts_beside_the_funnel_and_the_experiments() {
 	let now = Timestamp::now();
 	let day = now.to_zoned(jiff::tz::TimeZone::UTC).date();
 	let at = day.to_zoned(jiff::tz::TimeZone::UTC).unwrap().timestamp();
-	let count = |r#type: &str, location: Option<&str>, properties: Value| {
-		let subject = match location {
-			Some(l) => json!({"brandId": "aquafix", "locationId": l}),
-			None => json!({"brandId": "aquafix"}),
-		};
-		event(r#type, at, "posthog", subject, properties)
-	};
-	let arm = |experiment: &str, variant: &str, exposures: u64, leads: u64, phone: u64| {
-		count(
-			"experiment.metrics",
-			None,
-			json!({"day": day.to_string(), "experiment": experiment, "variant": variant, "exposures": exposures, "leads": leads, "phone": phone, "revision": 1}),
-		)
-	};
 	let events = [
-		count("site.metrics", Some("lyon-2"), json!({"day": day.to_string(), "source": "gbp", "visits": 30, "revision": 1})),
-		count(
-			"contact.metrics",
-			Some("lyon-2"),
-			json!({"day": day.to_string(), "channel": "whatsapp", "intents": 4, "revision": 1}),
+		event(
+			"site.metrics",
+			at,
+			"posthog",
+			json!({"brandId": "aquafix", "locationId": "lyon-2"}),
+			json!({"day": day.to_string(), "source": "gbp", "visits": 30, "revision": 1}),
 		),
-		// 40 page views an arm: no difference is shown, however far apart.
-		arm("hero", "a", 40, 1, 0),
-		arm("hero", "b", 40, 9, 0),
-		// Enough page views, but the interval holds zero.
-		arm("quote_single_step", "a", 500, 10, 5),
-		arm("quote_single_step", "b", 500, 14, 4),
-		// Apart.
-		arm("cta", "control", 1000, 20, 0),
-		arm("cta", "bold", 1000, 60, 0),
+		event(
+			"experiment.metrics",
+			at,
+			"posthog",
+			json!({"brandId": "aquafix"}),
+			json!({"day": day.to_string(), "experiment": "hero", "variant": "a", "exposures": 40, "revision": 1}),
+		),
 	];
 	let got = panel.ingest(sign("posthog-test", &secret, &events, now).batch(), now).await.unwrap();
 	assert!(got.iter().all(|v| v.outcome == panel::Outcome::Accepted { unregistered: false }), "{got:?}");
+	let rebuilt = panel.rebuild_projections().await.unwrap();
+	assert_eq!((rebuilt.registered, rebuilt.invalid), (2, 0));
 
 	let funnel = b.get(&app, "/api/v1/funnel").await;
 	assert_eq!(funnel.status, StatusCode::OK, "{}", funnel.body);
-	assert_eq!(funnel.body["aggregate_source"]["source"], "posthog");
-	assert_eq!(funnel.body["aggregate_source"]["imported_at"], Value::Null, "nothing imported by this panel yet");
-	let stages = &funnel.body["aggregate"]["stages"];
-	assert_eq!((stages[0]["stage"].as_str(), stages[0]["total"].as_u64()), (Some("site.visit"), Some(30)));
-	assert_eq!(stages[0]["by_source"], json!({"gbp": 30}));
-	assert_eq!(stages[0]["days"], json!([{"day": day.to_string(), "n": 30}]));
-	assert_eq!(stages[1]["by_channel"], json!({"phone": 0, "whatsapp": 4, "form_open": 0, "booking": 0}));
-	assert_eq!(funnel.body["stages"][0]["reached"], 0, "the personal stages are the leads', untouched by visits");
+	assert!(funnel.body.get("aggregate").is_none() && funnel.body.get("aggregate_source").is_none(), "{}", funnel.body);
 	let sliced = b.get(&app, "/api/v1/funnel?by=location").await;
-	let rows = sliced.body["locations"].as_array().unwrap();
-	assert_eq!(rows.len(), 1, "a location with visits and no lead is a row too: {}", sliced.body);
-	assert_eq!((rows[0]["location"].as_str(), rows[0]["aggregate"]["stages"][0]["total"].as_u64()), (Some("lyon-2"), Some(30)));
-
-	let exp = b.get(&app, "/api/v1/experiments?brand=aquafix").await;
-	assert_eq!(exp.status, StatusCode::OK, "{}", exp.body);
-	assert_eq!((exp.body["min_exposures"].as_u64(), exp.body["interval"].as_str()), (Some(100), Some("newcombe_hybrid_score")));
-	let by_name = |name: &str| exp.body["experiments"].as_array().unwrap().iter().find(|e| e["experiment"] == name).unwrap().clone();
-	let hero = by_name("hero");
-	assert_eq!((hero["control"].as_str(), hero["variants"][0]["variant"].as_str()), (Some("a"), Some("a")));
-	assert_eq!(hero["variants"][0]["vs_control"], Value::Null);
-	assert_eq!(hero["variants"][1]["rates"]["lead"], json!({"n": 9, "of": 40, "percent": 23, "small_sample": false}));
-	assert_eq!(
-		hero["variants"][1]["vs_control"]["lead"],
-		json!({"difference": null, "insufficient": true, "reason": "small_sample"})
-	);
-	let quote = by_name("quote_single_step");
-	let contact = &quote["variants"][1]["vs_control"]["contact"];
-	assert_eq!((contact["insufficient"].as_bool(), contact["reason"].as_str()), (Some(true), Some("interval_includes_zero")));
-	assert!(
-		contact["difference"]["low"].as_f64().unwrap() < 0.0 && contact["difference"]["high"].as_f64().unwrap() > 0.0,
-		"{contact}"
-	);
-	let cta = by_name("cta");
-	assert_eq!(cta["control"], "control");
-	let lead = &cta["variants"][1]["vs_control"]["lead"];
-	assert_eq!((lead["insufficient"].as_bool(), lead["reason"].clone()), (Some(false), Value::Null), "{lead}");
-	assert_eq!(lead["difference"]["estimate"], 4.0);
-	assert_eq!(b.get(&app, "/api/v1/experiments?brand=Aquafix").await.status, StatusCode::BAD_REQUEST);
-	assert_eq!(b.get(&app, "/api/v1/experiments?winner=b").await.status, StatusCode::BAD_REQUEST);
-	assert_eq!(b.get(&app, "/api/v1/experiments?brand=vifnet").await.body["experiments"], json!([]));
+	assert_eq!(sliced.body["locations"], json!([]), "visits make no row any more");
+	assert_eq!(b.get(&app, "/api/v1/places").await.body["places"], json!([]), "nor a place");
 }
 
 #[tokio::test]

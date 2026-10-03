@@ -8,7 +8,7 @@ use jiff::Timestamp;
 
 use crate::{
 	event::{SourceKind, Subject},
-	fact::{Fact, LeadChannel, LeadOffer, LeadSuspect},
+	fact::{AnalyticsId, Fact, LeadChannel, LeadOffer, LeadSuspect},
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 };
 
@@ -55,7 +55,9 @@ impl Stage {
 			// contacted is still waiting for its call.
 			Fact::CallAttempted
 			| Fact::CallLogged { .. }
-			| Fact::Metric(_)
+			| Fact::RetiredCount
+			| Fact::ExperimentsDeclared(_)
+			| Fact::ExperimentConfigured { .. }
 			| Fact::BookingRequested { .. }
 			| Fact::BookingCreated { .. }
 			| Fact::BookingCanceled { .. }
@@ -138,10 +140,14 @@ pub struct LeadState {
 	/// Its flow and the price it was shown, from its `lead.created`; empty when that said
 	/// nothing of them, or was never registered.
 	pub offer: LeadOffer,
+	/// The landing's analytics id from its `lead.created`: who the lead is in PostHog.
+	pub analytics_id: Option<AnalyticsId>,
 	/// Its `lead.created` was typed in by a person (spec §10a).
 	pub manual: bool,
 	pub last_event_id: EventId,
 	pub last_event_at: Timestamp,
+	/// The `lead.created` that counts (the first journaled); `None` while there is none.
+	pub creation: Option<EventId>,
 }
 
 /// Folds a lead's facts into its state; `None` for no facts. Every event must be about the
@@ -177,9 +183,11 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		channel: None,
 		suspect: None,
 		offer: LeadOffer::default(),
+		analytics_id: None,
 		manual: false,
 		last_event_id: first.id,
 		last_event_at: first.occurred_at,
+		creation,
 	};
 	for e in ordered {
 		debug_assert_eq!(e.subject.brand_id, state.brand_id, "fold is per lead");
@@ -189,10 +197,18 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		if let Some(job) = &e.subject.job_id {
 			state.job_id = Some(job.clone());
 		}
-		if let Fact::LeadCreated { channel, suspect, offer, .. } = &e.fact {
+		if let Fact::LeadCreated {
+			channel,
+			suspect,
+			offer,
+			analytics_id,
+			..
+		} = &e.fact
+		{
 			state.channel = Some(*channel);
 			state.suspect = *suspect;
 			state.offer = offer.clone();
+			state.analytics_id = analytics_id.clone();
 			state.manual = e.source_kind.is_manual();
 		}
 		if let Some(reached) = Stage::of(&e.fact) {
@@ -248,6 +264,7 @@ mod tests {
 			entered_by: None,
 			suspect: None,
 			offer: LeadOffer::default(),
+			analytics_id: None,
 		}
 	}
 
@@ -294,6 +311,7 @@ mod tests {
 					entered_by: Some("u1".into()),
 					suspect: None,
 					offer: LeadOffer::default(),
+					analytics_id: None,
 				},
 			),
 			ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None }),
@@ -331,6 +349,7 @@ mod tests {
 				entered_by: Some("op-1".into()),
 				suspect: None,
 				offer: LeadOffer::default(),
+				analytics_id: None,
 			},
 		);
 		let mut back_dated = ev(0, SourceKind::Site, created());
@@ -353,6 +372,7 @@ mod tests {
 				entered_by: None,
 				suspect: Some(LeadSuspect::TooFast),
 				offer: LeadOffer::default(),
+				analytics_id: None,
 			},
 		);
 		let s = fold(&[doubted.clone(), ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None })]).unwrap();
@@ -373,12 +393,34 @@ mod tests {
 				entered_by: None,
 				suspect: None,
 				offer: estimate.clone(),
+				analytics_id: None,
 			},
 		);
 		let mut again = ev(1, SourceKind::Site, created());
 		again.received_at = at(30);
 		let s = fold(&[again, priced, ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None })]).unwrap();
 		assert_eq!(s.offer, estimate, "a later creation saying nothing does not clear it, nor does progress");
+	}
+
+	#[test]
+	fn the_analytics_id_is_the_counting_creations() {
+		let with_id = |minutes, received, id: &str| {
+			let mut e = ev(
+				minutes,
+				SourceKind::Site,
+				Fact::LeadCreated {
+					channel: LeadChannel::Form,
+					entered_by: None,
+					suspect: None,
+					offer: LeadOffer::default(),
+					analytics_id: Some(AnalyticsId::parse(id).unwrap()),
+				},
+			);
+			e.received_at = at(received);
+			e
+		};
+		let s = fold(&[with_id(1, 30, "later"), with_id(0, 0, "first"), ev(5, SourceKind::Panel, Fact::JobWon)]).unwrap();
+		assert_eq!(s.analytics_id.unwrap().as_str(), "first", "a later creation cannot take the lead over in PostHog");
 	}
 
 	#[test]

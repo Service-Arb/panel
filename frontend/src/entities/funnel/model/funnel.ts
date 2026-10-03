@@ -1,8 +1,5 @@
 import { type Infer, arrayOf, nullable, num, object, oneOf, str } from "@/shared/lib/parse";
-import { aggregateSourceParser } from "@/shared/lib/aggregate-source";
 import { shareParser } from "@/shared/lib/share";
-
-import { aggregateParser } from "./aggregate";
 
 /** The personal stages 5–10 of the spec, as `panel_core::funnel::Totals::steps` lists them. */
 export const FUNNEL_STAGES = ["created", "contacted", "quoted", "won", "completed", "paid"] as const;
@@ -25,30 +22,28 @@ export type Paid = Infer<typeof paidParser>;
 
 /**
  * A slice's own numbers — the whole funnel's, or one location's: the per-lead
- * stages 5–10 and, beside them and never divided by them, the per-day 3–4.
+ * stages 5–10. Site visits and contact intents (3–4) are PostHog's, read there.
  */
 const slice = {
   stages: arrayOf(stepParser),
-  aggregate: aggregateParser,
   lost: shareParser,
   manual: shareParser,
   payments: arrayOf(paidParser),
 };
 
-export const funnelParser = object({ from: str, to: str, brand: nullable(str), min_sample: num, aggregate_source: aggregateSourceParser, ...slice });
+export const funnelParser = object({ from: str, to: str, brand: nullable(str), min_sample: num, ...slice });
 export type Funnel = Infer<typeof funnelParser>;
 
 /** One location's slice; `location` is null for the leads that name none. */
 const locationSliceParser = object({ brand: str, location: nullable(str), ...slice });
 export type LocationSlice = Infer<typeof locationSliceParser>;
 
-/** `GET /funnel?by=location`: a row per location with leads or visits in the window, none for an empty one. */
+/** `GET /funnel?by=location`: a row per location with leads in the window, none for an empty one. */
 export const funnelByLocationParser = object({
   from: str,
   to: str,
   brand: nullable(str),
   min_sample: num,
-  aggregate_source: aggregateSourceParser,
   by: oneOf(["location"]),
   locations: arrayOf(locationSliceParser),
 });

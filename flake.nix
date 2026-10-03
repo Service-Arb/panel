@@ -129,13 +129,14 @@
             "SENTRY_DSN"
             "RP_CLIENT_SECRET_SA"
             "TELEGRAM_BOT_TOKEN"
-            "POSTHOG_PERSONAL_API_KEY"
             "GOOGLE_OAUTH_CLIENT_SECRET"
             "GOOGLE_CALENDAR_REFRESH_TOKEN_AQUAFIX"
             "GOOGLE_CALENDAR_REFRESH_TOKEN_VIFNET"
           ];
-          # without POSTHOG_PROJECT_ID and POSTHOG_PERSONAL_API_KEY the hourly import is off
-          # (serve warns); one without the other fails the boot
+          # POSTHOG_PROJECT_API_KEY (phc_, public like the landings', not a secret; + POSTHOG_HOST):
+          # serve sends the leads' life to PostHog; unset, nothing is sent (serve warns).
+          # POSTHOG_PROJECT_ID (+ POSTHOG_APP_HOST): the experiments link to their funnels in
+          # PostHog; unset, no links. Links are opened by the browser: no egress for them.
           # Google Calendar booking pull (docs/ARCHITECTURE.md, Booking): the OAuth client both or
           # neither; a brand's calendar is pulled only with its refresh token
           # (`panel booking google-authorize <brand>` makes one); its calendar id defaults to
@@ -145,9 +146,10 @@
             "TELEGRAM_BOT_TOKEN"
             "TELEGRAM_BOT_USERNAME"
             "TELEGRAM_LOCALE"
-            "POSTHOG_API_HOST"
+            "POSTHOG_PROJECT_API_KEY"
+            "POSTHOG_HOST"
             "POSTHOG_PROJECT_ID"
-            "POSTHOG_PERSONAL_API_KEY"
+            "POSTHOG_APP_HOST"
             "GOOGLE_OAUTH_CLIENT_ID"
             "GOOGLE_OAUTH_CLIENT_SECRET"
             "GOOGLE_CALENDAR_SYNC_MINUTES"
@@ -167,9 +169,9 @@
           egress = {
             # concierge's gRPC, at the address CONCIERGE_GRPC_ADDR names
             grpcEnv = [ "CONCIERGE_GRPC_ADDR" ];
-            # the Bot API; PostHog's query API (POSTHOG_API_HOST's default — follow it if it
-            # is pointed elsewhere; the capture host us.i.posthog.com is not this one)
-            hosts = [ "api.telegram.org:443" "us.posthog.com:443" ];
+            # the Bot API; PostHog's capture host (POSTHOG_HOST's default — follow it if it is
+            # pointed elsewhere); Google's token endpoint and Calendar API for the booking pull
+            hosts = [ "api.telegram.org:443" "us.i.posthog.com:443" "oauth2.googleapis.com:443" "www.googleapis.com:443" ];
           };
         };
 
