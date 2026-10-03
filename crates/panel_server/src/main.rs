@@ -11,6 +11,7 @@ use eyre::WrapErr;
 use panel::{
 	Panel,
 	place::{Expected, PlaceError, PlaceView},
+	pricing::{PricingError, PricingView},
 	seal::DataKey,
 	store::Store,
 	telegram::Notifier,
@@ -63,6 +64,9 @@ enum Cmd {
 	/// A place's live settings, what the sites lay over their baked config.
 	#[command(subcommand)]
 	Place(PlaceCmd),
+	/// A brand's pricing, what the sites price estimates and fixed jobs by.
+	#[command(subcommand)]
+	Pricing(PricingCmd),
 	/// Print a fresh PANEL_DATA_KEY.
 	GenDataKey,
 }
@@ -101,6 +105,22 @@ enum PlaceCmd {
 	Withdraw { brand: String, slug: String },
 	/// Put a withdrawn place back.
 	Restore { brand: String, slug: String },
+}
+
+#[derive(Subcommand)]
+enum PricingCmd {
+	/// The model as saved, its locales, and who saved it when.
+	Show { brand: String },
+	/// The last changes, newest first.
+	History { brand: String },
+	/// Save a model (kitstart's JSON, from a file or `-` for stdin), checked as the editor's is.
+	/// Journaled as `by = cli`.
+	Set { brand: String, file: std::path::PathBuf },
+	/// Take the model off the sites: they go back to their baked one. Journaled as `by = cli`.
+	Remove { brand: String },
+	/// The locales the brand's sites speak, split by commas (`fr,en`, the default): every label
+	/// of its model must be in each.
+	Locales { brand: String, locales: String },
 }
 
 #[derive(Subcommand)]
@@ -217,6 +237,7 @@ async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSign
 		}
 		Cmd::Source(cmd) => source(&connect().await?, cmd).await,
 		Cmd::Place(cmd) => place(&connect().await?, cmd).await,
+		Cmd::Pricing(cmd) => pricing(&connect().await?, cmd).await,
 		Cmd::GenDataKey => {
 			println!("{}", DataKey::generate_hex()?);
 			Ok(())
@@ -338,6 +359,65 @@ async fn place(panel: &Panel, cmd: PlaceCmd) -> eyre::Result<()> {
 		}
 	};
 	print_place(&view)
+}
+
+fn print_pricing(v: &PricingView) -> eyre::Result<()> {
+	let locales = v.locales.join(",");
+	match (v.updated_at, &v.updated_by, &v.model) {
+		(Some(at), Some(by), Some(_)) => println!("{}  locales {locales}; saved {at} by {by}", v.brand),
+		(Some(at), Some(by), None) => println!("{}  locales {locales}; removed {at} by {by}, the sites serve their baked model", v.brand),
+		_ => println!("{}  locales {locales}; never set, the sites serve their baked model", v.brand),
+	}
+	if let Some(model) = &v.model {
+		println!("{}", serde_json::to_string_pretty(model)?);
+	}
+	Ok(())
+}
+
+/// A brand's pricing change refused, said problem by problem.
+fn refused_pricing(e: PricingError) -> eyre::Report {
+	match e {
+		PricingError::Invalid(problems) => {
+			let lines: Vec<String> = problems.iter().map(|p| format!("  {p}")).collect();
+			eyre::eyre!("invalid pricing model:\n{}", lines.join("\n"))
+		}
+		PricingError::Stale(_) => eyre::eyre!("the pricing changed meanwhile; run it again"),
+		PricingError::Internal(e) => e,
+	}
+}
+
+async fn pricing(panel: &Panel, cmd: PricingCmd) -> eyre::Result<()> {
+	let now = jiff::Timestamp::now();
+	let cli = Editor::Cli;
+	let view = match cmd {
+		PricingCmd::Show { brand } => panel.pricing(&BrandId::parse(&brand)?).await?,
+		PricingCmd::History { brand } => {
+			for c in panel.pricing_history(&BrandId::parse(&brand)?).await? {
+				let what = match (&c.valid_from, c.needs) {
+					(Some(from), Some(n)) => format!("valid from {from}, {n} needs"),
+					_ => "removed".to_owned(),
+				};
+				println!("{}  {:<6}  {:<24}  {what}  {}", c.at, c.kind.as_str(), c.by, c.id);
+			}
+			return Ok(());
+		}
+		PricingCmd::Set { brand, file } => {
+			let brand = BrandId::parse(&brand)?;
+			let raw = if file.as_os_str() == "-" {
+				std::io::read_to_string(std::io::stdin()).wrap_err("reading the model from stdin")?
+			} else {
+				std::fs::read_to_string(&file).wrap_err_with(|| format!("reading the model at {}", file.display()))?
+			};
+			let model: serde_json::Value = serde_json::from_str(&raw).wrap_err("the model is not JSON")?;
+			panel.set_pricing(&cli, &brand, &model, Expected::Any, now).await.map_err(refused_pricing)?
+		}
+		PricingCmd::Remove { brand } => panel.remove_pricing(&cli, &BrandId::parse(&brand)?, Expected::Any, now).await.map_err(refused_pricing)?,
+		PricingCmd::Locales { brand, locales } => {
+			let locales = panel_core::pricing::parse_locales(locales.split(','))?;
+			panel.set_brand_locales(&cli, &BrandId::parse(&brand)?, &locales, now).await?
+		}
+	};
+	print_pricing(&view)
 }
 
 /// Who signs people in.

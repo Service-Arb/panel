@@ -11,6 +11,7 @@
 //!                       the Telegram buttons, the PostHog import       → leads | lead | metrics | experiments
 //! Panel::rebuild_…      the projections replaced whole                 → resync
 //! place::edit, register a place's settings, withdrawn, registered      → places
+//! pricing               a brand's model saved or removed, its locales  → pricing
 //! add_source, revoke    the signing keys                               → sources
 //! telegram              linked, unlinked, blocked, rules               → telegram (its user only)
 //! sessions closed       logout, a sign-in replacing one, a refusal     → the sockets of that session end
@@ -45,6 +46,8 @@ pub enum Topic {
 	Lead,
 	/// A place's settings, withdrawn or restored, or registered.
 	Places,
+	/// A brand's pricing: its model saved or removed, or its locales.
+	Pricing,
 	/// The signing keys: admins only, as `GET /sources` is.
 	Sources,
 	/// The PostHog counts of stages 3–4.
@@ -61,6 +64,7 @@ impl Topic {
 			Self::Leads => "leads",
 			Self::Lead => "lead",
 			Self::Places => "places",
+			Self::Pricing => "pricing",
 			Self::Sources => "sources",
 			Self::Metrics => "metrics",
 			Self::Experiments => "experiments",
@@ -84,12 +88,12 @@ pub struct Change {
 
 impl Change {
 	/// Whether `user`, of `role`, may be told of it: exactly when they may read what changed.
-	/// Every admitted role reads leads, places and the counts, for every brand (spec §5.4: the
+	/// Every admitted role reads leads, places, pricing and the counts, for every brand (spec §5.4: the
 	/// panel's grant is `allocation:service_arb`, with no narrower scope); sources are an
 	/// admin's; a Telegram link is its own user's.
 	pub fn visible_to(&self, user: Uuid, role: Role) -> bool {
 		match self.topic {
-			Topic::Leads | Topic::Lead | Topic::Places | Topic::Metrics | Topic::Experiments => true,
+			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Metrics | Topic::Experiments => true,
 			Topic::Sources => role.manages_sources(),
 			Topic::Telegram => self.user == Some(user),
 		}
@@ -208,7 +212,7 @@ mod tests {
 	#[test]
 	fn who_is_told() {
 		let (ann, bob) = (Uuid::from_u128(1), Uuid::from_u128(2));
-		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Metrics, Topic::Experiments] {
+		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Pricing, Topic::Metrics, Topic::Experiments] {
 			assert!(change(topic, None).visible_to(ann, Role::Operator), "{topic:?}");
 			assert!(change(topic, None).visible_to(ann, Role::Admin), "{topic:?}");
 		}

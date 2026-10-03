@@ -14,9 +14,11 @@
 //!                                                              409 {"error": "exists"}
 //! GET  /api/internal/brands/{brand}/locations/{slug}?locale    PlaceLive, `{}` when none or
 //!                                                              unknown; 404 only when withdrawn
+//!                                                              (a brand's pricing beside it:
+//!                                                              `crate::pricing`)
 //! ```
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
 	Extension, Json, Router,
@@ -38,7 +40,8 @@ use panel_core::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tower::{BoxError, ServiceBuilder};
+use tokio::sync::Semaphore;
+use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
@@ -62,16 +65,31 @@ pub fn writes() -> Router<Panel> {
 		.route("/places/{brand}/{slug}/restore", post(restore))
 }
 
-/// The sites' read, mounted whether or not signing in is configured. Bounded like ingest; a
-/// site answered 503 serves its baked place, so shedding costs a site nothing.
+/// The sites' reads — a place's settings, a brand's pricing — mounted whether or not signing
+/// in is configured. Bounded like ingest, with one budget for both (the same sites call both);
+/// a site answered 503 serves its baked place, so shedding costs a site nothing. The pricing
+/// route is answered `{}` instead of a 503: its contract has no 5xx.
 pub fn internal() -> Router<Panel> {
-	let layers = ServiceBuilder::new()
+	let permits = Arc::new(Semaphore::new(INTERNAL_CONCURRENT));
+	let places = ServiceBuilder::new()
 		.layer(HandleErrorLayer::new(|_: BoxError| async { (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "busy" }))) }))
 		.load_shed()
-		.concurrency_limit(32)
-		.layer(TimeoutLayer::with_status_code(StatusCode::SERVICE_UNAVAILABLE, Duration::from_secs(3)));
-	Router::new().route("/api/internal/brands/{brand}/locations/{slug}", get(live).layer(layers))
+		.layer(GlobalConcurrencyLimitLayer::with_semaphore(permits.clone()))
+		.layer(TimeoutLayer::with_status_code(StatusCode::SERVICE_UNAVAILABLE, INTERNAL_TIMEOUT));
+	// Shed only: the handler bounds its own time, and answers `{}` past it.
+	let pricing = ServiceBuilder::new()
+		.layer(HandleErrorLayer::new(|_: BoxError| async { Json(json!({})) }))
+		.load_shed()
+		.layer(GlobalConcurrencyLimitLayer::with_semaphore(permits));
+	Router::new()
+		.route("/api/internal/brands/{brand}/locations/{slug}", get(live).layer(places))
+		.route("/api/internal/brands/{brand}/pricing", get(crate::pricing::live).layer(pricing))
 }
+
+/// The sites' reads at once, places and pricing together.
+const INTERNAL_CONCURRENT: usize = 32;
+/// kitstart gives up after 3 s.
+const INTERNAL_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Why a change to a place failed, in the contract's shapes.
 enum PlaceApiError {
