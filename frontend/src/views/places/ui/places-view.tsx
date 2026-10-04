@@ -4,8 +4,9 @@ import { Settled, Skeleton } from "@evinvest/uikit";
 import { useState } from "react";
 
 import { fetchFunnelByLocation } from "@/entities/funnel";
-import { type PlaceKey, brandsOf, fetchPlaces } from "@/entities/place";
+import { type PlaceKey, fetchPlaces } from "@/entities/place";
 import { managesPlaces, useMe } from "@/entities/session";
+import { fetchSources } from "@/entities/source";
 import { AddPlaceButton } from "@/features/add-place";
 import { type Period, rangeOf } from "@/features/funnel-filters";
 import { useT } from "@/shared/i18n";
@@ -16,6 +17,7 @@ import { ErrorState } from "@/shared/ui/error-state";
 import { PanelOverlay } from "@/shared/ui/panel-overlay";
 import { ScreenFrame } from "@/shared/ui/screen-frame";
 
+import { offeredBrands } from "../model/brands";
 import { type PlaceRow, placeRows } from "../model/rows";
 import { PlaceCard } from "./place-card";
 import { PlaceSettingsPanel } from "./place-settings-panel";
@@ -40,8 +42,12 @@ export function PlacesView() {
   const data = useResource(
     `places:${range.from}:${range.to}:${version}`,
     async () => {
-      const [funnel, places] = await Promise.all([fetchFunnelByLocation({ ...range, brand: null }), fetchPlaces()]);
-      return { rows: placeRows(funnel.locations, places), minSample: funnel.min_sample, brands: brandsOf(places) };
+      const [funnel, places, sources] = await Promise.all([
+        fetchFunnelByLocation({ ...range, brand: null }),
+        fetchPlaces(),
+        managesPlaces(role) ? fetchSources() : Promise.resolve([]),
+      ]);
+      return { rows: placeRows(funnel.locations, places), minSample: funnel.min_sample, brands: offeredBrands(places, sources) };
     },
     `places:${range.from}:${range.to}`,
     { live: ["places", "leads", "lead"] },
