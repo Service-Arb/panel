@@ -14,7 +14,8 @@ import { useButtonSize, useControlSize } from "@/shared/ui/touch";
 
 /**
  * Admin only: registers a point no lead or visit has named yet, so its site
- * data can be set before the first lead. The brand is one the panel knows.
+ * data can be set before the first lead. The brand is one the panel knows: a place's,
+ * or one an active source writes for.
  */
 export function AddPlaceButton({ brands, onAdded }: { brands: string[]; onAdded: (key: PlaceKey) => void }) {
   const t = useT();
