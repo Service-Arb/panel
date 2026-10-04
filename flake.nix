@@ -188,7 +188,14 @@
             # /bin/panel, for `kubectl exec … panel source add` and the like
             contents = [ bin ];
             # the production guards (`#[required_in("production")]`) are armed wherever it runs
-            env = { APP_ENV = "production"; PANEL_DB_PATH = dbPath; };
+            # PostHog: the project the landings send to (Cloud US 614067, their
+            # deploy/config.nix); the phc_ token is a public write-only ingest key
+            env = {
+              APP_ENV = "production";
+              PANEL_DB_PATH = dbPath;
+              POSTHOG_PROJECT_API_KEY = "phc_sBwWEgdgockVmfyucBRkTTo6iZ4Y2eApSGorD22WLzj3";
+              POSTHOG_PROJECT_ID = "614067";
+            };
             imageEnv = [ "PANEL_WEB_DIR=${frontend}" ];
           };
         };
