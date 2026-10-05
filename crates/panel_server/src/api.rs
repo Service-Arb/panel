@@ -26,6 +26,7 @@ use panel_core::{
 	funnel::{MIN_SAMPLE, Share},
 	ids::{BrandId, JobId, LeadId, LocationId},
 	lead::Stage,
+	role::Permission,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -157,7 +158,7 @@ fn allow(ok: bool) -> ApiResult<()> {
 
 /// The point where the role decides whether PII is shown (§5.4).
 fn pii(caller: &Caller) -> Pii {
-	if caller.role.sees_pii() { Pii::Reveal } else { Pii::Withhold }
+	if caller.role.may(Permission::SeesPii) { Pii::Reveal } else { Pii::Withhold }
 }
 
 fn ids(brand: &str, lead: &str) -> ApiResult<(BrandId, LeadId)> {
@@ -210,24 +211,8 @@ fn day_start(d: Date) -> ApiResult<Timestamp> {
 
 // ── /me ─────────────────────────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
-struct MeDto {
-	user_id: String,
-	role: &'static str,
-	email: String,
-	preferred_name: String,
-	/// `true` only under `PANEL_DEV_SIGN_IN` (development, loopback).
-	dev_sign_in: bool,
-}
-
-async fn me(Extension(caller): Extension<Caller>) -> Json<MeDto> {
-	Json(MeDto {
-		user_id: caller.user_id.to_string(),
-		role: caller.role.as_str(),
-		email: caller.email,
-		preferred_name: caller.preferred_name,
-		dev_sign_in: caller.dev_sign_in,
-	})
+async fn me(Extension(caller): Extension<Caller>) -> Json<Caller> {
+	Json(caller)
 }
 
 // ── leads ───────────────────────────────────────────────────────────────────────────────
@@ -463,7 +448,7 @@ struct CreateLead {
 }
 
 async fn create_lead(State(panel): State<Panel>, Extension(caller): Extension<Caller>, headers: HeaderMap, b: Result<Json<CreateLead>, JsonRejection>) -> ApiResult<Response> {
-	allow(caller.role.edits_leads())?;
+	allow(caller.role.may(Permission::EditsLeads))?;
 	let key = idempotency_key(&headers)?;
 	let b = body(b)?;
 	let new = NewLead {
@@ -502,7 +487,7 @@ async fn stage(
 	headers: HeaderMap,
 	b: Result<Json<StageBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	allow(caller.role.edits_leads())?;
+	allow(caller.role.may(Permission::EditsLeads))?;
 	let key = idempotency_key(&headers)?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let to = match body(b)? {
@@ -522,7 +507,7 @@ async fn stage(
 }
 
 async fn attempt_call(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path((brand, lead)): Path<(String, String)>) -> ApiResult<Response> {
-	allow(caller.role.edits_leads())?;
+	allow(caller.role.may(Permission::EditsLeads))?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let attempt = panel.attempt_call(Actor(caller.user_id), &brand, &lead, Timestamp::now()).await?;
 	Ok(created(json!({ "attempt_id": attempt.raw().to_string() })))
@@ -540,7 +525,7 @@ async fn call_outcome(
 	Path((brand, lead, attempt)): Path<(String, String, String)>,
 	b: Result<Json<OutcomeBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	allow(caller.role.edits_leads())?;
+	allow(caller.role.may(Permission::EditsLeads))?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let attempt = Uuid::parse_str(&attempt).map_err(|_| ApiError::NotFound)?;
 	let call = CallOutcome { attempt, outcome: body(b)?.outcome };
@@ -563,7 +548,7 @@ async fn payment(
 	headers: HeaderMap,
 	b: Result<Json<PaymentBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	allow(caller.role.edits_leads())?;
+	allow(caller.role.may(Permission::EditsLeads))?;
 	let key = idempotency_key(&headers)?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let b = body(b)?;
@@ -748,7 +733,7 @@ struct SourceDto {
 }
 
 async fn sources(State(panel): State<Panel>, Extension(caller): Extension<Caller>) -> ApiResult<Json<Value>> {
-	allow(caller.role.manages_sources())?;
+	allow(caller.role.may(Permission::ManagesSources))?;
 	let sources: Vec<SourceDto> = panel
 		.store()
 		.sources()
@@ -774,7 +759,7 @@ struct AddSource {
 }
 
 async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Caller>, b: Result<Json<AddSource>, JsonRejection>) -> ApiResult<Response> {
-	allow(caller.role.manages_sources())?;
+	allow(caller.role.may(Permission::ManagesSources))?;
 	let b = body(b)?;
 	let kind: SourceKind = b.kind.parse()?;
 	// The panel's own events carry no key (`key_id` NULL): a key of kind panel would only let
@@ -800,7 +785,7 @@ async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Cal
 }
 
 async fn revoke_source(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path(key_id): Path<String>) -> ApiResult<StatusCode> {
-	allow(caller.role.manages_sources())?;
+	allow(caller.role.may(Permission::ManagesSources))?;
 	if !panel.revoke_source(&key_id).await? {
 		return Err(ApiError::NotFound);
 	}
@@ -824,7 +809,7 @@ mod tests {
 
 	#[test]
 	fn operators_do_not_manage_sources() {
-		assert!(allow(Role::Operator.manages_sources()).is_err());
-		assert!(allow(Role::Admin.manages_sources()).is_ok());
+		assert!(allow(Role::Operator.may(Permission::ManagesSources)).is_err());
+		assert!(allow(Role::Admin.may(Permission::ManagesSources)).is_ok());
 	}
 }

@@ -1,17 +1,6 @@
 import { ROUTES } from "@/shared/config/routes";
 
-/** The roles the panel admits (spec §5.4); viewer is gone (§11). */
-export const ROLES = ["operator", "admin"] as const;
-export type Role = (typeof ROLES)[number];
-
-export interface Me {
-  user_id: string;
-  role: Role;
-  email: string;
-  preferred_name: string;
-  /** The backend signs anyone in without concierge (local work only); the shell says so loudly. */
-  dev_sign_in: boolean;
-}
+import type { Role } from "./generated";
 
 /**
  * Where a person lands (spec §10): an operator's job is the queue of new leads,
@@ -19,23 +8,4 @@ export interface Me {
  */
 export function startRouteFor(role: Role): string {
   return role === "operator" ? `${ROUTES.leads}?stage=created` : ROUTES.overview;
-}
-
-export function managesSources(role: Role): boolean {
-  return role === "admin";
-}
-
-/** Withdrawing, restoring and adding a place by hand: an admin's (phones route money). */
-export function managesPlaces(role: Role): boolean {
-  return role === "admin";
-}
-
-/** Editing and taking off a brand's prices: an admin's (a site quotes from them); an operator reads them. */
-export function managesPricing(role: Role): boolean {
-  return role === "admin";
-}
-
-/** Switching a landing's experiment off and moving its traffic: an admin's (it changes what visitors see). */
-export function managesExperiments(role: Role): boolean {
-  return role === "admin";
 }

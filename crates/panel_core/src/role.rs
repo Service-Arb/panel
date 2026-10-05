@@ -7,13 +7,38 @@
 
 use std::str::FromStr;
 
+use serde::Serialize;
+use strum::EnumIter;
+use ts_rs::TS;
+
 use crate::Invalid;
 
 /// Ordered by what they may do: each role may do everything the one before it may.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, EnumIter, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
 	Operator,
 	Admin,
+}
+
+/// What a role may do (spec §5.4), [`Role::may`]. Every role reads everything it is let into.
+#[derive(Clone, Copy, Debug, EnumIter, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Permission {
+	/// A lead's name and phone.
+	SeesPii,
+	/// Moving a lead through its stages, logging calls, entering payments.
+	EditsLeads,
+	/// Sources, their HMAC keys, and everyone's notification rules.
+	ManagesSources,
+	/// A place's live settings (its phones route the money), withdrawing and restoring it,
+	/// registering one by hand.
+	EditsPlaces,
+	/// A brand's price list (what its sites quote customers), and taking it off the sites.
+	EditsPricing,
+	/// A brand's experiments: switching one off, its weights, its holdout (what its sites
+	/// show whom).
+	EditsExperiments,
 }
 
 /// The org role the panel's Grafana gets through `X-WEBAUTH-ROLE` (spec §6).
@@ -48,52 +73,10 @@ impl Role {
 		}
 	}
 
-	/// A lead's name and phone. Every role works leads, so every role sees them.
-	pub fn sees_pii(self) -> bool {
-		match self {
-			Self::Operator | Self::Admin => true,
-		}
-	}
-
-	/// Moving a lead through its stages, logging calls, entering payments.
-	pub fn edits_leads(self) -> bool {
-		match self {
-			Self::Operator | Self::Admin => true,
-		}
-	}
-
-	/// Sources, their HMAC keys, and everyone's notification rules.
-	pub fn manages_sources(self) -> bool {
-		match self {
-			Self::Operator => false,
-			Self::Admin => true,
-		}
-	}
-
-	/// A place's live settings (its phones route the money), withdrawing and restoring it,
-	/// registering one by hand. Every role reads them.
-	pub fn edits_places(self) -> bool {
-		match self {
-			Self::Operator => false,
-			Self::Admin => true,
-		}
-	}
-
-	/// A brand's price list (what its sites quote customers), and taking it off the sites.
-	/// Every role reads it and previews a price.
-	pub fn edits_pricing(self) -> bool {
-		match self {
-			Self::Operator => false,
-			Self::Admin => true,
-		}
-	}
-
-	/// A brand's experiments: switching one off, its weights, its holdout (what its sites
-	/// show whom). Every role reads them.
-	pub fn edits_experiments(self) -> bool {
-		match self {
-			Self::Operator => false,
-			Self::Admin => true,
+	pub fn may(self, what: Permission) -> bool {
+		self >= match what {
+			Permission::SeesPii | Permission::EditsLeads => Self::Operator,
+			Permission::ManagesSources | Permission::EditsPlaces | Permission::EditsPricing | Permission::EditsExperiments => Self::Admin,
 		}
 	}
 
@@ -124,19 +107,20 @@ mod tests {
 	/// The table of spec §5.4, row by row.
 	#[test]
 	fn the_spec_table() {
+		use Permission::*;
 		let table = [
-			(Role::Operator, [true, true, false, false], GrafanaRole::Viewer),
-			(Role::Admin, [true, true, true, true], GrafanaRole::Editor),
+			(Role::Operator, [true, true, false, false, false, false], GrafanaRole::Viewer),
+			(Role::Admin, [true, true, true, true, true, true], GrafanaRole::Editor),
 		];
-		for (role, [pii, edits, sources, places], grafana) in table {
+		for (role, may, grafana) in table {
 			assert_eq!(
-				[role.sees_pii(), role.edits_leads(), role.manages_sources(), role.edits_places()],
-				[pii, edits, sources, places],
+				[SeesPii, EditsLeads, ManagesSources, EditsPlaces, EditsPricing, EditsExperiments].map(|p| role.may(p)),
+				may,
 				"{role:?}"
 			);
 			assert_eq!(role.grafana(), grafana);
-			assert_eq!(role.edits_pricing(), places, "pricing is edited by whoever edits places");
 			assert_eq!(role.as_str().parse::<Role>().unwrap(), role);
+			assert_eq!(serde_json::to_value(role).unwrap(), role.as_str(), "the wire's word is the parsed one");
 		}
 		assert!("viewer".parse::<Role>().is_err(), "the owner dropped it (2026-09-30)");
 		assert!("owner".parse::<Role>().is_err());

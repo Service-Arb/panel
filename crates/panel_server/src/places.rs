@@ -37,6 +37,7 @@ use panel::{
 use panel_core::{
 	ids::{BrandId, LocationId},
 	place::{Editor, PlaceSettings},
+	role::Permission,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -142,7 +143,7 @@ fn ids(brand: &str, slug: &str) -> Result<(BrandId, LocationId), ApiError> {
 }
 
 fn admin(caller: &Caller) -> Result<(), ApiError> {
-	if caller.role.edits_places() { Ok(()) } else { Err(ApiError::Forbidden) }
+	if caller.role.may(Permission::EditsPlaces) { Ok(()) } else { Err(ApiError::Forbidden) }
 }
 
 /// Who the history names: the user's email, their id when concierge gave none.
@@ -161,7 +162,7 @@ fn body(v: PlaceView, caller: &Caller) -> Value {
 		"settings": v.settings.as_json(),
 		"updated_at": v.updated_at.map(|t| t.to_string()),
 		"updated_by": v.updated_by,
-		"can_edit": caller.role.edits_places(),
+		"can_edit": caller.role.may(Permission::EditsPlaces),
 	})
 }
 

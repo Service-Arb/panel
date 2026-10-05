@@ -29,7 +29,12 @@
 use std::time::Duration;
 
 use jiff::Timestamp;
-use panel_core::{fact::Fact, ids::BrandId, lead::Recorded, role::Role};
+use panel_core::{
+	fact::Fact,
+	ids::BrandId,
+	lead::Recorded,
+	role::{Permission, Role},
+};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -96,7 +101,7 @@ impl Change {
 	pub fn visible_to(&self, user: Uuid, role: Role) -> bool {
 		match self.topic {
 			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Experiments | Topic::Bookings => true,
-			Topic::Sources => role.manages_sources(),
+			Topic::Sources => role.may(Permission::ManagesSources),
 			Topic::Telegram => self.user == Some(user),
 		}
 	}

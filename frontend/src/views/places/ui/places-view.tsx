@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { fetchFunnelByLocation } from "@/entities/funnel";
 import { type PlaceKey, fetchPlaces } from "@/entities/place";
-import { managesPlaces, useMe } from "@/entities/session";
+import { MAY, useMe } from "@/entities/session";
 import { fetchSources } from "@/entities/source";
 import { AddPlaceButton } from "@/features/add-place";
 import { type Period, rangeOf } from "@/features/funnel-filters";
@@ -45,7 +45,7 @@ export function PlacesView() {
       const [funnel, places, sources] = await Promise.all([
         fetchFunnelByLocation({ ...range, brand: null }),
         fetchPlaces(),
-        managesPlaces(role) ? fetchSources() : Promise.resolve([]),
+        MAY[role].edits_places ? fetchSources() : Promise.resolve([]),
       ]);
       return { rows: placeRows(funnel.locations, places), minSample: funnel.min_sample, brands: offeredBrands(places, sources) };
     },
@@ -57,7 +57,7 @@ export function PlacesView() {
     <ScreenFrame
       title={t("places.title")}
       actions={
-        managesPlaces(role) && data.status === "ok" ? (
+        MAY[role].edits_places && data.status === "ok" ? (
           <AddPlaceButton
             brands={data.data.brands}
             onAdded={(key) => {

@@ -43,8 +43,9 @@ use panel::{
 	session::{PRELOGIN_TTL, SessionError, SessionKey},
 };
 use panel_core::role::Role;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::{
@@ -127,8 +128,8 @@ impl SignIn {
 	}
 }
 
-/// The signed-in user of an `/api/v1` request, put in its extensions by [`gate`].
-#[derive(Clone, Debug)]
+/// The signed-in user of an `/api/v1` request, put in its extensions by [`gate`]; `GET /me`.
+#[derive(Clone, Debug, Serialize, TS)]
 pub struct Caller {
 	pub user_id: Uuid,
 	pub role: Role,

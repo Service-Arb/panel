@@ -29,7 +29,10 @@ use panel::{
 	booking::{BookingView, Provider, PushError, PushRequest, PushSources, SlotAction},
 	operator::{Actor, Pii},
 };
-use panel_core::ids::{BrandId, LeadId};
+use panel_core::{
+	ids::{BrandId, LeadId},
+	role::Permission,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
@@ -155,7 +158,7 @@ async fn slot(
 	headers: HeaderMap,
 	b: Result<Json<SlotBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	if !caller.role.edits_leads() {
+	if !caller.role.may(Permission::EditsLeads) {
 		return Err(ApiError::Forbidden);
 	}
 	let key = crate::api::idempotency_key(&headers)?;
@@ -181,7 +184,7 @@ async fn close(
 	headers: HeaderMap,
 	b: Result<Json<CloseBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	if !caller.role.edits_leads() {
+	if !caller.role.may(Permission::EditsLeads) {
 		return Err(ApiError::Forbidden);
 	}
 	let key = crate::api::idempotency_key(&headers)?;
@@ -223,7 +226,7 @@ pub(crate) fn booking_body(v: BookingView) -> Value {
 async fn unmatched(State(panel): State<Panel>, Extension(caller): Extension<Caller>, q: Result<Query<UnmatchedQuery>, axum::extract::rejection::QueryRejection>) -> ApiResult<Json<Value>> {
 	let Query(q) = q.map_err(|e| ApiError::BadRequest(e.body_text()))?;
 	let brand = q.brand.as_deref().map(BrandId::parse).transpose()?;
-	let pii = if caller.role.sees_pii() { Pii::Reveal } else { Pii::Withhold };
+	let pii = if caller.role.may(Permission::SeesPii) { Pii::Reveal } else { Pii::Withhold };
 	let rows = panel.unmatched_bookings(brand.as_ref(), pii, q.limit.unwrap_or(100)).await?;
 	Ok(Json(json!({ "bookings": rows.into_iter().map(booking_body).collect::<Vec<_>>() })))
 }
@@ -235,7 +238,7 @@ struct AttachBody {
 }
 
 async fn attach(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path(id): Path<String>, b: Result<Json<AttachBody>, JsonRejection>) -> ApiResult<Response> {
-	if !caller.role.edits_leads() {
+	if !caller.role.may(Permission::EditsLeads) {
 		return Err(ApiError::Forbidden);
 	}
 	let id = Uuid::parse_str(&id).map_err(|_| ApiError::NotFound)?;

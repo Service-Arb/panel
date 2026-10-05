@@ -1,7 +1,7 @@
 import { NavDot, type NavGroup, type NavItem } from "@evinvest/uikit";
 import { ArrowUpRight, BarChart3, Ellipsis, FlaskConical, Inbox, KeyRound, LayoutGrid, MapPin, Tags } from "lucide-react";
 
-import { type Role, managesSources } from "@/entities/session";
+import { type Role, MAY } from "@/entities/session";
 import { ROUTES } from "@/shared/config/routes";
 import type { T } from "@/shared/i18n";
 
@@ -19,7 +19,7 @@ export interface PanelNav {
  * a count where there is one, a dot where "something changed" is all there is.
  */
 export function panelNav(t: T, role: Role, marks: Marks): PanelNav {
-  const admin = managesSources(role);
+  const admin = MAY[role].manages_sources;
   const dot = (corner: boolean) => <NavDot corner={corner} label={t("nav.changed")} />;
   const overview: NavItem = { id: "overview", href: ROUTES.overview, label: t("nav.overview"), icon: BarChart3 };
   // New leads are counted; bookings without one only say "something waits", and a count says it already.

@@ -4,7 +4,7 @@ import { Settled, Skeleton } from "@evinvest/uikit";
 import { useCallback, useState } from "react";
 
 import { type PricingItem, fetchPricing, followsPricing, pricingSavedSince } from "@/entities/pricing";
-import { managesPricing, useMe } from "@/entities/session";
+import { MAY, useMe } from "@/entities/session";
 import { useResource } from "@/shared/lib/use-resource";
 import { ErrorState } from "@/shared/ui/error-state";
 
@@ -43,7 +43,7 @@ export function BrandPricing({ brand, today }: { brand: string; today: string })
     <Settled loading={data.status === "loading"} skeleton={<Skeleton className="h-96 w-full" />}>
       {data.status === "error" && <ErrorState failure={data.failure} onRetry={data.reload} />}
       {latest !== null &&
-        (managesPricing(role) ? (
+        (MAY[role].edits_pricing ? (
           <EditWorkspace
             key={pinned?.updated_at ?? "never"}
             base={pinned ?? latest}
