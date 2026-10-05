@@ -12,7 +12,7 @@ use axum::{
 use jiff::{SignedDuration, Timestamp};
 use panel::{
 	Panel,
-	experiment::PosthogProject,
+	posthog::PosthogProject,
 	testing::{TestDb, event, panel, sign},
 };
 use panel_core::{event::SourceKind, ids::BrandId, role::Role};
@@ -154,6 +154,16 @@ async fn a_declaration_an_override_and_what_the_site_is_told() {
 		"every brand without ?brand"
 	);
 
+	// The funnel opens PostHog's, from the visit, on the same brand and days.
+	let funnel = b.get(&admin, "/api/v1/funnel?brand=aquafix&from=2026-09-01&to=2026-09-30").await.1;
+	let url = funnel["posthog_url"].as_str().unwrap();
+	assert!(url.starts_with("https://us.posthog.com/project/614067/insights/new#q="), "{url}");
+	for needle in ["location_page_view", "sa_payment_received", "%22aquafix%22", "2026-09-01", "2026-09-30"] {
+		assert!(url.contains(needle), "{needle} in {url}");
+	}
+	let every = b.get(&admin, "/api/v1/funnel").await.1;
+	assert!(every["posthog_url"].as_str().unwrap().contains("breakdownFilter"), "every brand's, side by side");
+
 	// An admin's change: weights and the kill switch; null puts a field back, 0 is a holdout.
 	let path = "/api/v1/experiments/aquafix/hero";
 	let (status, hero) = b.write(&admin, Method::PUT, path, json!({"weights": [2, 1, 1], "holdout": 0})).await;
@@ -246,4 +256,5 @@ async fn an_override_that_no_longer_fits_is_not_sent() {
 	assert_eq!(hero["override"]["weights"], json!([3.0, 1.0]), "kept as set");
 	assert_eq!(hero["effective"]["weights"], json!([1.0, 1.0, 1.0]));
 	assert_eq!(hero["posthog_url"], Value::Null, "no project configured");
+	assert_eq!(b.get(&admin, "/api/v1/funnel").await.1["posthog_url"], Value::Null);
 }

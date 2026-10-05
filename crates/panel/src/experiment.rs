@@ -18,15 +18,7 @@ use panel_core::{
 };
 use serde_json::{Value, json};
 
-use crate::{Panel, store::experiments as stored};
-
-/// The PostHog project the landings send to, for the links to its insights.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PosthogProject {
-	/// The app's origin, e.g. `https://us.posthog.com` (not the capture host).
-	pub app_host: String,
-	pub project_id: String,
-}
+use crate::{Panel, posthog::PosthogProject, store::experiments as stored};
 
 /// One experiment as the screens show it.
 #[derive(Clone, Debug, PartialEq)]
@@ -57,7 +49,7 @@ pub struct LiveOverride {
 	pub holdout: Option<f64>,
 }
 
-/// `{app_host}/project/{id}/insights/new#q=<the query>`: a funnel `experiment_exposed` →
+/// A funnel `experiment_exposed` →
 /// `experiment_lead` of this experiment and brand, forced (QA) visits left out, broken down by
 /// variant, since the weights last changed or the experiment was first declared.
 pub fn posthog_url(project: &PosthogProject, brand: &BrandId, state: &State) -> String {
@@ -79,25 +71,7 @@ pub fn posthog_url(project: &PosthogProject, brand: &BrandId, state: &State) -> 
 			"funnelsFilter": {"funnelVizType": "steps"},
 		},
 	});
-	format!(
-		"{}/project/{}/insights/new#q={}",
-		project.app_host.trim_end_matches('/'),
-		project.project_id,
-		uri_component(&query.to_string())
-	)
-}
-
-/// JavaScript's `encodeURIComponent`.
-fn uri_component(s: &str) -> String {
-	let mut out = String::with_capacity(s.len() * 3);
-	for b in s.bytes() {
-		if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
-			out.push(char::from(b));
-		} else {
-			out.push_str(&format!("%{b:02X}"));
-		}
-	}
-	out
+	project.insight_url(&query)
 }
 
 impl Panel {
@@ -205,15 +179,4 @@ pub fn live_json(o: &LiveOverride) -> Value {
 		v["holdout"] = json!(h);
 	}
 	v
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn encodes_as_javascript_does() {
-		assert_eq!(uri_component(r#"{"a": "b c/é"}"#), "%7B%22a%22%3A%20%22b%20c%2F%C3%A9%22%7D");
-		assert_eq!(uri_component("A-z_0.!~*'()"), "A-z_0.!~*'()");
-	}
 }

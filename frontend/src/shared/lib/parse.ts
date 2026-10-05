@@ -33,6 +33,22 @@ export const isoDay: Parser<string> = (v, path) => (typeof v === "string" && DAY
 
 export const bool: Parser<boolean> = (v, path) => (typeof v === "boolean" ? v : fail(path, "a boolean", v));
 
+/**
+ * Only http(s): the link is put in an `href`, and a `javascript:` one from a
+ * misconfigured backend must not become a click away from running.
+ */
+export const webUrl: Parser<string> = (v, path) => {
+  const s = str(v, path);
+  let url: URL;
+  try {
+    url = new URL(s);
+  } catch {
+    throw new ParseError(`${path}: expected a URL, got ${JSON.stringify(s)}`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new ParseError(`${path}: expected an http(s) URL`);
+  return s;
+};
+
 /** Absent and `null` both read as `null`: the API skips some fields rather than nulling them. */
 export function nullable<T>(p: Parser<T>): Parser<T | null> {
   return (v, path) => (v === null || v === undefined ? null : p(v, path));

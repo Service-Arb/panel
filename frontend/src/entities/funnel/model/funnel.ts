@@ -1,4 +1,4 @@
-import { type Infer, arrayOf, nullable, num, object, oneOf, str } from "@/shared/lib/parse";
+import { type Infer, arrayOf, nullable, num, object, oneOf, str, webUrl } from "@/shared/lib/parse";
 import { shareParser } from "@/shared/lib/share";
 
 /** The personal stages 5–10 of the spec, as `panel_core::funnel::Totals::steps` lists them. */
@@ -31,7 +31,8 @@ const slice = {
   payments: arrayOf(paidParser),
 };
 
-export const funnelParser = object({ from: str, to: str, brand: nullable(str), min_sample: num, ...slice });
+/** `posthog_url`: the same brand and days in PostHog, from the visit; null without a project. */
+export const funnelParser = object({ from: str, to: str, brand: nullable(str), min_sample: num, posthog_url: nullable(webUrl), ...slice });
 export type Funnel = Infer<typeof funnelParser>;
 
 /** One location's slice; `location` is null for the leads that name none. */

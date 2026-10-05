@@ -53,6 +53,7 @@
   "funnel.stage.completed": "Done",
   "funnel.stage.paid": "Paid",
   "funnel.site.posthog": "Site visits and contact intents are counted in PostHog.",
+  "funnel.site.posthogOpen": "Open the funnel in PostHog",
   "funnel.site.mapsPending": "Google Maps impressions and actions will appear once Google Business Profile is connected.",
   "funnel.leads.title": "By lead · panel",
   "funnel.ofPrevious": "of previous",

@@ -1,20 +1,4 @@
-import { type Infer, type Parser, ParseError, arrayOf, bool, nullable, num, object, str } from "@/shared/lib/parse";
-
-/**
- * Only http(s): the link is put in an `href`, and a `javascript:` one from a
- * misconfigured backend must not become a click away from running.
- */
-const webUrl: Parser<string> = (v, path) => {
-  const s = str(v, path);
-  let url: URL;
-  try {
-    url = new URL(s);
-  } catch {
-    throw new ParseError(`${path}: expected a URL, got ${JSON.stringify(s)}`);
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new ParseError(`${path}: expected an http(s) URL`);
-  return s;
-};
+import { type Infer, arrayOf, bool, nullable, num, object, str, webUrl } from "@/shared/lib/parse";
 
 /** How a landing splits its traffic: one weight per variant (same order), off or on, and the share kept out of it. */
 const settingsParser = object({ weights: arrayOf(num), enabled: bool, holdout: nullable(num) });

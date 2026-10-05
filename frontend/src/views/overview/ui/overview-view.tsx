@@ -1,6 +1,7 @@
 "use client";
 
 import { Settled, Skeleton } from "@evinvest/uikit";
+import { ArrowUpRight } from "lucide-react";
 
 import { fetchFunnel } from "@/entities/funnel";
 import { brandsOf, usePlaces } from "@/entities/place";
@@ -28,7 +29,14 @@ export function OverviewView() {
           <>
             <LeadsBlock funnel={funnel.data} />
             <p className="px-1 text-sm text-ink-soft" role="note">
-              {t("funnel.site.posthog")} {t("funnel.site.mapsPending")}
+              {t("funnel.site.posthog")}{" "}
+              {funnel.data.posthog_url !== null && (
+                <a href={funnel.data.posthog_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 underline">
+                  {t("funnel.site.posthogOpen")}
+                  <ArrowUpRight aria-hidden className="size-3.5" />
+                </a>
+              )}{" "}
+              {t("funnel.site.mapsPending")}
             </p>
             <p className="px-1 text-xs text-ink-soft">{t("funnel.range", { from: funnel.data.from, to: funnel.data.to })}</p>
           </>

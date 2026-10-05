@@ -7,7 +7,7 @@
  *   STUB_ROLE=admin npm run dev:stub  # as an admin
  *   STUB_ME=403 npm run dev:stub      # the gate refusing: 401 | 403 | 503
  *   STUB_MIN_SAMPLE=2 npm run dev:stub  # percents (and bars) from 2 leads, not 30
- *   STUB_POSTHOG=off npm run dev:stub   # no PostHog project: experiments without a PostHog link
+ *   STUB_POSTHOG=off npm run dev:stub   # no PostHog project: the funnel and experiments without a PostHog link
  *   STUB_PLACES_CONFLICT=1 npm run dev:stub  # every place-settings save answers 409
  *   STUB_PRICING_CONFLICT=1 npm run dev:stub # every pricing save and removal answers 409
  *   STUB_PRICING_INVALID=inputs.zone.labels.en npm run dev:stub  # every pricing save and preview answers 422 there
@@ -138,7 +138,8 @@ function slice(ls: StubLead[]): Json {
 
 function funnel(brand: string | null, by: string | null): Json {
   const ls = leads.filter((l) => !brand || l.brand === brand);
-  const head = { from: iso(new Date(now().getTime() - 29 * 86_400_000)).slice(0, 10), to: iso(now()).slice(0, 10), brand, min_sample: MIN_SAMPLE };
+  const head = { from: iso(new Date(now().getTime() - 29 * 86_400_000)).slice(0, 10), to: iso(now()).slice(0, 10), brand, min_sample: MIN_SAMPLE,
+    posthog_url: process.env.STUB_POSTHOG === "off" ? null : "https://us.posthog.com/project/0/insights/new" };
   if (by !== "location") return { ...head, ...slice(ls) };
   const places = [...new Set(ls.map((l) => `${l.brand}/${l.location ?? ""}`))].sort();
   const locations = places.map((key) => {

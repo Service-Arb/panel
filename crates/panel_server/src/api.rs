@@ -672,6 +672,7 @@ async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::
 		"to": to.to_string(),
 		"brand": brand.as_ref().map(BrandId::as_str),
 		"min_sample": MIN_SAMPLE,
+		"posthog_url": panel.posthog_funnel_url(brand.as_ref(), from, to),
 	});
 	match by {
 		FunnelBy::All => {

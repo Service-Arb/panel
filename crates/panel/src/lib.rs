@@ -23,6 +23,7 @@ pub mod experiment;
 pub mod live;
 pub mod operator;
 pub mod place;
+pub mod posthog;
 pub mod pricing;
 pub mod seal;
 pub mod session;
@@ -198,7 +199,7 @@ pub struct Panel {
 	key: Arc<DataKey>,
 	rotations: Arc<session::Rotations>,
 	live: live::Bus,
-	posthog: Option<experiment::PosthogProject>,
+	posthog: Option<posthog::PosthogProject>,
 	/// Whether journaled lead events are queued for PostHog ([`capture`]).
 	capture: bool,
 }
@@ -215,10 +216,15 @@ impl Panel {
 		}
 	}
 
-	/// This panel linking each experiment to its funnel in `project`.
-	pub fn with_posthog_project(mut self, project: Option<experiment::PosthogProject>) -> Self {
+	/// This panel linking the funnel and each experiment to `project`.
+	pub fn with_posthog_project(mut self, project: Option<posthog::PosthogProject>) -> Self {
 		self.posthog = project;
 		self
+	}
+
+	/// The funnel of `[from, to]` in PostHog, from the visit; `None` without a project.
+	pub fn posthog_funnel_url(&self, brand: Option<&BrandId>, from: jiff::civil::Date, to: jiff::civil::Date) -> Option<String> {
+		self.posthog.as_ref().map(|p| p.funnel_url(brand, from, to))
 	}
 
 	/// This panel on `bus` instead of its own: a bus of another capacity, or one shared.

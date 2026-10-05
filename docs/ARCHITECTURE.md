@@ -211,7 +211,8 @@ POST   /leads/{brand}/{lead}/calls/{attempt}/outcome
                                                   {outcome: answered|no_answer|wrong_number|later}
 POST   /leads/{brand}/{lead}/payments             {billed, commission, currency}
 GET    /funnel?from&to&brand&by                   days, UTC, default the last 30, ≤ 366
-                                                  {from, to, brand, min_sample, stages: [{stage,
+                                                  {from, to, brand, min_sample, posthog_url,
+                                                   stages: [{stage,
                                                    reached, of_previous, of_leads}], lost, manual,
                                                    payments: [Paid]}
                                                   by=location: {from, to, brand, min_sample,
@@ -251,6 +252,10 @@ sums the payments of those same leads, whenever they were paid; so a slice's mon
 the panel does not count them again (owner, 2026-10-04). It sends PostHog the leads' life after
 the form instead ([PostHog](#posthog)), so the funnel from a visit to a payment is one funnel
 there.
+`posthog_url` opens it (`PosthogProject::funnel_url`): `location_page_view` → `sa_lead_created` →
+`sa_lead_contacted` → `sa_job_won` → `sa_payment_received` over the same days, within 90 days of
+the visit, filtered by `brand_id`, or broken down by it without `brand`. Null without
+`POSTHOG_PROJECT_ID`.
 
 `Lead` is the projection row (`stage`, the time of each stage, `manual`, `lost_reason`,
 `suspect` — null, `"rate_limited"` or `"too_fast"`, see [Suspect leads](#suspect-leads) —,

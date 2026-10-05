@@ -156,12 +156,12 @@ impl Settings {
 	}
 
 	/// The PostHog project the experiments link into; `None` without `POSTHOG_PROJECT_ID`.
-	pub fn posthog_project(&self) -> eyre::Result<Option<panel::experiment::PosthogProject>> {
+	pub fn posthog_project(&self) -> eyre::Result<Option<panel::posthog::PosthogProject>> {
 		let Some(project) = self.posthog_project_id.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
 			return Ok(None);
 		};
 		eyre::ensure!(project.len() <= 32 && project.bytes().all(|b| b.is_ascii_digit()), "POSTHOG_PROJECT_ID is a number, e.g. 614067");
-		Ok(Some(panel::experiment::PosthogProject {
+		Ok(Some(panel::posthog::PosthogProject {
 			app_host: origin("POSTHOG_APP_HOST", &self.posthog_app_host, &self.app_env)?,
 			project_id: project.to_owned(),
 		}))
