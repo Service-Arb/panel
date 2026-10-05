@@ -86,6 +86,8 @@ pub enum LeadSuspect {
 }
 
 impl LeadSuspect {
+	pub const ALL: [Self; 2] = [Self::RateLimited, Self::TooFast];
+
 	pub fn as_str(self) -> &'static str {
 		match self {
 			Self::RateLimited => "rate_limited",

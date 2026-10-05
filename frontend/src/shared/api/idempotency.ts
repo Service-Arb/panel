@@ -8,7 +8,7 @@ export interface Attempt {
   key: string;
 }
 
-export const IDEMPOTENCY_HEADER = "idempotency-key";
+export { IDEMPOTENCY_HEADER } from "./generated";
 
 export function newIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();

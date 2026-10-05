@@ -1,6 +1,6 @@
 import { http, ignoreBody } from "@/shared/api";
 
-import { type AddedSource, type Source, type SourceKind, addedSourceParser, sourcesParser } from "../model/source";
+import { type AddedSource, type KeyedSourceKind, type Source, addedSourceParser, sourcesParser } from "../model/source";
 
 export async function fetchSources(): Promise<Source[]> {
   return (await http.get("/api/v1/sources", sourcesParser)).sources;
@@ -8,7 +8,7 @@ export async function fetchSources(): Promise<Source[]> {
 
 export interface NewSource {
   key_id: string;
-  kind: SourceKind;
+  kind: KeyedSourceKind;
   brands: string[];
 }
 

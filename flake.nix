@@ -30,7 +30,32 @@
         # own default (`panel_server::DEFAULT_BIND`) is the same port on 127.0.0.1.
         port = 59120;
 
-        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; stripClaudeSignature = true; });
+        # `nix run .#gen`: the front end's mirror of the Rust (crates/panel_gen), committed.
+        gen = pkgs.writeShellApplication {
+          name = "gen";
+          runtimeInputs = [ rust pkgs.git ];
+          text = ''
+            cd "$(git rev-parse --show-toplevel)"
+            exec cargo run -q -p panel_gen "$@"
+          '';
+        };
+
+        pre-commit-check = pre-commit-hooks.lib.${system}.run (
+          let base = v_flakes.files.preCommit { inherit pkgs; stripClaudeSignature = true; }; in
+          base // {
+            hooks = base.hooks // {
+              # Regenerate and re-stage rather than assert: a stale mirror type-checks against
+              # itself and fails at runtime, in the browser.
+              generated = {
+                enable = true;
+                name = "regenerate derived files";
+                entry = "bash -c '${gen}/bin/gen && git add -A frontend/src/entities/session/model/generated.ts frontend/src/entities/lead/model/generated.ts frontend/src/entities/source/model/generated.ts frontend/src/shared/config/generated.ts frontend/src/shared/api/generated.ts'";
+                pass_filenames = false;
+                require_serial = true;
+              };
+            };
+          }
+        );
         rs = v_flakes.rs {
           inherit pkgs rust;
           build.workspace = {
@@ -221,6 +246,8 @@
                                               wired together (docs/LOCAL.md)
             nix run .#publish -- major|minor|patch [note]
                                               tag the next vX.Y.Z and push it: CI ships the image
+            nix run .#gen                     the front end's mirror of the Rust types
+                                              (pre-commit runs it too)
             nix run .#help                    this
             cargo test                        every test; the database ones on throwaway
                                               SQLite files, nothing to set up
@@ -277,6 +304,7 @@
         apps = {
           help = { type = "app"; program = lib.getExe help; };
           publish = { type = "app"; program = lib.getExe publish; };
+          gen = { type = "app"; program = lib.getExe gen; };
           local-stack = { type = "app"; program = lib.getExe localStack; };
         };
 

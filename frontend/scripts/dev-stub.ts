@@ -235,7 +235,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const flow = flowParam(q.get("flow"));
     if (flow === false) return send(res, 400, { error: "flow is not one of quote, estimate, fixed" });
     const booking = q.get("booking");
-    if (booking !== null && !BOOKING_STATUSES.includes(booking)) return send(res, 400, { error: "booking status is not one of none, requested, booked, canceled, done, no_show" });
+    if (booking !== null && !BOOKING_STATUSES.some((s) => s === booking)) return send(res, 400, { error: "booking status is not one of none, requested, booked, canceled, done, no_show" });
     const list = leads
       .filter((l) => (suspect !== "only" || l.suspect !== null) && (suspect !== "exclude" || l.suspect === null))
       .filter((l) => flow === null || l.deal?.flow === flow)

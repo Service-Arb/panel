@@ -4,7 +4,7 @@ import { Button, Item, ItemActions, ItemContent, ItemGroup, ItemTitle, NavDot } 
 import { ArrowUpRight, FlaskConical, KeyRound, LayoutGrid, type LucideIcon, Tags } from "lucide-react";
 import Link from "next/link";
 
-import { DevSignInBadge, managesSources, useMe } from "@/entities/session";
+import { DevSignInBadge, MAY, useMe } from "@/entities/session";
 import { useSignOut } from "@/features/sign-out";
 import { ROUTES } from "@/shared/config/routes";
 import { type MessageKey, useT } from "@/shared/i18n";
@@ -31,7 +31,7 @@ export function MoreView() {
       <ItemGroup className="gap-2">
         <MoreLink href={ROUTES.pricing} icon={Tags} label="nav.pricing" />
         <MoreLink href={ROUTES.experiments} icon={FlaskConical} label="nav.experiments" />
-        {managesSources(me.role) && <MoreLink href={ROUTES.sources} icon={KeyRound} label="nav.sources" />}
+        {MAY[me.role].manages_sources && <MoreLink href={ROUTES.sources} icon={KeyRound} label="nav.sources" />}
         <Item variant="outline" size="sm" asChild>
           <a href={ROUTES.grafana} target="_blank" rel="noopener noreferrer">
             <LayoutGrid aria-hidden className="size-4" />

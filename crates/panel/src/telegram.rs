@@ -37,7 +37,7 @@ use panel_core::{
 	funnel::CONTACT_SLA,
 	ids::{BrandId, LeadId},
 	notify::{self, BookingChange, Button, Entity, Failure, LeadNote, Locale, Next, Note, Rendered, Reply, Rule},
-	role::Role,
+	role::{Permission, Role},
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -495,7 +495,7 @@ impl Panel {
 			location: c.location_id.clone(),
 			..LeadNote::default()
 		};
-		if !role.sees_pii() {
+		if !role.may(Permission::SeesPii) {
 			return Ok(note);
 		}
 		if let Some((blob, fp)) = &c.pii {
@@ -852,7 +852,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 			Access::Denied => return Ok((Reply::NoAccess, None)),
 			Access::Unavailable => return Ok((Reply::TryLater, None)),
 		};
-		if !role.edits_leads() {
+		if !role.may(Permission::EditsLeads) {
 			return Ok((Reply::NoAccess, None));
 		}
 		let (Some(brand), Some(lead)) = (message.brand_id.as_deref(), message.lead_id.as_deref()) else {

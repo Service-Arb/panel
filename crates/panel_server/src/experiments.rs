@@ -31,6 +31,7 @@ use panel_core::{
 	Invalid,
 	experiment::{Patch, is_key},
 	ids::BrandId,
+	role::Permission,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -128,7 +129,7 @@ fn patch(key: &str, body: &Value) -> Result<Patch, Invalid> {
 }
 
 async fn configure(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path((brand, key)): Path<(String, String)>, body: axum::body::Bytes) -> Result<Json<Value>, ApiError> {
-	if !caller.role.edits_experiments() {
+	if !caller.role.may(Permission::EditsExperiments) {
 		return Err(ApiError::Forbidden);
 	}
 	let brand = BrandId::parse(&brand).map_err(|_| ApiError::NotFound)?;

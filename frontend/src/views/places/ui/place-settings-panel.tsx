@@ -4,7 +4,7 @@ import { Alert, AlertDescription, Badge, Settled, Skeleton, Tabs, TabsContent, T
 import { useCallback, useState } from "react";
 
 import { type PlaceKey, type PlaceSettingsView, fetchPlaceSettings, followsPlace, savedSince } from "@/entities/place";
-import { managesPlaces, useMe } from "@/entities/session";
+import { MAY, useMe } from "@/entities/session";
 import { SettingsForm, SettingsSummary } from "@/features/edit-place-settings";
 import { WithdrawButton } from "@/features/withdraw-place";
 import { useLocale, useT } from "@/shared/i18n";
@@ -102,7 +102,7 @@ function PlacePanes({ base, latest, version, saved, onWritten, onReload, onTakeF
           <PlaceHistory view={base} version={version} onChanged={onWritten} onReload={() => onReload()} />
         </TabsContent>
       </Tabs>
-      {managesPlaces(role) && (
+      {MAY[role].edits_places && (
         // Last and apart: taking a point off the site is rare and not part of editing it.
         <div className="flex flex-col items-start gap-2 border-t border-border pt-4">
           <WithdrawButton place={latest} onChanged={onReload} />

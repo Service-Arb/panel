@@ -10,7 +10,11 @@ use jiff::{SignedDuration, Timestamp};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use crate::{Invalid, fact::LeadSuspect, role::Role};
+use crate::{
+	Invalid,
+	fact::LeadSuspect,
+	role::{Permission, Role},
+};
 
 /// What a user may be notified of. Each is on or off per user; [`Rule::on_by_default`] is
 /// what a user who never chose gets.
@@ -59,8 +63,8 @@ impl Rule {
 	/// the sources are the admins'.
 	pub fn open_to(self, role: Role) -> bool {
 		match self {
-			Self::NewLead | Self::ContactOverdue | Self::Booked => role.edits_leads(),
-			Self::PaymentReceived | Self::SourceSilent => role.manages_sources(),
+			Self::NewLead | Self::ContactOverdue | Self::Booked => role.may(Permission::EditsLeads),
+			Self::PaymentReceived | Self::SourceSilent => role.may(Permission::ManagesSources),
 		}
 	}
 }

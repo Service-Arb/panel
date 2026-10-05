@@ -45,6 +45,12 @@ impl Provider {
 			.ok_or_else(|| Invalid::new("provider is not one of manual, link, google_calendar, cal_com"))
 	}
 
+	/// Whether a place configures it with a booking page of its own. `manual` is always
+	/// available, so never configured.
+	pub fn has_page(self) -> bool {
+		self != Self::Manual
+	}
+
 	/// Whether an adapter reports this provider's bookings (`booking.created`/`canceled`).
 	pub fn has_adapter(self) -> bool {
 		match self {
@@ -83,8 +89,8 @@ fn is_cal_segment(s: &str) -> bool {
 /// `calendar.google.com/calendar/appointments/…`; `cal_com` — a host of [`CAL_COM_HOSTS`]
 /// exactly, the path exactly `/<user>/<event>`; `link` — any host. `manual` has no page.
 pub fn check_url(provider: Provider, raw: &str) -> Result<(), String> {
-	if provider == Provider::Manual {
-		return Err("manual takes no url".into());
+	if !provider.has_page() {
+		return Err(format!("{provider} takes no url"));
 	}
 	if raw.is_empty() || raw.len() > MAX_URL || !raw.bytes().all(|b| b.is_ascii_graphic()) {
 		return Err(format!("must be an https:// URL of at most {MAX_URL} printable ASCII characters, without spaces"));
@@ -227,7 +233,7 @@ pub fn check_config(v: &Value) -> Result<Value, ConfigProblems> {
 				}
 				match (provider, conf.get("url")) {
 					// Always there, so never configured: the README's rule.
-					(Provider::Manual, _) => bad.push((path, "manual is always available and is never a key of providers".into())),
+					(p, _) if !p.has_page() => bad.push((path, "manual is always available and is never a key of providers".into())),
 					(_, None) => bad.push((format!("{path}.url"), "is required".into())),
 					(_, Some(Value::String(url))) => match check_url(provider, url) {
 						Ok(()) => {
@@ -242,7 +248,7 @@ pub fn check_config(v: &Value) -> Result<Value, ConfigProblems> {
 		Some(_) => bad.push((".providers".into(), "must be an object of a provider's settings by its name".into())),
 	}
 	if let Some(d) = default
-		&& d != Provider::Manual
+		&& d.has_page()
 		&& !named.contains(&d)
 		&& !bad.iter().any(|(p, _)| p.starts_with(&format!(".providers.{d}")))
 	{
@@ -343,6 +349,8 @@ pub enum OperatorAction {
 macro_rules! wire_enum {
 	($ty:ident, $refused:literal, { $($variant:ident => $wire:literal),+ $(,)? }) => {
 		impl $ty {
+			pub const ALL: [Self; [$(stringify!($variant)),+].len()] = [$(Self::$variant),+];
+
 			pub fn as_str(self) -> &'static str {
 				match self {
 					$(Self::$variant => $wire,)+
@@ -350,7 +358,7 @@ macro_rules! wire_enum {
 			}
 
 			pub fn parse(raw: &str) -> Result<Self, Invalid> {
-				[$(Self::$variant),+].into_iter().find(|v| v.as_str() == raw).ok_or_else(|| Invalid::new($refused))
+				Self::ALL.into_iter().find(|v| v.as_str() == raw).ok_or_else(|| Invalid::new($refused))
 			}
 		}
 	};

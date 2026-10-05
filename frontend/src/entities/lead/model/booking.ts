@@ -1,17 +1,10 @@
 import { BOOKING_PROVIDERS } from "@/shared/config/booking";
 import { type Infer, type Parser, isoDay, nullable, object, oneOf, str } from "@/shared/lib/parse";
 
-/** `panel_core::booking::BookingStatus`, in its order. */
-export const BOOKING_STATUSES = ["none", "requested", "booked", "canceled", "done", "no_show"] as const;
-export type BookingStatus = (typeof BOOKING_STATUSES)[number];
+import { BOOKING_MATCHES, BOOKING_STATUSES, type BookingStatus, DAY_PARTS } from "./generated";
 
-/** How a provider's booking found its lead: the site's reference, the contact (a likely match), or an operator's hand. */
-export const BOOKING_MATCHES = ["ref", "contact", "manual"] as const;
-export type BookingMatch = (typeof BOOKING_MATCHES)[number];
-
-/** The part of the day a visitor asked for (`booking.requested@1`, manual only). */
-export const DAY_PARTS = ["morning", "afternoon", "evening"] as const;
-export type DayPart = (typeof DAY_PARTS)[number];
+export { BOOKING_MATCHES, BOOKING_STATUSES, DAY_PARTS } from "./generated";
+export type { BookingMatch, BookingStatus, DayPart } from "./generated";
 
 const bookingObject = object({
   status: oneOf(BOOKING_STATUSES),

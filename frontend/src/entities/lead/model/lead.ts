@@ -1,15 +1,10 @@
 import { type Infer, arrayOf, bool, cents, dictOf, isoDay, nullable, num, object, oneOf, record, recordOf, str } from "@/shared/lib/parse";
 
 import { leadBookingParser } from "./booking";
-import { FLOWS } from "./pricing";
+import { CONTACT_SLA_SECONDS, FLOWS, STAGES, SUSPECTS, type Stage } from "./generated";
 
-/** `panel_core::lead::Stage`, in its order; `lost` can be reached from any of them. */
-export const STAGES = ["created", "contacted", "quoted", "won", "completed", "paid", "lost"] as const;
-export type Stage = (typeof STAGES)[number];
-
-/** Why a landing's antispam doubted a lead it still sent (docs/ARCHITECTURE.md, "Suspect leads"). */
-export const SUSPECTS = ["rate_limited", "too_fast"] as const;
-export type Suspect = (typeof SUSPECTS)[number];
+export { CONTACT_SLA_SECONDS, STAGES, SUSPECTS } from "./generated";
+export type { Stage, Suspect } from "./generated";
 
 const slaParser = object({ waiting_since: str, waiting_seconds: num, overdue: bool });
 
@@ -75,9 +70,6 @@ export type LeadCard = Infer<typeof leadCardParser>;
 /** `GET /leads/counts`: leads by their current stage (every stage, 0 included), and how many are overdue. */
 export const leadCountsParser = object({ stages: recordOf(STAGES, num), overdue: num, total: num });
 export type LeadCounts = Infer<typeof leadCountsParser>;
-
-/** `panel_core::funnel::CONTACT_SLA`: a new lead is overdue after this long without contact. */
-export const CONTACT_SLA_SECONDS = 30 * 60;
 
 /**
  * The wait as of `now`, from `waiting_since` — the API's `waiting_seconds` and

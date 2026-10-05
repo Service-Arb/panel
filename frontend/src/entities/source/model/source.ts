@@ -1,8 +1,9 @@
 import { type Infer, arrayOf, nullable, object, oneOf, str } from "@/shared/lib/parse";
 
-/** `panel_core::event::SourceKind`. */
-export const SOURCE_KINDS = ["site", "review_archive", "gbp", "posthog", "panel", "sheet", "telephony"] as const;
-export type SourceKind = (typeof SOURCE_KINDS)[number];
+import { SOURCE_KINDS } from "./generated";
+
+export { KEYED_SOURCE_KINDS, SOURCE_KINDS } from "./generated";
+export type { KeyedSourceKind, SourceKind } from "./generated";
 
 export const sourceParser = object({
   key_id: str,

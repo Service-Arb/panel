@@ -18,7 +18,7 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
                                      its subject
   src/lead.rs                        Stage, and fold: a lead's facts → its stage and stage times
   src/signature.rs                   the HMAC scheme of a batch and its replay window
-  src/role.rs                        operator / admin and what each may do (§5.4)
+  src/role.rs                        operator / admin and what each may do (§5.4): Role::may
   src/notify.rs                      Telegram: the rules and who gets each, the texts, the
                                      buttons' signed data, retry and pacing constants
   src/experiment.rs                  a brand's experiments as configuration: a declaration
@@ -92,6 +92,9 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
   src/web.rs                         the front end's static export (PANEL_WEB_DIR), behind
                                      every other route
   src/settings.rs                    the environment (ev_lib `settings!`)
+crates/panel_gen/                    `nix run .#gen`: the front end's mirror of Rust types and
+                                     tables (ev_lib `ts_gen`), into frontend/**/generated.ts,
+                                     committed; the pre-commit hook re-runs it
 contracts/proto/concierge/v1/        concierge's auth and directory protos, vendored at the
                                      commit in REV (`sync.sh` refreshes them)
 ```

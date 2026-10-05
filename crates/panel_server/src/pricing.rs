@@ -36,7 +36,7 @@ use panel::{
 	place::Expected,
 	pricing::{PricingError, PricingView},
 };
-use panel_core::{ids::BrandId, pricing::Problem};
+use panel_core::{ids::BrandId, pricing::Problem, role::Permission};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -120,7 +120,7 @@ fn item_json(v: &PricingView) -> Value {
 }
 
 fn admin(caller: &Caller) -> Result<(), ApiError> {
-	if caller.role.edits_pricing() { Ok(()) } else { Err(ApiError::Forbidden) }
+	if caller.role.may(Permission::EditsPricing) { Ok(()) } else { Err(ApiError::Forbidden) }
 }
 
 fn json_body<T: serde::de::DeserializeOwned>(b: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {

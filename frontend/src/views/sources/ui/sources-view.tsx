@@ -3,7 +3,7 @@
 import { Settled, Skeleton } from "@evinvest/uikit";
 import { useState } from "react";
 
-import { managesSources, useMe } from "@/entities/session";
+import { MAY, useMe } from "@/entities/session";
 import { type AddedSource, fetchSources } from "@/entities/source";
 import { AddSourceForm, SecretDialog } from "@/features/manage-sources";
 import { ROUTES } from "@/shared/config/routes";
@@ -22,7 +22,7 @@ export function SourcesView() {
   const sources = useResource("sources", fetchSources, "sources", { live: ["sources"] });
   const [added, setAdded] = useState<AddedSource | null>(null);
 
-  if (!managesSources(role)) {
+  if (!MAY[role].manages_sources) {
     return (
       <ScreenFrame title={t("sources.title")} back={ROUTES.more}>
         <ErrorState failure={{ kind: "forbidden", message: "" }} />
