@@ -49,7 +49,7 @@
               generated = {
                 enable = true;
                 name = "regenerate derived files";
-                entry = "bash -c '${gen}/bin/gen && git add -A frontend/src/entities/session/model/generated.ts'";
+                entry = "bash -c '${gen}/bin/gen && git add -A frontend/src/entities/session/model/generated.ts frontend/src/entities/lead/model/generated.ts frontend/src/entities/source/model/generated.ts frontend/src/shared/config/generated.ts frontend/src/shared/api/generated.ts'";
                 pass_filenames = false;
                 require_serial = true;
               };

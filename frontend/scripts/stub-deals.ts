@@ -3,8 +3,7 @@
  * on some leads, and the `?flow=` filter the leads list takes.
  */
 
-export const FLOWS = ["quote", "estimate", "fixed"] as const;
-type Flow = (typeof FLOWS)[number];
+import { FLOWS, type Flow } from "../src/entities/lead/model/generated.ts";
 
 export interface StubDeal {
   flow: Flow;

@@ -54,6 +54,11 @@ impl SourceKind {
 		}
 	}
 
+	/// Whether a signing key is issued for it: the panel writes its own kinds without one.
+	pub fn keyed(self) -> bool {
+		!matches!(self, Self::Panel | Self::Booking)
+	}
+
 	/// Whether a person entered it rather than a system observing it (spec §10a): the
 	/// reports show which share of the funnel is hand-made.
 	pub fn is_manual(self) -> bool {

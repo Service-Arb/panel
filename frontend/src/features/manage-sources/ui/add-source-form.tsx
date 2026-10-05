@@ -3,7 +3,7 @@
 import { Button, Field, FieldDescription, FieldLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@evinvest/uikit";
 import { useId, useState } from "react";
 
-import { type AddedSource, SOURCE_KINDS, type SourceKind, addSource } from "@/entities/source";
+import { type AddedSource, KEYED_SOURCE_KINDS, type KeyedSourceKind, addSource } from "@/entities/source";
 import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
@@ -17,7 +17,7 @@ export function AddSourceForm({ onAdded }: { onAdded: (added: AddedSource) => vo
   const button = useButtonSize();
   const id = useId();
   const [keyId, setKeyId] = useState("");
-  const [kind, setKind] = useState<SourceKind>("site");
+  const [kind, setKind] = useState<KeyedSourceKind>("site");
   const [brandsText, setBrandsText] = useState("");
   const [busy, setBusy] = useState(false);
   const size = useControlSize();
@@ -52,12 +52,12 @@ export function AddSourceForm({ onAdded }: { onAdded: (added: AddedSource) => vo
       </Field>
       <Field className="flex flex-col gap-1">
         <FieldLabel htmlFor={`${id}-kind`}>{t("sources.kind")}</FieldLabel>
-        <Select value={kind} onValueChange={(v) => setKind(SOURCE_KINDS.find((k) => k === v) ?? "site")}>
+        <Select value={kind} onValueChange={(v) => setKind(KEYED_SOURCE_KINDS.find((k) => k === v) ?? "site")}>
           <SelectTrigger id={`${id}-kind`} size={size} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {SOURCE_KINDS.map((k) => (
+            {KEYED_SOURCE_KINDS.map((k) => (
               <SelectItem key={k} value={k}>
                 {k}
               </SelectItem>

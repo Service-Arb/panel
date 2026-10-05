@@ -43,10 +43,10 @@ const MAX_MINOR: i64 = 10_000_000_000;
 
 /// The currencies a quote or a payment may be in. Checked here, not in the registry: a rebuild
 /// must not re-judge what was journaled under an older list.
-const CURRENCIES: [&str; 4] = ["EUR", "USD", "GBP", "AUD"];
+pub const CURRENCIES: [&str; 4] = ["EUR", "USD", "GBP", "AUD"];
 
 /// The header a client sets to make a write safe to retry.
-const IDEMPOTENCY_KEY: &str = "idempotency-key";
+pub const IDEMPOTENCY_KEY: &str = "idempotency-key";
 
 fn amount(what: &str, v: i64) -> ApiResult<i64> {
 	if v.unsigned_abs() > MAX_MINOR.unsigned_abs() {
@@ -764,7 +764,7 @@ async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Cal
 	let kind: SourceKind = b.kind.parse()?;
 	// The panel's own events carry no key (`key_id` NULL): a key of kind panel would only let
 	// something outside pass its writes off as typed in by hand.
-	if matches!(kind, SourceKind::Panel | SourceKind::Booking) {
+	if !kind.keyed() {
 		return Err(ApiError::BadRequest(format!("a key of kind {kind} is not issued: the panel writes without one")));
 	}
 	let brands = b.brands.iter().map(|b| BrandId::parse(b)).collect::<Result<BTreeSet<_>, _>>()?;

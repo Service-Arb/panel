@@ -91,7 +91,7 @@ export function bookingDto(brand: string, lead: string): LeadBooking {
   return byLead.get(`${brand}/${lead}`) ?? NONE;
 }
 
-export const BOOKING_STATUSES = ["none", "requested", "booked", "canceled", "done", "no_show"];
+export { BOOKING_STATUSES } from "../src/entities/lead/model/generated.ts";
 
 /** Replies already given, by Idempotency-Key: a retry gets the first answer back as 200. */
 const replayed = new Map<string, StubReply>();

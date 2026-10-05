@@ -93,7 +93,7 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
                                      every other route
   src/settings.rs                    the environment (ev_lib `settings!`)
 crates/panel_gen/                    `nix run .#gen`: the front end's mirror of Rust types and
-                                     tables (ev_lib `ts_gen`), into frontend/…/generated.ts,
+                                     tables (ev_lib `ts_gen`), into frontend/**/generated.ts,
                                      committed; the pre-commit hook re-runs it
 contracts/proto/concierge/v1/        concierge's auth and directory protos, vendored at the
                                      commit in REV (`sync.sh` refreshes them)
