@@ -954,8 +954,9 @@ dependencies = [
 
 [[package]]
 name = "ev_lib"
-version = "0.24.1"
-source = "git+https://github.com/EV-invest/lib?branch=feat%2Fts-gen#b822f2756f7555270a01145463d7eeca27540fa2"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8308234abaf3a3bf588e9b5ba0db5a1e4066ae2dd38c593226501d6a482a06ef"
 dependencies = [
  "async-trait",
  "jiff",
