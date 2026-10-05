@@ -219,11 +219,48 @@
             nix build .#frontend              the front end's static export
             nix run .#local-stack             the panel and both landings on this machine,
                                               wired together (docs/LOCAL.md)
+            nix run .#publish -- major|minor|patch [note]
+                                              tag the next vX.Y.Z and push it: CI ships the image
             nix run .#help                    this
             cargo test                        every test; the database ones on throwaway
                                               SQLite files, nothing to set up
             the CLI itself: panel --help
             EOF
+          '';
+        };
+        # The version lives in the tag, not in Cargo.toml: `release-container.yml` ships the image on it.
+        publish = pkgs.writeShellApplication {
+          name = "publish";
+          runtimeInputs = with pkgs; [ git ];
+          text = ''
+            part="''${1:-}"
+            case "$part" in
+              major | minor | patch) ;;
+              *) echo "usage: nix run .#publish -- major|minor|patch [release note]" >&2; exit 1 ;;
+            esac
+            [ -z "$(git status --porcelain)" ] || { echo "uncommitted changes — commit or stash first" >&2; exit 1; }
+            shift
+            note="$*"
+
+            git fetch --tags --force origin >/dev/null # not silenced: a stale tag list reuses a version
+            last="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
+            ver="''${last#v}"; [ -n "$ver" ] || ver="0.0.0"
+            ma="''${ver%%.*}"; rest="''${ver#*.}"; mi="''${rest%%.*}"; pa="''${rest##*.}"
+            case "$part" in
+              major) ma=$((ma + 1)); mi=0; pa=0 ;;
+              minor) mi=$((mi + 1)); pa=0 ;;
+              patch) pa=$((pa + 1)) ;;
+            esac
+            next="v$ma.$mi.$pa"
+            echo "''${last:-<no tag>} → $next"
+
+            # annotated: a lightweight tag has nowhere to put a note, and `--follow-tags` skips it
+            if [ -n "$note" ]; then
+              printf '%s\n\n%s\n' "$next" "$note" | git tag -a "$next" -F -
+            else
+              git tag -a "$next" -m "$next"
+            fi
+            git push origin "$next"
           '';
         };
         # The panel (dev sign-in) and the landings beside its checkout, wired together on this
@@ -239,6 +276,7 @@
       {
         apps = {
           help = { type = "app"; program = lib.getExe help; };
+          publish = { type = "app"; program = lib.getExe publish; };
           local-stack = { type = "app"; program = lib.getExe localStack; };
         };
 
