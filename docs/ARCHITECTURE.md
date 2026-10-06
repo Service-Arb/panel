@@ -137,7 +137,7 @@ GET /auth/login      ?return_to=<path> (optional; else 400), ?prompt=select_acco
                      sa_prelogin (10 min)
                      → 302 <concierge>/api/auth/authorize?client_id=sa&redirect_uri=…&state&code_challenge
                        [&prompt=select_account: Google's chooser even with a live evinvest.ltd session;
-                       the account email in the rail links here]
+                       the top bar's account menu, More and /account link here]
 GET /auth/callback   state = the cookie's (constant time), and not redeemed before
                      (consumed_states), else 400 and the code is never presented;
                      ExchangeCode(code, redirect_uri, verifier, client secret); the browser's
@@ -157,7 +157,8 @@ POST /auth/logout    CSRF; every session of the user is closed
   wildcard; anything outside `sa` is a failed answer); the gate admits every signed-in user,
   and each `/api/v1` route sits under one section — Work (`sa:work:read`), Analysis
   (`sa:analysis:read`), Admin (`sa:admin:sources:manage`) — or none (`/me`, the profile's
-  `/telegram*`). `http::api_routes` is the table the router is built from and the tests
+  `/telegram*`). `/me` also names `account_center` — concierge's `/cabinet/settings`, `null`
+  under dev sign-in — so the static export never bakes in an origin. `http::api_routes` is the table the router is built from and the tests
   walk. Actions ask their own permission on top (`sa:work:leads:edit`, `sa:work:pii:see`,
   `sa:work:places:edit`, `sa:work:pricing:edit`, `sa:analysis:experiments:edit`).
 - **The catalog.** `serve` publishes `Catalog::collect("sa", PANEL_BUILD_EPOCH)` with

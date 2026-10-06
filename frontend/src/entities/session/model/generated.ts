@@ -11,7 +11,11 @@ permissions: Array<Permission>,
 /**
  * Signed in by `PANEL_DEV_SIGN_IN`, not concierge: `/me` says so, for the UI to show.
  */
-dev_sign_in: boolean, };
+dev_sign_in: boolean, 
+/**
+ * Where the account itself is managed, on concierge's origin; none under dev sign-in.
+ */
+account_center: string | null, };
 
 export const PERMISSIONS = ["sa:admin:sources:manage", "sa:analysis:experiments:edit", "sa:analysis:read", "sa:playbook:mcp:use", "sa:review_archive:archive:operate", "sa:review_archive:members:act_as", "sa:review_archive:tokens:grant", "sa:work:leads:edit", "sa:work:pii:see", "sa:work:places:edit", "sa:work:pricing:edit", "sa:work:read"] as const;
 export type Permission = (typeof PERMISSIONS)[number];

@@ -14,6 +14,7 @@ import { useMarks } from "../model/use-marks";
 import { panelNav } from "./nav-items";
 import { PanelRail } from "./panel-rail";
 import { PanelTabs } from "./panel-tabs";
+import { PanelTopBar } from "./panel-top-bar";
 
 /** The kit's shell around every signed-in screen, with the nav's marks and the tab title's count. */
 export function ShellFrame({ children }: { children: ReactNode }) {
@@ -24,7 +25,7 @@ export function ShellFrame({ children }: { children: ReactNode }) {
   const nav = panelNav(t, me, marks);
   return (
     <NavMarksProvider value={{ [ROUTES.experiments]: marks.experiments, [ROUTES.sources]: marks.sources }}>
-      <AppShell breakpoint="md" rail={<PanelRail groups={nav.groups} />} tabBar={<PanelTabs items={nav.tabs} />}>
+      <AppShell breakpoint="md" rail={<PanelRail groups={nav.groups} />} topBar={<PanelTopBar />} tabBar={<PanelTabs items={nav.tabs} />}>
         {children}
       </AppShell>
     </NavMarksProvider>
