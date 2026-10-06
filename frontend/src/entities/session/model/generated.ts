@@ -3,19 +3,20 @@
 /**
  * The signed-in user of an `/api/v1` request, put in its extensions by [`gate`]; `GET /me`.
  */
-export type Caller = { user_id: string, role: Role, email: string, preferred_name: string, 
+export type Caller = { user_id: string, email: string, preferred_name: string, 
+/**
+ * Concrete `sa` permissions, as concierge resolved them.
+ */
+permissions: Array<Permission>, 
 /**
  * Signed in by `PANEL_DEV_SIGN_IN`, not concierge: `/me` says so, for the UI to show.
  */
 dev_sign_in: boolean, };
-/**
- * Ordered by what they may do: each role may do everything the one before it may.
- */
-export type Role = "operator" | "admin";
 
-export const ROLES = ["operator", "admin"] as const;
+export const PERMISSIONS = ["sa:admin:sources:manage", "sa:analysis:experiments:edit", "sa:analysis:read", "sa:playbook:mcp:use", "sa:review_archive:archive:operate", "sa:review_archive:members:act_as", "sa:review_archive:tokens:grant", "sa:work:leads:edit", "sa:work:pii:see", "sa:work:places:edit", "sa:work:pricing:edit", "sa:work:read"] as const;
+export type Permission = (typeof PERMISSIONS)[number];
 
-export const MAY = {
-  "admin": { "edits_experiments": true, "edits_leads": true, "edits_places": true, "edits_pricing": true, "manages_sources": true, "sees_pii": true },
-  "operator": { "edits_experiments": false, "edits_leads": true, "edits_places": false, "edits_pricing": false, "manages_sources": false, "sees_pii": true },
+export const ALIASES = {
+  "sa:admin": ["sa:admin:sources:manage", "sa:analysis:experiments:edit", "sa:analysis:read", "sa:playbook:mcp:use", "sa:review_archive:archive:operate", "sa:review_archive:members:act_as", "sa:review_archive:tokens:grant", "sa:work:leads:edit", "sa:work:pii:see", "sa:work:places:edit", "sa:work:pricing:edit", "sa:work:read"],
+  "sa:operator": ["sa:analysis:read", "sa:work:leads:edit", "sa:work:pii:see", "sa:work:read"],
 } as const;

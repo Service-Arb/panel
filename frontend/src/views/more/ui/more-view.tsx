@@ -4,7 +4,7 @@ import { Button, Item, ItemActions, ItemContent, ItemGroup, ItemTitle, NavDot } 
 import { ArrowUpRight, FlaskConical, KeyRound, LayoutGrid, type LucideIcon, Tags } from "lucide-react";
 import Link from "next/link";
 
-import { DevSignInBadge, MAY, useMe } from "@/entities/session";
+import { DevSignInBadge, may, useMe } from "@/entities/session";
 import { useSignOut } from "@/features/sign-out";
 import { ROUTES } from "@/shared/config/routes";
 import { type MessageKey, useT } from "@/shared/i18n";
@@ -25,13 +25,12 @@ export function MoreView() {
         <span className="flex flex-wrap items-center gap-2 text-sm text-ink">
           {me.preferred_name || me.email} <DevSignInBadge />
         </span>
-        <span className="text-sm text-ink-mid">{t(`nav.role.${me.role}`)}</span>
         <LiveStatusIndicator className="mt-1" />
       </section>
       <ItemGroup className="gap-2">
-        <MoreLink href={ROUTES.pricing} icon={Tags} label="nav.pricing" />
-        <MoreLink href={ROUTES.experiments} icon={FlaskConical} label="nav.experiments" />
-        {MAY[me.role].manages_sources && <MoreLink href={ROUTES.sources} icon={KeyRound} label="nav.sources" />}
+        {may(me, "sa:work:read") && <MoreLink href={ROUTES.pricing} icon={Tags} label="nav.pricing" />}
+        {may(me, "sa:analysis:read") && <MoreLink href={ROUTES.experiments} icon={FlaskConical} label="nav.experiments" />}
+        {may(me, "sa:admin:sources:manage") && <MoreLink href={ROUTES.sources} icon={KeyRound} label="nav.sources" />}
         <Item variant="outline" size="sm" asChild>
           <a href={ROUTES.grafana} target="_blank" rel="noopener noreferrer">
             <LayoutGrid aria-hidden className="size-4" />

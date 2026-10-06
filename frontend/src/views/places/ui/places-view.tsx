@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { fetchFunnelByLocation } from "@/entities/funnel";
 import { type PlaceKey, fetchPlaces } from "@/entities/place";
-import { MAY, useMe } from "@/entities/session";
+import { may, useMe } from "@/entities/session";
 import { fetchSources } from "@/entities/source";
 import { AddPlaceButton } from "@/features/add-place";
 import { type Period, rangeOf } from "@/features/funnel-filters";
@@ -30,7 +30,7 @@ const WINDOW_DAYS: Period = 30;
  */
 export function PlacesView() {
   const t = useT();
-  const { role } = useMe();
+  const me = useMe();
   // Fixed when the screen opens: a range that moved mid-render would refetch in a loop.
   const [range] = useState(() => rangeOf(WINDOW_DAYS, new Date()));
   const [version, setVersion] = useState(0);
@@ -45,7 +45,7 @@ export function PlacesView() {
       const [funnel, places, sources] = await Promise.all([
         fetchFunnelByLocation({ ...range, brand: null }),
         fetchPlaces(),
-        MAY[role].edits_places ? fetchSources() : Promise.resolve([]),
+        may(me, "sa:admin:sources:manage") ? fetchSources() : Promise.resolve([]),
       ]);
       return { rows: placeRows(funnel.locations, places), minSample: funnel.min_sample, brands: offeredBrands(places, sources) };
     },
@@ -57,7 +57,7 @@ export function PlacesView() {
     <ScreenFrame
       title={t("places.title")}
       actions={
-        MAY[role].edits_places && data.status === "ok" ? (
+        may(me, "sa:work:places:edit") && data.status === "ok" ? (
           <AddPlaceButton
             brands={data.data.brands}
             onAdded={(key) => {

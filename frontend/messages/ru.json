@@ -9,8 +9,6 @@
   "nav.more": "Ещё",
   "nav.primary": "Основная навигация",
   "nav.signOut": "Выйти",
-  "nav.role.admin": "админ",
-  "nav.role.operator": "оператор",
   "state.loading": "Загрузка…",
   "state.retry": "Повторить",
   "state.error": "Не удалось загрузить. {detail}",

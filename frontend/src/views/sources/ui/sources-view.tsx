@@ -3,7 +3,7 @@
 import { Settled, Skeleton } from "@evinvest/uikit";
 import { useState } from "react";
 
-import { MAY, useMe } from "@/entities/session";
+import { may, useMe } from "@/entities/session";
 import { type AddedSource, fetchSources } from "@/entities/source";
 import { AddSourceForm, SecretDialog } from "@/features/manage-sources";
 import { ROUTES } from "@/shared/config/routes";
@@ -18,11 +18,11 @@ import { SourcesTable } from "./sources-table";
 /** Admin only (spec §5.4): the signing keys the sources ingest with. */
 export function SourcesView() {
   const t = useT();
-  const { role } = useMe();
+  const me = useMe();
   const sources = useResource("sources", fetchSources, "sources", { live: ["sources"] });
   const [added, setAdded] = useState<AddedSource | null>(null);
 
-  if (!MAY[role].manages_sources) {
+  if (!may(me, "sa:admin:sources:manage")) {
     return (
       <ScreenFrame title={t("sources.title")} back={ROUTES.more}>
         <ErrorState failure={{ kind: "forbidden", message: "" }} />

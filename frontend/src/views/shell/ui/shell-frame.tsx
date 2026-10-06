@@ -21,7 +21,7 @@ export function ShellFrame({ children }: { children: ReactNode }) {
   const me = useMe();
   const marks = useMarks(me.user_id, usePathname());
   useTitleCount(marks.away, t("nav.leads"));
-  const nav = panelNav(t, me.role, marks);
+  const nav = panelNav(t, me, marks);
   return (
     <NavMarksProvider value={{ [ROUTES.experiments]: marks.experiments, [ROUTES.sources]: marks.sources }}>
       <AppShell breakpoint="md" rail={<PanelRail groups={nav.groups} />} tabBar={<PanelTabs items={nav.tabs} />}>

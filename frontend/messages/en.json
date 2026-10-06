@@ -9,8 +9,6 @@
   "nav.more": "More",
   "nav.primary": "Main navigation",
   "nav.signOut": "Sign out",
-  "nav.role.admin": "admin",
-  "nav.role.operator": "operator",
   "state.loading": "Loading…",
   "state.retry": "Try again",
   "state.error": "Could not load this. {detail}",
