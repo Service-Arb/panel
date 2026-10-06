@@ -651,6 +651,7 @@ dependencies = [
 [[package]]
 name = "concierge_iam"
 version = "0.1.0"
+source = "git+https://github.com/EV-invest/concierge?rev=7930abfe66b6370d40f75d480ceed4f1b418f406#7930abfe66b6370d40f75d480ceed4f1b418f406"
 dependencies = [
  "concierge_iam_derive",
  "ev_lib",
@@ -662,6 +663,7 @@ dependencies = [
 [[package]]
 name = "concierge_iam_derive"
 version = "0.1.0"
+source = "git+https://github.com/EV-invest/concierge?rev=7930abfe66b6370d40f75d480ceed4f1b418f406#7930abfe66b6370d40f75d480ceed4f1b418f406"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -2436,6 +2438,7 @@ dependencies = [
  "panel",
  "panel_contracts",
  "panel_core",
+ "sa_auth",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2473,13 +2476,12 @@ dependencies = [
  "hex",
  "hmac",
  "jiff",
+ "sa_auth",
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "strum",
  "subtle",
  "thiserror",
- "ts-rs",
  "uuid",
 ]
 
@@ -2490,8 +2492,7 @@ dependencies = [
  "ev_lib",
  "panel_core",
  "panel_server",
- "serde_json",
- "strum",
+ "sa_auth",
 ]
 
 [[package]]
@@ -2511,8 +2512,10 @@ dependencies = [
  "panel_contracts",
  "panel_core",
  "reqwest",
+ "sa_auth",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "subtle",
  "thiserror",
@@ -3812,27 +3815,6 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
-
-[[package]]
-name = "strum"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
-dependencies = [
- "strum_macros",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
 
 [[package]]
 name = "subtle"
