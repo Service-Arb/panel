@@ -134,7 +134,7 @@ impl SignIn {
 	}
 }
 
-/// The signed-in user of an `/api/v1` request, put in its extensions by [`gate`]; `GET /me`.
+/// The signed-in user of an `/api/v1` request, put in its extensions by the gate; `GET /me`.
 #[derive(Clone, Debug, Serialize, TS)]
 pub struct Caller {
 	pub user_id: Uuid,

@@ -1,5 +1,5 @@
 //! The operator API, `/api/v1`, for the panel's front end. JSON in and out; every request has
-//! passed [`crate::signin::gate`], so a [`Caller`] is in its extensions. What an action
+//! passed the sign-in gate (`signin::gate`), so a [`Caller`] is in its extensions. What an action
 //! means is the engine's (`panel::operator`); this only translates and asks the caller's
 //! permissions.
 //!
