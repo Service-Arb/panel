@@ -113,7 +113,7 @@ panel() {
 		PANEL_DB_PATH="$state/panel.db" \
 		PANEL_DATA_KEY="$(cat "$state/data-key")" \
 		PANEL_PUBLIC_ORIGIN="$origin" \
-		PANEL_DEV_SIGN_IN="$role" \
+		PANEL_DEV_SIGN_IN="sa:$role" \
 		PANEL_WEB_DIR="$PANEL_WEB_DIR" \
 		"$PANEL_BIN" "$@"
 }

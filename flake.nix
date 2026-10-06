@@ -220,6 +220,8 @@
               PANEL_DB_PATH = dbPath;
               POSTHOG_PROJECT_API_KEY = "phc_sBwWEgdgockVmfyucBRkTTo6iZ4Y2eApSGorD22WLzj3";
               POSTHOG_PROJECT_ID = "614067";
+              # the version of the sa catalog `serve` publishes to concierge
+              PANEL_BUILD_EPOCH = toString self.lastModified;
             };
             imageEnv = [ "PANEL_WEB_DIR=${frontend}" ];
           };

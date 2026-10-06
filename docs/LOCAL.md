@@ -78,10 +78,12 @@ to `/etc/hosts`.
 
 ## Dev sign-in
 
-`PANEL_DEV_SIGN_IN=admin|operator` (and optionally `PANEL_DEV_SIGN_IN_EMAIL`, by default
-`dev-<role>@localhost`) replaces concierge: `/auth/login` sends the browser straight to
-`/auth/callback`, which opens a real panel session for a made-up user with that role. The
-sidebar shows the user as **Dev sign-in (admin)**, `GET /api/v1/me` answers
+`PANEL_DEV_SIGN_IN` — an alias (`sa:admin`, `sa:operator`), a comma-separated list of `sa`
+permissions, or `none` — (and optionally `PANEL_DEV_SIGN_IN_EMAIL`, by default
+`dev-admin@localhost` for `sa:admin`) replaces concierge: `/auth/login` sends the browser
+straight to `/auth/callback`, which opens a real panel session for a made-up user holding
+those. An unknown permission fails the boot, named. The sidebar shows the user as **Dev
+sign-in (dev-admin@localhost)**, `GET /api/v1/me` answers
 `"dev_sign_in": true` (for a UI badge), and `serve` logs `DEV SIGN-IN ON` at start.
 
 The binary refuses it at start (exit 78, every command) in any `APP_ENV` but `development`,
@@ -93,7 +95,7 @@ Without the script:
 
 ```sh
 APP_ENV=development PANEL_DB_PATH=./panel.db PANEL_DATA_KEY="$(panel gen-data-key)" \
-PANEL_PUBLIC_ORIGIN=http://127.0.0.1:59120 PANEL_DEV_SIGN_IN=admin \
+PANEL_PUBLIC_ORIGIN=http://127.0.0.1:59120 PANEL_DEV_SIGN_IN=sa:admin \
 PANEL_WEB_DIR="$(nix build .#frontend --print-out-paths)" panel serve
 ```
 
