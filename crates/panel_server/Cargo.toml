@@ -24,6 +24,7 @@ color-eyre.workspace = true
 ev_lib = { workspace = true, features = ["settings", "error_monitoring"] }
 eyre.workspace = true
 http-body-util.workspace = true
+hyper-util.workspace = true
 jiff.workspace = true
 panel.workspace = true
 panel_contracts.workspace = true

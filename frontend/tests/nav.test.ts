@@ -22,13 +22,13 @@ describe("the rail", () => {
   });
 
   it("has no Account group: the profile block is the rail's footer, not a nav group", () => {
-    expect(Object.keys(ids(ALIAS.admin))).toEqual(["work", "analysis", "admin"]);
-    expect(Object.keys(ids(ALIAS.operator))).toEqual(["work", "analysis"]);
+    expect(Object.keys(ids(ALIAS.admin))).toEqual(["work", "analysis", "admin", "archive"]);
+    expect(Object.keys(ids(ALIAS.operator))).toEqual(["work", "analysis", "archive"]);
   });
 
-  it("shows a section only to whoever its permission opens", () => {
-    expect(Object.keys(ids([]))).toEqual([]);
-    expect(Object.keys(ids(["sa:analysis:read"]))).toEqual(["analysis"]);
-    expect(panelNav(t, caller([]), marks).tabs.map((i) => i.id)).toEqual(["more"]);
+  it("shows a section only to whoever its permission opens, and the review archive to everyone", () => {
+    expect(Object.keys(ids([]))).toEqual(["archive"]);
+    expect(Object.keys(ids(["sa:analysis:read"]))).toEqual(["analysis", "archive"]);
+    expect(panelNav(t, caller([]), marks).tabs.map((i) => i.id)).toEqual(["review_archive", "more"]);
   });
 });

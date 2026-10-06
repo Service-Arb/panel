@@ -47,6 +47,9 @@ fn production(db: &str) -> Vec<(&'static str, String)> {
 		("CONCIERGE_GRPC_ADDR", "http://concierge:55670".to_owned()),
 		("RP_CLIENT_SECRET_SA", "s".repeat(40)),
 		("PANEL_BUILD_EPOCH", "1791100000".to_owned()),
+		("PANEL_ASSERTION_KEY", "k1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".to_owned()),
+		("PANEL_REVIEW_ARCHIVE_URL", "http://review-archive:59110".to_owned()),
+		("PANEL_PLAYBOOK_URL", "http://playbook-web.personal:59082".to_owned()),
 	]
 }
 

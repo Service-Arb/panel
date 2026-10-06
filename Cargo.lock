@@ -2507,6 +2507,7 @@ dependencies = [
  "eyre",
  "futures",
  "http-body-util",
+ "hyper-util",
  "jiff",
  "panel",
  "panel_contracts",

@@ -146,11 +146,13 @@ export function createHttp(deps: HttpDeps): Http {
 /** The backend's sign-in; a full navigation, since it answers with a redirect to concierge. */
 export const SIGN_IN_PATH = "/auth/login";
 
-/** The session is gone (an HTTP 401, the live socket's 4401): off to the backend's sign-in. */
+/** The session is gone (an HTTP 401, the live socket's 4401): off to the backend's sign-in, and back here. */
 export function goToSignIn(): void {
+  if (typeof window === "undefined") return;
+  const here = window.location.pathname + window.location.search;
   // /auth/login is the Rust backend's route, not a page of this app: only a full navigation reaches it.
   // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-  if (typeof window !== "undefined") window.location.assign(SIGN_IN_PATH);
+  window.location.assign(`${SIGN_IN_PATH}?return_to=${encodeURIComponent(here)}`);
 }
 
 export const http: Http = createHttp({

@@ -194,6 +194,43 @@ POST /auth/logout    CSRF; every session of the user is closed
   is `http://localhost[:port]` or `http://127.0.0.1[:port]` — the image is
   `APP_ENV=production`, so it cannot be on there.
 
+## Forward
+
+The services behind Service-Arb live under the panel's origin; `crates/panel_server/src/forward.rs`
+streams each prefix to its service, both ways (hyper-util, no buffering), one table for all of
+it — the front end's reserved paths (`web.rs`) are derived from it.
+
+```text
+/api/review_archive/*            → review_archive /*            session + assertion; CSRF on writes
+/review_archive/mfe/*            → review_archive /mfe/*        open: the dashboard's bundle
+/playbook_mcp/authorize          → playbook (same path)         session + assertion; no panel CSRF
+/playbook_mcp/*, /.well-known/oauth-{authorization-server,protected-resource}/playbook_mcp
+                                 → playbook (same path)         open: OAuth and bearer clients
+```
+
+- **Who is calling** is told by an assertion the panel signs for that one request (`sa_auth`,
+  header `x-sa-assertion`): Ed25519 (`PANEL_ASSERTION_KEY`), `aud` the service, the caller's
+  `sub`, email, `email_verified`, name, their `sa:<service>:*` permissions only, the
+  method and the upstream path, alive 60 s. The services verify it with the public half
+  (`PANEL_ASSERTION_KEYS`, several while a key rotates) and trust nothing else.
+- **Hygiene:** the browser's `Cookie`, any inbound `x-sa-assertion` and `x-sa-csrf`, and
+  hop-by-hop headers never go up; `Set-Cookie` never comes down — a service sets nothing on
+  the panel's origin. Everything else passes (`X-Member`, a client's `Authorization`).
+- **Gates:** a gated read takes the cached `GetMe`, a gated write asks concierge afresh. A
+  write under `/api/review_archive` needs the panel's CSRF header. The consent form playbook
+  serves at `/playbook_mcp/authorize` posts without it: the `SameSite=Lax` session and
+  playbook's own single-use nonce (bound to `sub` and the pending request) guard it. A
+  signed-out `GET` of that page goes to `/auth/login?return_to=` and comes back; a call
+  without a session is a 401.
+- **The page** `/review_archive` mounts `<mfe-review-archive-dashboard api base sign-in
+  csrf-cookie>` from `/review_archive/mfe/` (`shared/mfe`), its stylesheet demoted into the
+  `mfe` layer; any `/review_archive/<view>` without a dot loads the same page, for the
+  dashboard to route.
+- **Accepted risk:** the bundle runs on the panel's origin, unsandboxed, with the session it
+  rides on — review_archive's build is trusted as the panel's own code is.
+- Without `PANEL_ASSERTION_KEY`, `PANEL_REVIEW_ARCHIVE_URL` and `PANEL_PLAYBOOK_URL` (all
+  three, or none: a configuration error at boot), nothing is forwarded.
+
 ## The operator API, `/api/v1`
 
 JSON; timestamps RFC 3339, money in minor units (|amount| ≤ 10^10, currency one of EUR,
@@ -885,21 +922,22 @@ Booking:      {id, brand, provider, external_ref, status: booked | canceled, sta
   is let be: that is a rollback onto a schema moved on. Timestamps are INTEGER microseconds
   since the epoch, days `YYYY-MM-DD` text, UUIDs 16-byte blobs, JSON text that must parse.
 - **Secrets come from the environment only** (`PANEL_DATA_KEY`, `SENTRY_DSN`,
-  `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+  `RP_CLIENT_SECRET_SA`, `PANEL_ASSERTION_KEY`, `TELEGRAM_BOT_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRET`,
   `GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>`),
   through `ev_lib::settings`; with `APP_ENV=production`, `PANEL_DB_PATH`, `PANEL_DATA_KEY` and
-  the four sign-in variables are required at boot (`panel --print-required-vars` lists them).
+  the four sign-in variables and the forward's three are required at boot
+  (`panel --print-required-vars` lists them).
 
 ## Deploy requirements
 
 - **One image, one origin.** The image carries the binary and the front end's static
   export, and sets `PANEL_WEB_DIR` to it; `serve` answers `/api`, `/auth` and `/health`
-  first, then the files (a directory by its `index.html`, anything else `404.html` with a
-  404). `/grafana` is held: a JSON 404 until the dashboards move there. `/_next/static/*`
+  first, then the forward's prefixes (Forward), then the files (a directory by its
+  `index.html`, anything else `404.html` with a 404). `/grafana` is held: a JSON 404 until the dashboards move there. `/_next/static/*`
   is `immutable` for a year, everything else `no-cache` (the store's 1970 mtimes make
   date revalidation meaningless, so the panel answers none); every page carries a CSP of
   `default-src 'self'` with `'unsafe-inline'` for scripts and styles (Next's inline
-  bootstrap), `frame-ancestors 'none'`, `Referrer-Policy: same-origin`. Without
+  bootstrap), `'wasm-unsafe-eval'` (the review_archive dashboard), `frame-ancestors 'none'`, `Referrer-Policy: same-origin`. Without
   `PANEL_WEB_DIR`, `serve` answers the API alone and says so.
 - **The contract** (`nix eval .#containers.<system>.panel.contract`) names the port
   (59120), `/health`, `APP_ENV=production`, the variables required, secret and optional,

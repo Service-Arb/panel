@@ -178,7 +178,7 @@ fn private(mut res: Response) -> Response {
 }
 
 /// Percent-encodes a query value: everything but RFC 3986's unreserved characters.
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
 	let mut out = String::with_capacity(value.len());
 	for b in value.bytes() {
 		if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {

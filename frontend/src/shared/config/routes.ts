@@ -6,6 +6,7 @@ export const ROUTES = {
   experiments: "/experiments",
   sources: "/sources",
   more: "/more",
+  reviewArchive: "/review_archive/",
   signedOut: "/signed-out",
   /** Its own instance behind the backend's auth proxy (spec §6); a full navigation. */
   grafana: "/grafana/",

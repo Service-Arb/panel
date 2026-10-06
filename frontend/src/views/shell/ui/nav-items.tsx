@@ -1,5 +1,5 @@
 import { NavDot, type NavGroup, type NavItem } from "@evinvest/uikit";
-import { ArrowUpRight, BarChart3, Ellipsis, FlaskConical, Inbox, KeyRound, LayoutGrid, MapPin, Tags } from "lucide-react";
+import { Archive, ArrowUpRight, BarChart3, Ellipsis, FlaskConical, Inbox, KeyRound, LayoutGrid, MapPin, Tags } from "lucide-react";
 
 import { type Caller, may } from "@/entities/session";
 import { ROUTES } from "@/shared/config/routes";
@@ -40,13 +40,14 @@ export function panelNav(t: T, caller: Caller, marks: Marks): PanelNav {
     target: "_blank",
     trailing: <ArrowUpRight aria-hidden className="size-4 text-ink-soft" />,
   };
+  const reviewArchive: NavItem = { id: "review_archive", href: ROUTES.reviewArchive, label: t("nav.reviewArchive"), icon: Archive };
   const elsewhere = (analysis && marks.experiments) || (admin && marks.sources);
   const more: NavItem = {
     id: "more",
     href: ROUTES.more,
     label: t("nav.more"),
     icon: Ellipsis,
-    also: [...(work ? [ROUTES.pricing] : []), ...(analysis ? [ROUTES.experiments] : []), ...(admin ? [ROUTES.sources] : [])],
+    also: [...(work ? [ROUTES.reviewArchive, ROUTES.pricing] : []), ...(analysis ? [ROUTES.experiments] : []), ...(admin ? [ROUTES.sources] : [])],
     ...(elsewhere ? { badge: dot(true) } : {}),
   };
 
@@ -54,8 +55,9 @@ export function panelNav(t: T, caller: Caller, marks: Marks): PanelNav {
   if (work) groups.push({ id: "work", label: t("nav.group.work"), items: [overview, leads, places, pricing] });
   if (analysis) groups.push({ id: "analysis", label: t("nav.group.analysis"), items: [experiments, grafana] });
   if (admin) groups.push({ id: "admin", label: t("nav.group.admin"), items: [sources] });
+  groups.push({ id: "archive", label: t("nav.group.archive"), items: [reviewArchive] });
   return {
     groups,
-    tabs: [...(work ? [overview, leads, places] : []), more],
+    tabs: [...(work ? [overview, leads, places] : [reviewArchive]), more],
   };
 }

@@ -9,8 +9,9 @@ export function may(caller: Caller, permission: Permission): boolean {
 
 /**
  * Where a person lands (spec §10): whoever manages the sources reads the funnel first;
- * everyone else's job is the queue of new leads.
+ * the rest of the team the queue of new leads; anyone else the review archive, open to all.
  */
 export function startRouteFor(caller: Caller): string {
-  return may(caller, "sa:admin:sources:manage") ? ROUTES.overview : `${ROUTES.leads}?stage=created`;
+  if (may(caller, "sa:admin:sources:manage")) return ROUTES.overview;
+  return may(caller, "sa:work:read") ? `${ROUTES.leads}?stage=created` : ROUTES.reviewArchive;
 }

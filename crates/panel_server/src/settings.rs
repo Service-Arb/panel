@@ -41,6 +41,17 @@ ev_lib::settings! {
 		/// Unix seconds of the commit the binary was built from (the image sets it): the
 		/// version of the `sa` catalog `serve` publishes to concierge. Needed with the sign-in.
 		panel_build_epoch: Option<u64>,
+		/// The panel's Ed25519 key for the assertions it signs to the services it forwards to,
+		/// `<kid>:<base64 seed>` (`sa_auth`). With the two URLs below, or none of them.
+		#[secret]
+		#[required_in("production")]
+		panel_assertion_key: Option<String>,
+		/// review_archive, from inside the cluster, e.g. `http://review-archive:59110`.
+		#[required_in("production")]
+		panel_review_archive_url: Option<String>,
+		/// playbook, from inside the cluster, e.g. `http://playbook-web.personal:59082`.
+		#[required_in("production")]
+		panel_playbook_url: Option<String>,
 		/// The panel's bot (`@evinvest_sa_bot`; not `telegram_token_main`). Unset: no Telegram
 		/// notifications, and `serve` says so. Needs the sign-in configured too.
 		#[secret]
@@ -320,6 +331,34 @@ impl Settings {
 	}
 }
 
+impl Settings {
+	/// The services behind the panel (docs/ARCHITECTURE.md, Forward): `None` when none of their
+	/// variables is set; some but not all is a mistake, named.
+	pub fn forward(&self) -> eyre::Result<Option<panel_server::forward::Upstreams>> {
+		let vars = [
+			("PANEL_ASSERTION_KEY", &self.panel_assertion_key),
+			("PANEL_REVIEW_ARCHIVE_URL", &self.panel_review_archive_url),
+			("PANEL_PLAYBOOK_URL", &self.panel_playbook_url),
+		];
+		let missing: Vec<&str> = vars.iter().filter(|(_, v)| v.as_deref().is_none_or(|v| v.trim().is_empty())).map(|(name, _)| *name).collect();
+		if missing.len() == vars.len() {
+			return Ok(None);
+		}
+		eyre::ensure!(missing.is_empty(), "the forward needs {} too", missing.join(", "));
+		let uri = |name: &str, v: &Option<String>| -> eyre::Result<axum::http::Uri> {
+			let raw = v.as_deref().expect("checked above").trim();
+			let uri: axum::http::Uri = raw.parse().map_err(|e| eyre::eyre!("{name} is not a URL: {e}"))?;
+			eyre::ensure!(uri.scheme_str() == Some("http") && uri.path() == "/" && uri.query().is_none(), "{name} must be a bare http:// origin, not {raw}");
+			Ok(uri)
+		};
+		Ok(Some(panel_server::forward::Upstreams {
+			review_archive: uri("PANEL_REVIEW_ARCHIVE_URL", &self.panel_review_archive_url)?,
+			playbook: uri("PANEL_PLAYBOOK_URL", &self.panel_playbook_url)?,
+			signer: self.panel_assertion_key.as_deref().expect("checked above").trim().parse().map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEY: {e}"))?,
+		}))
+	}
+}
+
 /// `PANEL_DEV_SIGN_IN`, checked: who everyone signs in as, and where.
 #[derive(Debug)]
 pub struct DevSignIn {
@@ -446,6 +485,9 @@ mod tests {
 				"CONCIERGE_GRPC_ADDR",
 				"RP_CLIENT_SECRET_SA",
 				"PANEL_BUILD_EPOCH",
+				"PANEL_ASSERTION_KEY",
+				"PANEL_REVIEW_ARCHIVE_URL",
+				"PANEL_PLAYBOOK_URL",
 				"TELEGRAM_BOT_TOKEN",
 				"TELEGRAM_BOT_USERNAME",
 				"TELEGRAM_LOCALE",
@@ -470,7 +512,10 @@ mod tests {
 				"PANEL_PUBLIC_ORIGIN",
 				"CONCIERGE_PUBLIC_ORIGIN",
 				"CONCIERGE_GRPC_ADDR",
-				"RP_CLIENT_SECRET_SA"
+				"RP_CLIENT_SECRET_SA",
+				"PANEL_ASSERTION_KEY",
+				"PANEL_REVIEW_ARCHIVE_URL",
+				"PANEL_PLAYBOOK_URL"
 			]
 		);
 		assert!(Settings::required_var_names("development").is_empty());
@@ -608,6 +653,9 @@ mod tests {
 				("CONCIERGE_GRPC_ADDR", "http://concierge:55670"),
 				("RP_CLIENT_SECRET_SA", &secret),
 				("PANEL_BUILD_EPOCH", "1791100000"),
+				("PANEL_ASSERTION_KEY", "k1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="),
+				("PANEL_REVIEW_ARCHIVE_URL", "http://review-archive:59110"),
+				("PANEL_PLAYBOOK_URL", "http://playbook-web.personal:59082"),
 			])
 			.unwrap()
 			.sign_in()
@@ -633,6 +681,9 @@ mod tests {
 				("CONCIERGE_GRPC_ADDR", "http://localhost:55670"),
 				("RP_CLIENT_SECRET_SA", &secret),
 				("PANEL_BUILD_EPOCH", "1791100000"),
+				("PANEL_ASSERTION_KEY", "k1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="),
+				("PANEL_REVIEW_ARCHIVE_URL", "http://review-archive:59110"),
+				("PANEL_PLAYBOOK_URL", "http://playbook-web.personal:59082"),
 			])
 			.unwrap()
 			.sign_in()
@@ -712,6 +763,9 @@ mod tests {
 				("CONCIERGE_PUBLIC_ORIGIN", "https://evinvest.ltd"),
 				("CONCIERGE_GRPC_ADDR", "http://concierge:55670"),
 				("RP_CLIENT_SECRET_SA", &secret),
+				("PANEL_ASSERTION_KEY", "k1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="),
+				("PANEL_REVIEW_ARCHIVE_URL", "http://review-archive:59110"),
+				("PANEL_PLAYBOOK_URL", "http://playbook-web.personal:59082"),
 				("PANEL_DEV_SIGN_IN", "sa:admin"),
 			])
 			.unwrap()

@@ -596,5 +596,8 @@
   "placeSettings.booking.problem.url_type": "Страница — это адрес.",
   "placeSettings.booking.problem.default_unknown": "Сайт не знает такого провайдера.",
   "placeSettings.booking.problem.default_unset": "Укажите этому провайдеру страницу или выберите другой по умолчанию.",
-  "placeSettings.booking.problem.default_choose": "Выберите, что предлагать по умолчанию, чтобы сохранить страницы."
+  "placeSettings.booking.problem.default_choose": "Выберите, что предлагать по умолчанию, чтобы сохранить страницы.",
+  "nav.reviewArchive": "Архив отзывов",
+  "nav.group.archive": "Отзывы",
+  "reviewArchive.loading": "Загружаем архив отзывов…"
 }

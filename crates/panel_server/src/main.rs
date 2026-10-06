@@ -236,8 +236,10 @@ async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSign
 			let front_end = settings.web()?;
 			let capture = settings.capture()?.map(|c| CaptureApi::new(&c.host, &c.key)).transpose()?;
 			let google = google(&settings)?;
+			let forward = settings.forward()?;
+			eyre::ensure!(forward.is_none() || sign_in.is_some(), "the forward vouches for signed-in callers: it needs the sign-in configured");
 			let panel = connect().await?.with_capture(capture.is_some());
-			serve(panel, sign_in, telegram, capture, google, front_end, bind).await
+			serve(panel, sign_in, telegram, capture, google, front_end, forward, bind).await
 		}
 		Cmd::RebuildProjections => {
 			let r = connect().await?.rebuild_projections().await?;
@@ -493,6 +495,7 @@ async fn serve(
 	sender: Option<CaptureApi>,
 	google: Option<(google_calendar::GoogleCalendar, jiff::SignedDuration)>,
 	front_end: Option<Files>,
+	forward: Option<panel_server::forward::Upstreams>,
 	bind: SocketAddr,
 ) -> eyre::Result<()> {
 	let sign_in = match sign_in {
@@ -578,7 +581,15 @@ async fn serve(
 					BotName::off()
 				}
 			};
-			http::app_with_telegram(SignIn::new(panel, concierge, config), http::Limits::default(), bot)
+			let sign_in = SignIn::new(panel, concierge, config);
+			let app = http::app_with_telegram(sign_in.clone(), http::Limits::default(), bot);
+			match forward {
+				Some(upstreams) => app.merge(panel_server::forward::Forward::new(sign_in, upstreams).routes()),
+				None => {
+					tracing::warn!("forward not configured: no /api/review_archive, /review_archive/mfe or /playbook_mcp");
+					app
+				}
+			}
 		}
 		None => {
 			tracing::warn!("sign-in not configured: serving ingest only, no /auth, no /api/v1");

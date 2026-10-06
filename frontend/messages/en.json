@@ -596,5 +596,8 @@
   "placeSettings.booking.problem.url_type": "The page is an address.",
   "placeSettings.booking.problem.default_unknown": "Not a provider the site knows.",
   "placeSettings.booking.problem.default_unset": "Give this provider a page, or choose another default.",
-  "placeSettings.booking.problem.default_choose": "Choose what is offered by default to save the pages."
+  "placeSettings.booking.problem.default_choose": "Choose what is offered by default to save the pages.",
+  "nav.reviewArchive": "Review Archive",
+  "nav.group.archive": "Reviews",
+  "reviewArchive.loading": "Loading the review archive…"
 }
