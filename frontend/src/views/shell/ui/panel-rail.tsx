@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 
 import { DevSignInBadge, useMe } from "@/entities/session";
 import { useSignOut } from "@/features/sign-out";
+import { switchAccountPath } from "@/shared/api";
 import { useT } from "@/shared/i18n";
 import { LiveStatusIndicator } from "@/shared/ui/live-status";
 
@@ -37,12 +38,17 @@ function AccountBlock() {
   const t = useT();
   const me = useMe();
   const signOut = useSignOut();
+  const pathname = usePathname();
   return (
     <div className="flex flex-col gap-1 border-t border-border px-3 pt-4">
       <LiveStatusIndicator className="mb-2" />
-      <span className="truncate text-sm text-ink" title={me.email}>
+      <a
+        className="truncate text-sm text-ink hover:underline"
+        title={`${me.email} — ${t("nav.switchAccount")}`}
+        href={switchAccountPath(pathname)}
+      >
         {me.preferred_name || me.email}
-      </span>
+      </a>
       <Button variant="ghost" size="sm" className="mt-2 self-start px-0" onClick={signOut}>
         {t("nav.signOut")}
       </Button>

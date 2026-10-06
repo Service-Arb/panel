@@ -9,6 +9,7 @@
   "nav.more": "Ещё",
   "nav.primary": "Основная навигация",
   "nav.signOut": "Выйти",
+  "nav.switchAccount": "Сменить аккаунт",
   "state.loading": "Загрузка…",
   "state.retry": "Повторить",
   "state.error": "Не удалось загрузить. {detail}",

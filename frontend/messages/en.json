@@ -9,6 +9,7 @@
   "nav.more": "More",
   "nav.primary": "Main navigation",
   "nav.signOut": "Sign out",
+  "nav.switchAccount": "Switch account",
   "state.loading": "Loading…",
   "state.retry": "Try again",
   "state.error": "Could not load this. {detail}",
