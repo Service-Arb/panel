@@ -146,6 +146,11 @@ export function createHttp(deps: HttpDeps): Http {
 /** The backend's sign-in; a full navigation, since it answers with a redirect to concierge. */
 export const SIGN_IN_PATH = "/auth/login";
 
+/** The sign-in through Google's account chooser, past the evinvest.ltd session the browser may have. */
+export function switchAccountPath(returnTo: string): string {
+  return `${SIGN_IN_PATH}?prompt=select_account&return_to=${encodeURIComponent(returnTo)}`;
+}
+
 /** The session is gone (an HTTP 401, the live socket's 4401): off to the backend's sign-in, and back here. */
 export function goToSignIn(): void {
   if (typeof window === "undefined") return;

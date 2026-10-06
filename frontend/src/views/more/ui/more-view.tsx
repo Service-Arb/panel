@@ -6,6 +6,7 @@ import Link from "next/link";
 
 import { DevSignInBadge, may, useMe } from "@/entities/session";
 import { useSignOut } from "@/features/sign-out";
+import { switchAccountPath } from "@/shared/api";
 import { ROUTES } from "@/shared/config/routes";
 import { type MessageKey, useT } from "@/shared/i18n";
 import { useNavMark } from "@/shared/lib/nav-marks";
@@ -42,9 +43,14 @@ export function MoreView() {
           </a>
         </Item>
       </ItemGroup>
-      <Button variant="outline" size={button()} className="self-start" onClick={signOut}>
-        {t("nav.signOut")}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" size={button()} asChild>
+          <a href={switchAccountPath(ROUTES.more)}>{t("nav.switchAccount")}</a>
+        </Button>
+        <Button variant="outline" size={button()} onClick={signOut}>
+          {t("nav.signOut")}
+        </Button>
+      </div>
     </ScreenFrame>
   );
 }

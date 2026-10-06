@@ -2479,7 +2479,6 @@ dependencies = [
  "hmac",
  "jiff",
  "sa_auth",
- "serde",
  "serde_json",
  "sha2 0.11.0",
  "subtle",

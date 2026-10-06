@@ -1354,3 +1354,28 @@ async fn serve_publishes_the_catalog_first() {
 		.unwrap();
 	assert!(!status.success(), "{status}");
 }
+
+#[tokio::test]
+async fn switching_account_asks_concierge_for_the_chooser_and_leaves_the_browser_as_the_other() {
+	let db = TestDb::create().await;
+	let (app, fake, _) = setup(&db).await;
+	user(&fake, OPERATOR, "investor", SA_OPERATOR.members);
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+	let first_session = b.jar["sa_session"].clone();
+
+	let login = b.get(&app, "/auth/login?prompt=select_account&return_to=%2Freview_archive").await;
+	let location = login.headers[header::LOCATION].to_str().unwrap();
+	assert!(location.ends_with("&prompt=select_account"), "{location}");
+
+	user(&fake, ADMIN, "admin", SA_ADMIN.members);
+	let cb = b.sign_in_from(&app, &fake, "/auth/login?prompt=select_account&return_to=%2Freview_archive", None).await;
+	assert_eq!((cb.status, cb.headers[header::LOCATION].to_str().unwrap()), (StatusCode::SEE_OTHER, "/review_archive"));
+	assert_eq!(b.get(&app, "/api/v1/me").await.body["user_id"], ADMIN);
+
+	let mut stale = Browser::default();
+	stale.jar.insert("sa_session".into(), first_session);
+	assert_eq!(stale.get(&app, "/api/v1/me").await.status, StatusCode::UNAUTHORIZED, "the first account's session is closed");
+
+	assert_eq!(b.get(&app, "/auth/login?prompt=login").await.status, StatusCode::BAD_REQUEST, "no other prompt is passed on");
+}

@@ -4,6 +4,7 @@
 //! GET /auth/login      ?return_to=<path on this origin>, else 400; it, the state and the
 //!                      PKCE verifier sealed into the pre-login cookie
 //!                      → 302 concierge /api/auth/authorize?client_id=sa&…&code_challenge
+//!                      [&prompt=select_account, as asked]
 //! GET /auth/callback   state from the cookie = state in the URL (constant time), and the
 //!                      state not redeemed before, else 400 and the code is never presented;
 //!                      ExchangeCode(code, verifier); the browser's previous session closed
@@ -193,6 +194,15 @@ pub(crate) fn encode(value: &str) -> String {
 #[derive(Deserialize)]
 pub struct Login {
 	return_to: Option<String>,
+	prompt: Option<Prompt>,
+}
+
+/// OIDC `prompt`, passed on to concierge.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Prompt {
+	/// Google's account chooser, past the evinvest.ltd session the browser may already have.
+	SelectAccount,
 }
 
 /// Longest `return_to`: a path the panel links to, with room for its query.
@@ -223,11 +233,15 @@ pub async fn login(State(s): State<SignIn>, Query(q): Query<Login>) -> Response 
 		format!("{}?code={DEV_CODE}&state={}", s.redirect_uri(), begun.state)
 	} else {
 		format!(
-			"{}/api/auth/authorize?client_id={CLIENT_ID}&redirect_uri={}&response_type=code&state={}&code_challenge={}&code_challenge_method=S256",
+			"{}/api/auth/authorize?client_id={CLIENT_ID}&redirect_uri={}&response_type=code&state={}&code_challenge={}&code_challenge_method=S256{}",
 			s.config.concierge_origin,
 			encode(&s.redirect_uri()),
 			begun.state,
 			begun.challenge,
+			match q.prompt {
+				Some(Prompt::SelectAccount) => "&prompt=select_account",
+				None => "",
+			},
 		)
 	};
 	let Ok(location) = HeaderValue::from_str(&location) else {
