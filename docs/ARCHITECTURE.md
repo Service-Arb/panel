@@ -18,7 +18,6 @@ crates/panel_core/                   no I/O: no database, network, clock or rand
                                      its subject
   src/lead.rs                        Stage, and fold: a lead's facts → its stage and stage times
   src/signature.rs                   the HMAC scheme of a batch and its replay window
-  src/role.rs                        operator / admin and what each may do (§5.4): Role::may
   src/notify.rs                      Telegram: the rules and who gets each, the texts, the
                                      buttons' signed data, retry and pacing constants
   src/experiment.rs                  a brand's experiments as configuration: a declaration
@@ -67,12 +66,16 @@ crates/panel/                        the engine
   migrations/                        the schema: the init (`reporting_*` views and the
                                      journal's append-only triggers included), then one file
                                      per change, each with its `down`
+crates/sa_auth/                      the `sa` permissions (concierge_iam derives) and aliases
+                                     `sa:operator` / `sa:admin`; the assertion the panel signs
+                                     for the services behind it
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
   src/http.rs                        POST /api/ingest/v1/events, GET /health; the sign-in and
-                                     /api/v1 mounted on top when signing in is configured
+                                     /api/v1 mounted on top when signing in is configured; the
+                                     /api/v1 route table and the section each sits under
   src/signin.rs                      /auth/login, /auth/callback, /auth/logout; the /api/v1 gate
-  src/concierge.rs                   concierge over gRPC: ExchangeCode, RefreshClientToken, GetMe;
-                                     its development stand-in (PANEL_DEV_SIGN_IN)
+  src/concierge.rs                   concierge over gRPC: ExchangeCode, RefreshClientToken, GetMe,
+                                     PublishCatalog; its development stand-in (PANEL_DEV_SIGN_IN)
   src/cookies.rs                     __Host- cookies, the double-submit CSRF check
   src/api.rs                         the operator API: JSON over the engine's `operator` module
   src/live.rs                        GET /api/v1/live, the WebSocket that tells the screens what
@@ -129,26 +132,40 @@ The panel is a relying party of concierge, client id `sa`, with its own origin a
 cookies; the browser never holds a concierge token.
 
 ```text
-GET /auth/login      state + PKCE verifier, sealed into sa_prelogin (10 min)
+GET /auth/login      ?return_to=<path> (optional; else 400): state + PKCE verifier +
+                     return_to, sealed into sa_prelogin (10 min)
                      → 302 <concierge>/api/auth/authorize?client_id=sa&redirect_uri=…&state&code_challenge
 GET /auth/callback   state = the cookie's (constant time), and not redeemed before
                      (consumed_states), else 400 and the code is never presented;
                      ExchangeCode(code, redirect_uri, verifier, client secret); the browser's
                      previous session, if any, closed → a session row (tokens sealed under
                      PANEL_DATA_KEY, keyed by the hash of a random id) → sa_session (HttpOnly)
-                     + sa_csrf → 303 /
+                     + sa_csrf → 303 return_to, else /
 /api/v1/*            not GET: x-sa-csrf must equal sa_csrf; the session (access token rotated
                      when within 30 s of expiry, see below); GetMe (cached ≤ 60 s per session,
                      asked afresh for POST/DELETE /sources, one retry when concierge does not
-                     answer) → the role, else 401 (cookies cleared) / 403 / 503
+                     answer) → the caller's permissions, else 401 (cookies cleared) / 503;
+                     then the route's section (below), else 403
 POST /auth/logout    CSRF; every session of the user is closed
 ```
 
-- **The role** is `panel_core::role::Role::admitted`: a grant on `allocation:service_arb`
-  gives its role, a global admin/owner is an admin; the higher wins. Nothing else gets in —
-  concierge refuses them a code already, and the panel asks again on every request.
+- **Permissions, no admission.** Any active concierge account signs in. `GetMe` answers the
+  concrete `sa` permissions the user holds (`UserProfile.permissions`: no alias, no
+  wildcard; anything outside `sa` is a failed answer); the gate admits every signed-in user,
+  and each `/api/v1` route sits under one section — Work (`sa:work:read`), Analysis
+  (`sa:analysis:read`), Admin (`sa:admin:sources:manage`) — or none (`/me`, the profile's
+  `/telegram*`). `http::api_routes` is the table the router is built from and the tests
+  walk. Actions ask their own permission on top (`sa:work:leads:edit`, `sa:work:pii:see`,
+  `sa:work:places:edit`, `sa:work:pricing:edit`, `sa:analysis:experiments:edit`).
+- **The catalog.** `serve` publishes `Catalog::collect("sa", PANEL_BUILD_EPOCH)` with
+  `PublishCatalog` before it serves (the image sets `PANEL_BUILD_EPOCH` to the commit's
+  unix seconds, so an older replica never supersedes a newer one); concierge refusing it
+  fails the boot. Not under dev sign-in.
+- **`return_to`** is a path on this origin: it starts with `/`, the next character is not `/`,
+  it has no `\`, only visible ASCII, ≤ 512 bytes. Anything else is the 400 sign-in page,
+  never a silent `/`.
 - **Revocation.** concierge refusing a refresh or `GetMe` closes the session here; concierge
-  unreachable is a 503 and keeps it. A scope revoked at concierge is seen within the 60 s of
+  unreachable is a 503 and keeps it. A permission revoked at concierge is seen within the 60 s of
   the cache (at once by the source-key mutations). Signing out of evinvest.ltd revokes the
   concierge token family: the panel's session ends at its next rotation, so within the
   access token's lifetime.
@@ -168,13 +185,51 @@ POST /auth/logout    CSRF; every session of the user is closed
   http (development only), all `SameSite=Lax`: the callback arrives by a top-level navigation.
 - `serve` without any of the four sign-in variables answers ingest alone; some but not all
   of them is a configuration error at boot.
-- **Dev sign-in** (`PANEL_DEV_SIGN_IN=admin|operator`, docs/LOCAL.md): `Concierge::dev`
-  answers ExchangeCode, RefreshClientToken and GetMe for one made-up user, and `/auth/login`
+- **Dev sign-in** (`PANEL_DEV_SIGN_IN=sa:admin|sa:operator|<permission>,…|none`, each name
+  checked against the catalog at boot, docs/LOCAL.md): `Concierge::dev` answers
+  ExchangeCode, RefreshClientToken and GetMe for one made-up user holding that set, and `/auth/login`
   redirects straight to `/auth/callback?code=dev-sign-in&state=…`; the pre-login, the state,
   the session and the gate run unchanged. Refused at boot (exit 78, every command) in any
   profile but development, beside any concierge variable, and unless `PANEL_PUBLIC_ORIGIN`
   is `http://localhost[:port]` or `http://127.0.0.1[:port]` — the image is
   `APP_ENV=production`, so it cannot be on there.
+
+## Forward
+
+The services behind Service-Arb live under the panel's origin; `crates/panel_server/src/forward.rs`
+streams each prefix to its service, both ways (hyper-util, no buffering), one table for all of
+it — the front end's reserved paths (`web.rs`) are derived from it.
+
+```text
+/api/review_archive/*            → review_archive /*            session + assertion; CSRF on writes
+/review_archive/mfe/*            → review_archive /mfe/*        open: the dashboard's bundle
+/playbook_mcp/authorize          → playbook (same path)         session + assertion; no panel CSRF
+/playbook_mcp/*, /.well-known/oauth-{authorization-server,protected-resource}/playbook_mcp
+                                 → playbook (same path)         open: OAuth and bearer clients
+```
+
+- **Who is calling** is told by an assertion the panel signs for that one request (`sa_auth`,
+  header `x-sa-assertion`): Ed25519 (`PANEL_ASSERTION_KEY`), `aud` the service, the caller's
+  `sub`, email, `email_verified`, name, their `sa:<service>:*` permissions only, the
+  method and the upstream path, alive 60 s. The services verify it with the public half
+  (`PANEL_ASSERTION_KEYS`, several while a key rotates) and trust nothing else.
+- **Hygiene:** the browser's `Cookie`, any inbound `x-sa-assertion` and `x-sa-csrf`, and
+  hop-by-hop headers never go up; `Set-Cookie` never comes down — a service sets nothing on
+  the panel's origin. Everything else passes (`X-Member`, a client's `Authorization`).
+- **Gates:** a gated read takes the cached `GetMe`, a gated write asks concierge afresh. A
+  write under `/api/review_archive` needs the panel's CSRF header. The consent form playbook
+  serves at `/playbook_mcp/authorize` posts without it: the `SameSite=Lax` session and
+  playbook's own single-use nonce (bound to `sub` and the pending request) guard it. A
+  signed-out `GET` of that page goes to `/auth/login?return_to=` and comes back; a call
+  without a session is a 401.
+- **The page** `/review_archive` mounts `<mfe-review-archive-dashboard api base sign-in
+  csrf-cookie>` from `/review_archive/mfe/` (`shared/mfe`), its stylesheet demoted into the
+  `mfe` layer; any `/review_archive/<view>` without a dot loads the same page, for the
+  dashboard to route.
+- **Accepted risk:** the bundle runs on the panel's origin, unsandboxed, with the session it
+  rides on — review_archive's build is trusted as the panel's own code is.
+- Without `PANEL_ASSERTION_KEY`, `PANEL_REVIEW_ARCHIVE_URL` and `PANEL_PLAYBOOK_URL` (all
+  three, or none: a configuration error at boot), nothing is forwarded.
 
 ## The operator API, `/api/v1`
 
@@ -191,7 +246,8 @@ the journal and is answered `200` with the same body, journaling nothing. Withou
 every request is a new event (`201`).
 
 ```text
-GET    /me                                        {user_id, role, email, preferred_name, dev_sign_in}
+GET    /me                                        {user_id, email, preferred_name, permissions,
+                                                  dev_sign_in}
 GET    /leads?stage&brand&location&overdue&suspect&flow&created_from&created_to&cursor&limit
                                                   {leads: [Lead], next_cursor}; newest created
                                                   first, limit ≤ 200 (default 50); created_*
@@ -228,22 +284,22 @@ GET    /places                                    {places: [{brand, location, la
                                                   has_settings, withdrawn}]}: every location a
                                                   lead names, and every place registered
                                                   (below)
-GET    /sources                     admin         {sources: [{key_id, kind, brands, created_at,
+GET    /sources                     Admin         {sources: [{key_id, kind, brands, created_at,
                                                   revoked_at}]}
-POST   /sources                     admin, fresh  {key_id, kind, brands} → 201 {key_id, secret}
+POST   /sources                     Admin, fresh  {key_id, kind, brands} → 201 {key_id, secret}
                                                   (shown once), 409 if taken; kind panel → 400
                                                   (the panel writes without a key)
-DELETE /sources/{key_id}            admin, fresh  204, 404
+DELETE /sources/{key_id}            Admin, fresh  204, 404
 ```
 
 ```text
 GET    /telegram                                  {enabled, linked, blocked, rules: {rule: bool}}
-                                                  (the rules the caller's role gets)
+                                                  (the rules the caller's permissions open)
 POST   /telegram/link                             → 201 {url: "https://t.me/<bot>?start=<token>"};
                                                   503 without a bot
 DELETE /telegram/link                             204, 404
 PUT    /telegram/rules      {rules: {new_lead: false, …}}
-                                                  → 200 as GET; 400 for a rule not the role's
+                                                  → 200 as GET; 400 for a rule they do not open
 ```
 
 The funnel counts the leads that came in (were created) within the window, and `Paid` —
@@ -265,8 +321,8 @@ the visit, filtered by `brand_id`, or broken down by it without `brand`. Null wi
 `flow`, `quoted_cents`, `pricing_valid_from`, `estimate_inputs` — see [Flows and
 prices](#flows-and-prices) —, …)
 plus `sla` while it waits for its first contact — `{waiting_since, waiting_seconds,
-overdue}`, overdue after 30 minutes — and `pii` (the customer's name, phone, need) for the
-roles that see it. A share is `{n, of, percent, small_sample}`; `percent` is null while `of`
+overdue}`, overdue after 30 minutes — and `pii` (the customer's name, phone, need) for a caller
+holding `sa:work:pii:see`. A share is `{n, of, percent, small_sample}`; `percent` is null while `of`
 is under `min_sample` (§10.1), so the front end can only draw "n of of".
 
 ## Suspect leads
@@ -335,26 +391,27 @@ always comes from the API, under its checks.
 
 ```text
 GET /api/v1/live    Origin = PANEL_PUBLIC_ORIGIN exactly (scheme, host, port)   else 403
-                    the session and role, as the /api/v1 gate (cached GetMe)    else 401 / 403 / 503
+                    the session, as the /api/v1 gate (cached GetMe)             else 401 / 503
+                    sa:work:read (the Work section)                             else 403
                     ≤ 5 sockets per user, ≤ 200 in all                          else 429
                     → 101; no CSRF token (a GET), the Origin stands in for it
 server → client     {"type":"hello","at","user_id"}                            at once
 (JSON text frames)  {"type":"changed","topic","brand_id"?,"id"?,"at"}          after each commit
                     {"type":"resync"}                                          read everything again
                     WS Ping every 25 s; no Pong within 60 s → the socket is dropped
-closes              4401 the session ended   4403 the role is gone   1001 the server is stopping
+closes              4401 the session ended   4403 sa:work:read is gone   1001 the server is stopping
 ```
 
 | `topic` | when | `brand_id` | `id` | who is told |
 | --- | --- | --- | --- | --- |
-| `leads` | a lead came in (`lead.created`: ingest, or typed in) | its brand | the lead | every role |
-| `lead` | a stage, a call, a payment of one lead (the API or a Telegram button) | its brand | the lead | every role |
-| `places` | a place's settings set, reverted, withdrawn, restored, or the place registered | its brand | the slug | every role |
-| `pricing` | a brand's pricing saved or removed, or its locales set | its brand | — | every role |
-| `sources` | a source key minted or revoked | — | — | admins |
-| `experiments` | a landing's declaration, or an admin's change | its brand | the key (a change) | every role |
+| `leads` | a lead came in (`lead.created`: ingest, or typed in) | its brand | the lead | `sa:work:read` |
+| `lead` | a stage, a call, a payment of one lead (the API or a Telegram button) | its brand | the lead | `sa:work:read` |
+| `places` | a place's settings set, reverted, withdrawn, restored, or the place registered | its brand | the slug | `sa:work:read` |
+| `pricing` | a brand's pricing saved or removed, or its locales set | its brand | — | `sa:work:read` |
+| `sources` | a source key minted or revoked | — | — | `sa:admin:sources:manage` |
+| `experiments` | a landing's declaration, or an admin's change | its brand | the key (a change) | `sa:analysis:read` |
 | `telegram` | the user's link made, undone or found blocked; their rules | — | — | that user |
-| `bookings` | a provider's booking without a lead came, changed, or was attached | its brand | — | every role |
+| `bookings` | a provider's booking without a lead came, changed, or was attached | its brand | — | `sa:work:read` |
 
 A booking event tells `lead` for every lead it changed — a provider's booking attached
 elsewhere tells the lead it left and the one it joined.
@@ -363,9 +420,9 @@ elsewhere tells the lead it left and the one it joined.
 `panel rebuild-projections` in the serving process.
 
 - **Who is told what they may read.** `panel::live::Change::visible_to` mirrors the reads:
-  every admitted role reads every brand's leads, places and experiments (the grant is
-  `allocation:service_arb`, nothing narrower, §5.4); `GET /sources` is an admin's; a
-  Telegram link is its user's. A narrower scope, if one comes, is one function to change.
+  a topic is told to whoever holds the permission of the section that reads it, for every
+  brand (no permission is narrower than the whole panel); a Telegram link is its user's. A
+  narrower permission, if one comes, is one function to change.
 - **Published after the commit, from the engine, in one place per kind of write.** Every
   event that reaches the projections passes through `Panel::journal`, which publishes once
   its transaction has committed — ingest, the operator API, the Telegram buttons and an
@@ -382,7 +439,7 @@ elsewhere tells the lead it left and the one it joined.
   the backlog and is sent `resync`. A frame that does not go out within 10 s drops the
   socket; the socket's write buffer is capped at 256 KiB; a client frame is at most 4 KiB
   (the client has nothing to say but Pong and Close). Handshakes: 16 at once, 15 s each.
-- **The session is asked again** every 60 s (the gate's `GetMe` cache is 60 s, so a role
+- **The session is asked again** every 60 s (the gate's `GetMe` cache is 60 s, so a permission
   revoked at concierge closes the socket within about two minutes), and at once when the
   engine closes a session: a sign-out (every socket of the user), a sign-in replacing the
   browser's session, concierge refusing a rotation or `GetMe`. Concierge unreachable keeps
@@ -408,8 +465,8 @@ GET  /api/internal/brands/{brand}/locations/{slug}?locale   no session; ≤ 32 a
        404 {"error": "not_found"}: only a place an admin withdrew
 ```
 
-Under `/api/v1`, CSRF on writes like the rest; writes are an admin's and ask concierge afresh
-(`gate_fresh`), operators read (`can_edit` false, `403` on a write):
+Under `/api/v1` (Work), CSRF on writes like the rest; writes need `sa:work:places:edit` and
+ask concierge afresh (`Freshness::Fresh`); without it, a read (`can_edit` false, `403` on a write):
 
 ```text
 GET  /places/{brand}/{slug}/settings          {brand, slug, withdrawn, settings, updated_at,
@@ -484,16 +541,17 @@ GET    /api/internal/brands/{brand}/pricing?locale   no session; with the locati
        locales no longer pass, and on any failure of the store (logged) — never a 404 or 5xx
 ```
 
-Under `/api/v1`, CSRF on everything but GET; saving and removing are an admin's and ask
-concierge afresh (`gate_fresh`); reading and the preview are every role's:
+Under `/api/v1` (Work), CSRF on everything but GET; saving and removing need
+`sa:work:pricing:edit` and ask concierge afresh (`Freshness::Fresh`); reading and the preview
+are the section's:
 
 ```text
 GET    /pricing                       {items: [Item]}: every brand the panel knows (a lead's,
                                       a place's, a count's, a source key's) or has pricing for
 GET    /pricing/{brand}               Item; a brand never set: model, updated_at, updated_by null
-PUT    /pricing/{brand}     admin     {model, expected_updated_at: RFC 3339 | null} → 200 Item;
+PUT    /pricing/{brand}     edit      {model, expected_updated_at: RFC 3339 | null} → 200 Item;
                                       409 {error: "stale", current: Item}; 422 {error, path}
-DELETE /pricing/{brand}     admin     {expected_updated_at} (required) → 200 Item, model null;
+DELETE /pricing/{brand}     edit      {expected_updated_at} (required) → 200 Item, model null;
                                       409 as PUT
 POST   /pricing/{brand}/preview       {model, need, inputs: {input: option}} → 200 {cents: n |
                                       null} (null: kitstart's "no price"); 422 as PUT: the draft
@@ -519,20 +577,20 @@ Item: {brand_id, locales, model | null, updated_at | null, updated_by | null}
 ## Telegram (§8)
 
 A bot (`TELEGRAM_BOT_TOKEN`; without it, or without the sign-in, none of this runs) writes to
-each user in a private chat. Rules: `new_lead` and `contact_overdue` (every role, on by
-default), `payment_received` and `source_silent` (admins, off by default), `booked` (every
-role, on by default: a slot booked, moved or canceled — "Бронь: <slot> (Paris)", "Бронь
+each user in a private chat. Rules: `new_lead` and `contact_overdue` (`sa:work:leads:edit`, on
+by default), `payment_received` and `source_silent` (`sa:admin:sources:manage`, off by
+default), `booked` (`sa:work:leads:edit`, on by default: a slot booked, moved or canceled — "Бронь: <slot> (Paris)", "Бронь
 перенесена", "Бронь отменена", "… без заявки" for one without a lead; not to the operator who
 set or closed it themselves; no buttons). A 3★ review, a
 funnel drop and Grafana alerts are variants to come, once their sources exist.
 
 ```text
 POST /api/v1/telegram/link  GetMe asked afresh; 256 random bits, base64url; SHA-256 stored
-                            with the caller's role and the time, 10 min, replacing the user's
+                            with the caller's permissions and the time, 10 min, replacing the user's
                             earlier token → t.me/<bot>?start=<token>
 /start <token>              private chats only, not forwarded (groups are ignored whatever they
                             say); the token redeemed once → telegram_links(user ⇄ chat, the
-                            role confirmed as of the token's issue, the Telegram @username);
+                            permissions confirmed as of the token's issue, the Telegram @username);
                             a chat linked to another account is refused ("/stop first"), the
                             token kept; the reply names the panel account
 /stop, DELETE …/link        unlinked; what the outbox still owed them is dropped
@@ -564,20 +622,20 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
   at once; so is a queued message that no longer opens.
 - **Quiet.** The bot answers commands only: other messages get nothing, and its unsolicited
   replies (help, "not linked", "invalid link") go at most once per chat per 10 min.
-- **PII.** A new lead's message carries the brand, location, need and phone — for roles that
-  see PII in the panel (every role today, §5.4). Queued texts are sealed under
+- **PII.** A new lead's message carries the brand, location, need and phone — for whoever
+  holds `sa:work:pii:see`. Queued texts are sealed under
   `PANEL_DATA_KEY` like the journal's PII and dropped once sent or dead. What a customer typed
   is put on one line (control characters, line separators and bidi marks become spaces),
   bounded (name 80, need 500, phone 40 of digits and `+()-`, the message 3 500), and the name
   and need are `code` entities — no parse mode, so nothing is markup, no link is made of it,
   and no line of it can read as one of ours ("Взял: …"). Link previews are off.
-- **Who gets a message: a role concierge confirmed within the hour.** The panel learns a role
-  only from `GetMe`, which takes the user's own access token. Each link keeps the role last
+- **Who gets a message: permissions concierge confirmed within the hour.** The panel learns
+  them only from `GetMe`, which takes the user's own access token. Each link keeps the set last
   confirmed and when: the `/api/v1` gate records every `GetMe` answer, and every 15 min the
   bot asks again for a link not confirmed since, through the user's newest panel session
   used within 7 days (`sessions.last_seen_at`, set by the gate; rotated when due, as a
-  request would). The role is checked again when a message is sent, not only when it is
-  queued. A grant revoked at concierge, or a session concierge refuses to rotate (or whose
+  request would). The set is checked again when a message is sent, not only when it is
+  queued; a set that opens no rule gets nothing. A grant revoked at concierge, or a session concierge refuses to rotate (or whose
   `GetMe` it refuses twice running), stops messages at the next check and drops what was
   queued; no session used for a week, or concierge unreachable, stops them after an hour.
   The risk left: up to an hour of messages (with PII) to someone whose grant was revoked
@@ -588,7 +646,8 @@ delivery (0.5 s)            lead messages queued > 1 h ago dead ("stale"); > 20 
   under a key derived from `PANEL_DATA_KEY`, bound to the chat: nothing else in it is
   trusted. The message must be that chat's, the chat linked to the message's user, and the
   user's access is asked of concierge at the press — with no live panel session to ask with,
-  the answer is "open the panel to confirm your access", never a cached role. The event ids
+  the answer is "open the panel to confirm your access", never a cached answer; a press
+  needs `sa:work:leads:edit`. The event ids
   derive from (user, outbox id, button), so a press repeated, or its update redelivered,
   records nothing twice. The message is then edited: "Взял: <preferred_name or email>" added
   and the buttons removed ("Не дозвонился" leaves "Взял").
@@ -622,13 +681,13 @@ variants under an admin's weights. `weights_changed_at` is the last time the eff
 changed, by a declaration or an admin.
 
 ```text
-GET /api/v1/experiments?brand            every role; one brand's, or every brand's without it
+GET /api/v1/experiments?brand            Analysis; one brand's, or every brand's without it
      {experiments: [{brand, key, variants,
        declared: {weights, enabled, holdout, summary, declared_at},
        override: null | {weights, enabled, holdout (each null: follows the declaration),
                          changed_by (the admin's email, else their id: by), changed_at},
        effective: {weights, enabled, holdout}, weights_changed_at, retired, posthog_url}]}
-PUT /api/v1/experiments/{brand}/{key}    admin, fresh (gate_fresh, as POST /sources); CSRF
+PUT /api/v1/experiments/{brand}/{key}    sa:analysis:experiments:edit, fresh (as POST /sources); CSRF
      {enabled?: bool | null, weights?: [n] | null, holdout?: n | null}: absent left, null put
      back → 200 the item; 400 {error} invalid (weights against the declared variants); 404 an
      unknown or retired experiment, or a brand or key that cannot be one; a change that changes
@@ -784,7 +843,7 @@ PKCE, state), waits on `127.0.0.1:<port>` for the redirect, prints
 `GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>=…` once, for add-secrets. `panel booking google-sync
 <brand> [--full]`: one pull now.
 
-**API** (`/api/v1`, CSRF on writes; writes `edits_leads`, every role today):
+**API** (`/api/v1`, Work, CSRF on writes; writes need `sa:work:leads:edit`):
 
 ```text
 POST /leads/{brand}/{lead}/booking         {action: "set", start_at, end_at?} | {action: "clear"}
@@ -800,7 +859,7 @@ Lead.booking: {status, provider, start_at, end_at, external_ref, match, preferre
                preferred_part}
 Booking:      {id, brand, provider, external_ref, status: booked | canceled, start_at, end_at,
                booked_at, last_event_at, lead_id: null, match: null,
-               contact?: {name?, email?, phone?} (for a role that sees PII)}
+               contact?: {name?, email?, phone?} (for a caller who sees PII)}
 ```
 
 ## Invariants
@@ -863,21 +922,22 @@ Booking:      {id, brand, provider, external_ref, status: booked | canceled, sta
   is let be: that is a rollback onto a schema moved on. Timestamps are INTEGER microseconds
   since the epoch, days `YYYY-MM-DD` text, UUIDs 16-byte blobs, JSON text that must parse.
 - **Secrets come from the environment only** (`PANEL_DATA_KEY`, `SENTRY_DSN`,
-  `RP_CLIENT_SECRET_SA`, `TELEGRAM_BOT_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+  `RP_CLIENT_SECRET_SA`, `PANEL_ASSERTION_KEY`, `TELEGRAM_BOT_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRET`,
   `GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>`),
   through `ev_lib::settings`; with `APP_ENV=production`, `PANEL_DB_PATH`, `PANEL_DATA_KEY` and
-  the four sign-in variables are required at boot (`panel --print-required-vars` lists them).
+  the four sign-in variables and the forward's three are required at boot
+  (`panel --print-required-vars` lists them).
 
 ## Deploy requirements
 
 - **One image, one origin.** The image carries the binary and the front end's static
   export, and sets `PANEL_WEB_DIR` to it; `serve` answers `/api`, `/auth` and `/health`
-  first, then the files (a directory by its `index.html`, anything else `404.html` with a
-  404). `/grafana` is held: a JSON 404 until the dashboards move there. `/_next/static/*`
+  first, then the forward's prefixes (Forward), then the files (a directory by its
+  `index.html`, anything else `404.html` with a 404). `/grafana` is held: a JSON 404 until the dashboards move there. `/_next/static/*`
   is `immutable` for a year, everything else `no-cache` (the store's 1970 mtimes make
   date revalidation meaningless, so the panel answers none); every page carries a CSP of
   `default-src 'self'` with `'unsafe-inline'` for scripts and styles (Next's inline
-  bootstrap), `frame-ancestors 'none'`, `Referrer-Policy: same-origin`. Without
+  bootstrap), `'wasm-unsafe-eval'` (the review_archive dashboard), `frame-ancestors 'none'`, `Referrer-Policy: same-origin`. Without
   `PANEL_WEB_DIR`, `serve` answers the API alone and says so.
 - **The contract** (`nix eval .#containers.<system>.panel.contract`) names the port
   (59120), `/health`, `APP_ENV=production`, the variables required, secret and optional,
@@ -897,7 +957,8 @@ Booking:      {id, brand, provider, external_ref, status: booked | canceled, sta
 - **concierge within reach.** The panel's pods call concierge's gRPC (`CONCIERGE_GRPC_ADDR`)
   for every sign-in, token rotation and `GetMe`; the egress policy must allow it. concierge
   must register client `sa` with redirect URI `<PANEL_PUBLIC_ORIGIN>/auth/callback` exactly,
-  and hold the hash of `RP_CLIENT_SECRET_SA`.
+  and hold the hash of `RP_CLIENT_SECRET_SA`; `serve` publishes the `sa` catalog there at
+  every boot and does not start if it is refused.
 - **Telegram, outbound only.** With `TELEGRAM_BOT_TOKEN` (the panel bot's, in sops; not
   `telegram_token_main`) the pods need egress to `api.telegram.org:443`; nothing inbound. No
   webhook is set on the bot (`getUpdates` refuses to run while one is).

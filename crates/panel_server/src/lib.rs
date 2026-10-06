@@ -10,6 +10,7 @@ pub mod capture;
 pub mod concierge;
 pub mod cookies;
 pub mod experiments;
+pub mod forward;
 pub mod google_calendar;
 pub mod http;
 pub mod live;

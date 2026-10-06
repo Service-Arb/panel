@@ -23,7 +23,7 @@ use panel::{
 	live::{Signal, Topic},
 	testing::{TestDb, event, panel, sign},
 };
-use panel_core::{event::SourceKind, ids::BrandId, role::Role};
+use panel_core::{event::SourceKind, ids::BrandId};
 use panel_server::{
 	concierge::{Concierge, DevIdentity},
 	google_calendar::{BrandCalendar, GoogleCalendar},
@@ -38,10 +38,10 @@ use zeroize::Zeroizing;
 
 const ORIGIN: &str = "http://127.0.0.1:59120";
 
-fn app(panel: Panel, role: Role) -> Router {
+fn app(panel: Panel, alias: &str) -> Router {
 	let who = DevIdentity {
-		role,
-		email: format!("dev-{}@localhost", role.as_str()),
+		permissions: sa_auth::Catalog::collect("sa", 0).aliases[alias].iter().cloned().collect(),
+		email: format!("dev-{}@localhost", alias.trim_start_matches("sa:")),
 	};
 	let config = SignInConfig {
 		panel_origin: ORIGIN.to_owned(),
@@ -145,7 +145,7 @@ fn told(rx: &mut broadcast::Receiver<Signal>) -> Vec<(Topic, Option<String>)> {
 async fn an_operator_books_closes_and_clears_a_slot() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await;
-	let app = app(panel.clone(), Role::Operator);
+	let app = app(panel.clone(), "sa:operator");
 	let mut b = Browser::signed_in(&app).await;
 	let (status, made) = b
 		.post(&app, "/api/v1/leads", json!({"brand": "vifnet", "location": "vifnet", "need": "ménage", "phone": "0612345678"}))
@@ -323,7 +323,7 @@ async fn google_bookings_are_pulled_matched_moved_and_canceled() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let secret = site(&panel).await;
-	let app = app(panel.clone(), Role::Operator);
+	let app = app(panel.clone(), "sa:operator");
 	let mut b = Browser::signed_in(&app).await;
 	let (g, api) = fake_google().await;
 	let hour_ago = Timestamp::now() - SignedDuration::from_hours(1);
@@ -391,7 +391,7 @@ async fn google_bookings_are_pulled_matched_moved_and_canceled() {
 	assert_eq!(
 		twin["contact"],
 		json!({"name": "Client", "email": "twin@example.fr", "phone": "+33699999901"}),
-		"the attendee, for a role that sees PII"
+		"the attendee, for whoever sees PII"
 	);
 	let topics: Vec<Topic> = told(&mut rx).into_iter().map(|(t, _)| t).collect();
 	assert_eq!(topics.iter().filter(|t| **t == Topic::Lead).count(), 2, "{topics:?}");
@@ -587,7 +587,7 @@ async fn the_push_route_answers_registered_providers_only() {
 	assert_eq!((status, done["written"].as_u64()), (StatusCode::OK, Some(1)), "{done}");
 	assert_eq!(hook(&fake, "/api/hooks/booking/cal_com/vifnet", "ok", body).await.1["unchanged"], 1, "a retried webhook");
 
-	let operator = app(panel.clone(), Role::Operator);
+	let operator = app(panel.clone(), "sa:operator");
 	let mut b = Browser::signed_in(&operator).await;
 	let booked = lead_booking(&mut b, &operator, "lead-7-0000000a").await;
 	assert_eq!(
@@ -629,7 +629,7 @@ async fn a_request_before_its_lead_is_answered_409_to_retry() {
 	site_lead(&panel, &secret, "lead-8-0000000a", now - SignedDuration::from_mins(1), json!({"phone": "0612345678"})).await;
 	let res = served.oneshot(post(sign("vifnet-site", &secret, &[requested], Timestamp::now()))).await.unwrap();
 	assert_eq!(res.status(), StatusCode::MULTI_STATUS);
-	let operator = app(panel, Role::Operator);
+	let operator = app(panel, "sa:operator");
 	let mut b = Browser::signed_in(&operator).await;
 	let got = lead_booking(&mut b, &operator, "lead-8-0000000a").await;
 	assert_eq!((got["status"].as_str(), got["provider"].as_str()), (Some("requested"), Some("google_calendar")));

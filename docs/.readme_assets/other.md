@@ -51,7 +51,7 @@ nix run .#local-stack    # the panel on :59120 (signed in as a dev admin) and th
 ```
 
 A lead posted on a local site lands in the local panel, a phone edited in the panel shows on
-the site. `PANEL_DEV_SIGN_IN=admin|operator` stands in for concierge, in development on
+the site. `PANEL_DEV_SIGN_IN=sa:admin|sa:operator|<permissions>|none` stands in for concierge, in development on
 loopback only. The prerequisites, the end-to-end check and troubleshooting are in
 [docs/LOCAL.md](docs/LOCAL.md).
 

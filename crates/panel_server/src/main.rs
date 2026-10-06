@@ -30,6 +30,7 @@ use panel_server::{
 	telegram::{self, BotApi, BotName},
 	web::{self, Files},
 };
+use sa_auth::Catalog;
 
 use crate::settings::Settings;
 
@@ -73,7 +74,7 @@ enum Cmd {
 enum BookingCmd {
 	/// The brand owner's consent to read their Google Calendar, on this machine: prints the
 	/// URL to open, waits for Google's redirect on 127.0.0.1, and prints the refresh token
-	/// once — for the brand's GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND> secret.
+	/// once — for the brand's `GOOGLE_CALENDAR_REFRESH_TOKEN_<BRAND>` secret.
 	GoogleAuthorize {
 		brand: String,
 		/// The loopback port Google redirects to (a Desktop OAuth client takes any).
@@ -235,6 +236,11 @@ async fn run(cli: Cli, settings: Settings, dev_sign_in: Option<settings::DevSign
 			let front_end = settings.web()?;
 			let capture = settings.capture()?.map(|c| CaptureApi::new(&c.host, &c.key)).transpose()?;
 			let google = google(&settings)?;
+			let sign_in = match (sign_in, settings.forward()?) {
+				(Some(identity), forward) => Some((identity, forward)),
+				(None, None) => None,
+				(None, Some(_)) => eyre::bail!("the forward vouches for signed-in callers: it needs the sign-in configured"),
+			};
 			let panel = connect().await?.with_capture(capture.is_some());
 			serve(panel, sign_in, telegram, capture, google, front_end, bind).await
 		}
@@ -487,13 +493,49 @@ enum Identity {
 
 async fn serve(
 	panel: Panel,
-	sign_in: Option<Identity>,
+	sign_in: Option<(Identity, Option<panel_server::forward::Upstreams>)>,
 	telegram: Option<settings::TelegramSettings>,
 	sender: Option<CaptureApi>,
 	google: Option<(google_calendar::GoogleCalendar, jiff::SignedDuration)>,
 	front_end: Option<Files>,
 	bind: SocketAddr,
 ) -> eyre::Result<()> {
+	let sign_in = match sign_in {
+		Some((Identity::Concierge(s), forward)) => {
+			tracing::info!(panel_origin = s.panel_origin, "signing in through concierge");
+			let concierge = Concierge::new(&s.concierge_grpc, &s.client_secret)?;
+			// Before serving: a user's permissions name what this catalog defines.
+			concierge
+				.publish_catalog(&Catalog::collect("sa", s.build_epoch))
+				.await
+				.wrap_err_with(|| format!("publishing the sa catalog (version {}) to concierge", s.build_epoch))?;
+			tracing::info!(version = s.build_epoch, "sa catalog published to concierge");
+			let config = SignInConfig {
+				panel_origin: s.panel_origin,
+				concierge_origin: s.concierge_origin,
+			};
+			Some((concierge, config, forward))
+		}
+		Some((Identity::Dev(d), forward)) => {
+			let who = DevIdentity {
+				permissions: d.permissions,
+				email: d.email,
+			};
+			tracing::warn!(
+				permissions = ?who.permissions,
+				email = who.email,
+				user_id = %who.user_id(),
+				panel_origin = d.panel_origin,
+				"DEV SIGN-IN ON (PANEL_DEV_SIGN_IN): /auth/login signs anyone in as this user, no concierge — development only"
+			);
+			let config = SignInConfig {
+				concierge_origin: d.panel_origin.clone(),
+				panel_origin: d.panel_origin,
+			};
+			Some((Concierge::dev(who), config, forward))
+		}
+		None => None,
+	};
 	let (stop, stopped) = tokio::sync::watch::channel(false);
 	let bus = panel.bus().clone();
 	let mut bot_work = None;
@@ -521,36 +563,7 @@ async fn serve(
 		}
 	};
 	let app = match sign_in {
-		Some(identity) => {
-			let (concierge, config) = match identity {
-				Identity::Concierge(s) => {
-					tracing::info!(panel_origin = s.panel_origin, "signing in through concierge");
-					(
-						Concierge::new(&s.concierge_grpc, &s.client_secret)?,
-						SignInConfig {
-							panel_origin: s.panel_origin,
-							concierge_origin: s.concierge_origin,
-						},
-					)
-				}
-				Identity::Dev(d) => {
-					let who = DevIdentity { role: d.role, email: d.email };
-					tracing::warn!(
-						role = who.role.as_str(),
-						email = who.email,
-						user_id = %who.user_id(),
-						panel_origin = d.panel_origin,
-						"DEV SIGN-IN ON (PANEL_DEV_SIGN_IN): /auth/login signs anyone in as this user, no concierge — development only"
-					);
-					(
-						Concierge::dev(who),
-						SignInConfig {
-							concierge_origin: d.panel_origin.clone(),
-							panel_origin: d.panel_origin,
-						},
-					)
-				}
-			};
+		Some((concierge, config, forward)) => {
 			let bot = match telegram {
 				Some(tg) => {
 					let name = BotName::on(tg.username);
@@ -570,7 +583,15 @@ async fn serve(
 					BotName::off()
 				}
 			};
-			http::app_with_telegram(SignIn::new(panel, concierge, config), http::Limits::default(), bot)
+			let sign_in = SignIn::new(panel, concierge, config);
+			let app = http::app_with_telegram(sign_in.clone(), http::Limits::default(), bot);
+			match forward {
+				Some(upstreams) => app.merge(panel_server::forward::Forward::new(sign_in, upstreams).routes()),
+				None => {
+					tracing::warn!("forward not configured: no /api/review_archive, /review_archive/mfe or /playbook_mcp");
+					app
+				}
+			}
 		}
 		None => {
 			tracing::warn!("sign-in not configured: serving ingest only, no /auth, no /api/v1");

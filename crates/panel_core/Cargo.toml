@@ -1,6 +1,6 @@
 [package]
 name = "panel_core"
-description = "The Service-Arb panel without I/O: the funnel's domain, event validation, lead stages, source signatures, roles"
+description = "The Service-Arb panel without I/O: the funnel's domain, event validation, lead stages, source signatures"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -13,13 +13,11 @@ ev_lib = { workspace = true, features = ["architecture"] }
 hex.workspace = true
 hmac.workspace = true
 jiff.workspace = true
-serde.workspace = true
+sa_auth.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-strum.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
-ts-rs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

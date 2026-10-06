@@ -4,7 +4,7 @@ import { Settled, Skeleton } from "@evinvest/uikit";
 import { useCallback, useState } from "react";
 
 import { type PricingItem, fetchPricing, followsPricing, pricingSavedSince } from "@/entities/pricing";
-import { MAY, useMe } from "@/entities/session";
+import { may, useMe } from "@/entities/session";
 import { useResource } from "@/shared/lib/use-resource";
 import { ErrorState } from "@/shared/ui/error-state";
 
@@ -19,7 +19,7 @@ import { ReadWorkspace } from "./read-workspace";
  * and the editor decides what to do with it.
  */
 export function BrandPricing({ brand, today }: { brand: string; today: string }) {
-  const { role } = useMe();
+  const me = useMe();
   const [version, setVersion] = useState(0);
   const [pinned, setPinned] = useState<PricingItem | null>(null);
   // The pricing the person chose to load: its workspace mounts with focus on the status, not on <body>.
@@ -43,7 +43,7 @@ export function BrandPricing({ brand, today }: { brand: string; today: string })
     <Settled loading={data.status === "loading"} skeleton={<Skeleton className="h-96 w-full" />}>
       {data.status === "error" && <ErrorState failure={data.failure} onRetry={data.reload} />}
       {latest !== null &&
-        (MAY[role].edits_pricing ? (
+        (may(me, "sa:work:pricing:edit") ? (
           <EditWorkspace
             key={pinned?.updated_at ?? "never"}
             base={pinned ?? latest}

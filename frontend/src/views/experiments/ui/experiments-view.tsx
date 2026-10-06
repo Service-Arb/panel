@@ -4,7 +4,7 @@ import { Settled, Skeleton } from "@evinvest/uikit";
 
 import { fetchExperiments } from "@/entities/experiment";
 import { brandsOf, usePlaces } from "@/entities/place";
-import { MAY, useMe } from "@/entities/session";
+import { may, useMe } from "@/entities/session";
 import { useFilterParams } from "@/features/funnel-filters";
 import { ROUTES } from "@/shared/config/routes";
 import { useT } from "@/shared/i18n";
@@ -24,7 +24,7 @@ import { BrandExperiments } from "./brand-experiments";
  */
 export function ExperimentsView() {
   const t = useT();
-  const { role } = useMe();
+  const me = useMe();
   const { brand, update } = useFilterParams();
   const places = usePlaces();
   const key = `experiments:${brand ?? ""}`;
@@ -45,7 +45,7 @@ export function ExperimentsView() {
           <>
             <p className="px-1 text-sm text-ink-soft">{t("experiments.how")}</p>
             {byBrand(list).map(([b, experiments]) => (
-              <BrandExperiments key={b} brand={b} experiments={experiments} editable={MAY[role].edits_experiments} onSaved={data.reload} />
+              <BrandExperiments key={b} brand={b} experiments={experiments} editable={may(me, "sa:analysis:experiments:edit")} onSaved={data.reload} />
             ))}
           </>
         )}

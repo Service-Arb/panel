@@ -119,12 +119,13 @@ async fn concierge_refusing_closes_and_an_outage_does_not() {
 async fn pre_logins() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await;
-	let begun = panel.begin_sign_in(now()).unwrap();
+	let begun = panel.begin_sign_in(Some("/review_archive"), now()).unwrap();
 	assert_eq!(begun.state.len(), 64, "256 bits");
 	assert_eq!(begun.challenge.len(), 43);
 
 	let pre = panel.finish_sign_in(&begun.cookie, &begun.state, now() + SignedDuration::from_mins(9)).unwrap();
 	assert_eq!(pkce_challenge(&pre.verifier), begun.challenge);
+	assert_eq!(pre.return_to.as_deref(), Some("/review_archive"));
 	assert!(panel.finish_sign_in(&begun.cookie, &"0".repeat(64), now()).is_none(), "another state");
 	assert!(panel.finish_sign_in(&begun.cookie, "", now()).is_none());
 	assert!(
@@ -132,7 +133,7 @@ async fn pre_logins() {
 		"too old"
 	);
 	assert!(panel.finish_sign_in("garbage", &begun.state, now()).is_none());
-	let other = panel::testing::panel(&db).await.begin_sign_in(now()).unwrap();
+	let other = panel::testing::panel(&db).await.begin_sign_in(None, now()).unwrap();
 	assert!(panel.finish_sign_in(&other.cookie, &other.state, now()).is_none(), "sealed under another key");
 	// RFC 7636, appendix B.
 	assert_eq!(pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");

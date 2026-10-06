@@ -10,8 +10,8 @@
 //! button ─ signed data ─ the chat's user, access asked of concierge now ─ event, as the API writes it
 //! ```
 //!
-//! **Who has access.** The panel learns a role only from concierge's `GetMe`, which takes
-//! the user's own access token. A link keeps the role concierge last confirmed and when:
+//! **Who has access.** The panel learns a user's permissions only from concierge's `GetMe`,
+//! which takes the user's own access token. A link keeps what concierge last confirmed and when:
 //! the `/api/v1` gate records every answer it gets, and [`Notifier::recheck_access`] asks
 //! again through the user's newest panel session for a link not confirmed in
 //! [`RECHECK_AFTER`] — through a session the user used within [`SESSION_IDLE`], so the bot
@@ -37,8 +37,8 @@ use panel_core::{
 	funnel::CONTACT_SLA,
 	ids::{BrandId, LeadId},
 	notify::{self, BookingChange, Button, Entity, Failure, LeadNote, Locale, Next, Note, Rendered, Reply, Rule},
-	role::{Permission, Role},
 };
+use sa_auth::{Leads, PermissionSet, Pii};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -122,8 +122,7 @@ pub trait Bot: Sync {
 #[derive(Clone, Debug)]
 pub struct Identity {
 	pub user_id: Uuid,
-	/// `None`: concierge knows the user, and the panel does not let them in.
-	pub role: Option<Role>,
+	pub permissions: PermissionSet,
 	/// preferred_name, or the email when there is none.
 	pub display_name: String,
 }
@@ -183,11 +182,9 @@ pub enum Update {
 /// What concierge said of a user just now.
 #[derive(Clone, Debug)]
 pub enum Access {
-	Granted(Role, String),
+	Granted(PermissionSet, String),
 	/// No live panel session to ask with, or concierge refused its token.
 	NoSession,
-	/// concierge says the user has no role in the panel.
-	Denied,
 	Unavailable,
 }
 
@@ -199,7 +196,7 @@ pub struct Settings {
 	pub blocked: bool,
 	/// The linked Telegram account: `@username`, else its first name.
 	pub account: Option<String>,
-	/// Every rule open to the user's role, with whether it is on.
+	/// Every rule the user's permissions open, with whether it is on.
 	pub rules: Vec<(Rule, bool)>,
 }
 
@@ -252,12 +249,12 @@ impl Panel {
 	/// A one-time token for `t.me/<bot>?start=<token>`, for a signed-in user: 256 random bits,
 	/// base64url (the 43 characters a start payload may hold); only its hash is stored, for
 	/// [`LINK_TTL`].
-	pub async fn telegram_link_token(&self, user: Uuid, role: Role, display: &str, now: Timestamp) -> eyre::Result<Zeroizing<String>> {
+	pub async fn telegram_link_token(&self, user: Uuid, permissions: &PermissionSet, display: &str, now: Timestamp) -> eyre::Result<Zeroizing<String>> {
 		let mut raw = Zeroizing::new([0u8; 32]);
 		getrandom::fill(raw.as_mut_slice()).map_err(|e| eyre::eyre!("the OS random source failed: {e}"))?;
 		let token = Zeroizing::new(URL_SAFE_NO_PAD.encode(raw.as_slice()));
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for a link token")?;
-		db::insert_link_token(&mut conn, &link_token_hash(&token), user, role, display, now, now + LINK_TTL).await?;
+		db::insert_link_token(&mut conn, &link_token_hash(&token), user, permissions, display, now, now + LINK_TTL).await?;
 		Ok(token)
 	}
 
@@ -271,13 +268,13 @@ impl Panel {
 		Ok(gone)
 	}
 
-	pub async fn telegram_settings(&self, user: Uuid, role: Role) -> eyre::Result<Settings> {
+	pub async fn telegram_settings(&self, user: Uuid, permissions: &PermissionSet) -> eyre::Result<Settings> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for Telegram settings")?;
 		let link = db::link_of_user(&mut conn, user).await?;
 		let chosen = db::rules(&mut conn, user).await?;
 		let rules = Rule::ALL
 			.into_iter()
-			.filter(|r| r.open_to(role))
+			.filter(|r| r.open_to(permissions))
 			.map(|r| (r, chosen.iter().find(|(c, _)| *c == r).map_or(r.on_by_default(), |(_, on)| *on)))
 			.collect();
 		Ok(Settings {
@@ -288,11 +285,11 @@ impl Panel {
 		})
 	}
 
-	/// Turns rules on or off for the user. A rule their role does not get is refused, not
-	/// stored: it would only mislead the profile.
-	pub async fn telegram_set_rules(&self, user: Uuid, role: Role, rules: &[(Rule, bool)]) -> Result<(), ActionError> {
-		if let Some((r, _)) = rules.iter().find(|(r, _)| !r.open_to(role)) {
-			return Err(ActionError::Invalid(panel_core::Invalid::new(format!("{r} is not a rule for the {} role", role.as_str()))));
+	/// Turns rules on or off for the user. A rule their permissions do not open is refused,
+	/// not stored: it would only mislead the profile.
+	pub async fn telegram_set_rules(&self, user: Uuid, permissions: &PermissionSet, rules: &[(Rule, bool)]) -> Result<(), ActionError> {
+		if let Some((r, _)) = rules.iter().find(|(r, _)| !r.open_to(permissions)) {
+			return Err(ActionError::Invalid(panel_core::Invalid::new(format!("{r} is not a rule your permissions open"))));
 		}
 		let mut tx = self.store.begin_write().await?;
 		for (rule, on) in rules {
@@ -303,15 +300,11 @@ impl Panel {
 		Ok(())
 	}
 
-	/// What concierge just told the `/api/v1` gate of a user: their role in the panel
-	/// (`None`: none) and name. Kept on their link, if they have one.
-	pub async fn telegram_access_seen(&self, user: Uuid, role: Option<Role>, display: &str, now: Timestamp) -> eyre::Result<()> {
+	/// What concierge just told the `/api/v1` gate of a user: their permissions and name.
+	/// Kept on their link, if they have one.
+	pub async fn telegram_access_seen(&self, user: Uuid, permissions: &PermissionSet, display: &str, now: Timestamp) -> eyre::Result<()> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection to record access")?;
-		match role {
-			Some(_) => db::access_seen(&mut conn, user, role, display, now).await,
-			// No role: whatever waits for them in the outbox goes nowhere.
-			None => db::access_lost(&mut conn, user, now).await,
-		}
+		db::access_seen(&mut conn, user, permissions, display, now).await
 	}
 
 	/// Queues what the rules say is due at `now`: new leads, overdue leads, payments, silent
@@ -328,8 +321,8 @@ impl Panel {
 		let mut queued = 0;
 		for c in &new {
 			let lead = Some((c.brand_id.as_str(), c.lead_id.as_str()));
-			let note = |role| {
-				let lead = self.lead_note(c, role)?;
+			let note = |permissions: &PermissionSet| {
+				let lead = self.lead_note(c, permissions)?;
 				Ok(match c.suspect {
 					None => Note::NewLead(lead),
 					Some(suspect) => Note::SuspectLead { lead, suspect },
@@ -343,9 +336,9 @@ impl Panel {
 		for c in &overdue {
 			let lead = Some((c.brand_id.as_str(), c.lead_id.as_str()));
 			let waiting = c.created_at.map_or(CONTACT_SLA, |at| now.duration_since(at));
-			let note = |role| {
+			let note = |permissions: &PermissionSet| {
 				Ok(Note::ContactOverdue {
-					lead: self.lead_note(c, role)?,
+					lead: self.lead_note(c, permissions)?,
 					waiting,
 				})
 			};
@@ -402,11 +395,11 @@ impl Panel {
 				suspect: None,
 			});
 			let slot = t.start_at.map(place_time);
-			let note = |role| {
+			let note = |permissions: &PermissionSet| {
 				Ok(Note::Booking {
 					change,
 					brand: t.brand_id.clone(),
-					lead: candidate.as_ref().map(|c| self.lead_note(c, role)).transpose()?,
+					lead: candidate.as_ref().map(|c| self.lead_note(c, permissions)).transpose()?,
 					slot: slot.clone(),
 					provider: t.provider.clone().unwrap_or_else(|| "manual".to_owned()),
 				})
@@ -428,7 +421,7 @@ impl Panel {
 		event: Uuid,
 		lead: Option<(&str, &str)>,
 		skip: Option<Uuid>,
-		note: impl Fn(Role) -> eyre::Result<Note>,
+		note: impl Fn(&PermissionSet) -> eyre::Result<Note>,
 		confirmed_since: Timestamp,
 		now: Timestamp,
 		locale: Locale,
@@ -439,10 +432,10 @@ impl Panel {
 		}
 		let mut queued = 0;
 		for r in db::recipients(&mut tx, rule, confirmed_since).await? {
-			if !rule.open_to(r.role) || skip == Some(r.user_id) {
+			if !rule.open_to(&r.permissions) || skip == Some(r.user_id) {
 				continue;
 			}
-			let note = note(r.role)?;
+			let note = note(&r.permissions)?;
 			let sealed = self.seal_message(rule, event, r.chat_id, &note.render(locale))?;
 			let message = NewMessage {
 				user_id: r.user_id,
@@ -487,15 +480,15 @@ impl Panel {
 		})
 	}
 
-	/// A lead as a message to `role` shows it: the PII of its creation only for a role that
-	/// sees PII in the panel (§5.4).
-	fn lead_note(&self, c: &LeadCandidate, role: Role) -> eyre::Result<LeadNote> {
+	/// A lead as a message to someone holding `permissions` shows it: the PII of its creation
+	/// only to whoever sees PII in the panel.
+	fn lead_note(&self, c: &LeadCandidate, permissions: &PermissionSet) -> eyre::Result<LeadNote> {
 		let mut note = LeadNote {
 			brand: c.brand_id.clone(),
 			location: c.location_id.clone(),
 			..LeadNote::default()
 		};
-		if !role.may(Permission::SeesPii) {
+		if !permissions.may(Pii::See) {
 			return Ok(note);
 		}
 		if let Some((blob, fp)) = &c.pii {
@@ -591,13 +584,13 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		Ok(())
 	}
 
-	/// Whether the message's user may still get it: the same chat, alive, a role the rule is
-	/// open to, confirmed within [`ACCESS_TTL`] — asked again at the send, not only when it was
+	/// Whether the message's user may still get it: the same chat, alive, permissions that
+	/// open the rule, confirmed within [`ACCESS_TTL`] — asked again at the send, not only when it was
 	/// queued, since PII waits in the outbox.
 	async fn still_allowed(&self, conn: &mut sqlx::SqliteConnection, d: &db::Due, now: Timestamp) -> eyre::Result<bool> {
 		let Ok(rule) = d.rule.parse::<Rule>() else { return Ok(false) };
 		let link = db::link_of_user(conn, d.user_id).await?;
-		Ok(link.is_some_and(|l| l.chat_id == d.chat_id && !l.dead && l.role.is_some_and(|r| rule.open_to(r)) && l.role_checked_at >= now - ACCESS_TTL))
+		Ok(link.is_some_and(|l| l.chat_id == d.chat_id && !l.dead && l.permissions.as_ref().is_some_and(|p| rule.open_to(p)) && l.permissions_checked_at >= now - ACCESS_TTL))
 	}
 
 	async fn deliver_one(&self, d: db::Due, now: Timestamp) -> eyre::Result<Outcome> {
@@ -705,13 +698,9 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		};
 		match answer {
 			Ok(id) if id.user_id != user => Err(eyre::eyre!("GetMe answered another user than the session's")),
-			Ok(Identity { role: Some(role), display_name, .. }) => {
-				db::access_seen(&mut *conn().await?, user, Some(role), &display_name, now).await?;
-				Ok(Access::Granted(role, display_name))
-			}
-			Ok(Identity { role: None, .. }) => {
-				db::access_lost(&mut *conn().await?, user, now).await?;
-				Ok(Access::Denied)
+			Ok(Identity { permissions, display_name, .. }) => {
+				db::access_seen(&mut *conn().await?, user, &permissions, &display_name, now).await?;
+				Ok(Access::Granted(permissions, display_name))
 			}
 			Err(DirectoryError::Refused) => {
 				// The token is dead at concierge: so is the session, and whatever it vouched for.
@@ -846,13 +835,12 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		let Some(link) = link.filter(|l| l.user_id == message.user_id && !l.dead) else {
 			return Ok((Reply::NotLinked, None));
 		};
-		let (role, who) = match self.confirm_access(link.user_id, now).await? {
-			Access::Granted(role, who) => (role, who),
+		let (permissions, who) = match self.confirm_access(link.user_id, now).await? {
+			Access::Granted(permissions, who) => (permissions, who),
 			Access::NoSession => return Ok((Reply::OpenPanel, None)),
-			Access::Denied => return Ok((Reply::NoAccess, None)),
 			Access::Unavailable => return Ok((Reply::TryLater, None)),
 		};
-		if !role.may(Permission::EditsLeads) {
+		if !permissions.may(Leads::Edit) {
 			return Ok((Reply::NoAccess, None));
 		}
 		let (Some(brand), Some(lead)) = (message.brand_id.as_deref(), message.lead_id.as_deref()) else {

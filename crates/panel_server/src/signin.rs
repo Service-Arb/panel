@@ -1,21 +1,25 @@
 //! Signing in through concierge (spec §4), and the gate every `/api/v1` request passes.
 //!
 //! ```text
-//! GET /auth/login      state + PKCE verifier sealed into the pre-login cookie
+//! GET /auth/login      ?return_to=<path on this origin>, else 400; it, the state and the
+//!                      PKCE verifier sealed into the pre-login cookie
 //!                      → 302 concierge /api/auth/authorize?client_id=sa&…&code_challenge
 //! GET /auth/callback   state from the cookie = state in the URL (constant time), and the
 //!                      state not redeemed before, else 400 and the code is never presented;
 //!                      ExchangeCode(code, verifier); the browser's previous session closed
-//!                      → server-side session, cookies → 303 /
+//!                      → server-side session, cookies → 303 return_to, else /
 //! /api/v1/*            CSRF on anything but GET; session (access token rotated when it is
 //!                      about to expire); GetMe (≤ 60 s cache; fresh for minting or revoking
-//!                      source keys) → role, else 401/403/503
+//!                      source keys) → the caller's permissions, else 401/503
 //! POST /auth/logout    CSRF; every session of the user is closed
 //! ```
 //!
 //! Signing out of evinvest.ltd revokes the concierge token family: the panel's session ends
-//! at its next rotation, within the access token's lifetime. A scope revoked at concierge is
-//! seen within [`ME_TTL`].
+//! at its next rotation, within the access token's lifetime. A permission revoked at concierge
+//! is seen within [`ME_TTL`].
+//!
+//! Every signed-in user passes the gate; what they may open is the routers' to say
+//! ([`crate::http`]).
 //!
 //! The browser never holds a concierge token: only a random session id, whose hash names a
 //! row holding the tokens sealed.
@@ -42,15 +46,17 @@ use panel::{
 	Panel,
 	session::{PRELOGIN_TTL, SessionError, SessionKey},
 };
-use panel_core::role::Role;
+use sa_auth::PermissionSet;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::{
+	api::ApiError,
 	concierge::{CLIENT_ID, Concierge, ConciergeError, DEV_CODE, Me},
 	cookies::{self, Cookies},
+	http::Section,
 };
 
 /// How long `GetMe` is trusted for a session: a grant revoked at concierge shuts the panel
@@ -128,13 +134,18 @@ impl SignIn {
 	}
 }
 
-/// The signed-in user of an `/api/v1` request, put in its extensions by [`gate`]; `GET /me`.
+/// The signed-in user of an `/api/v1` request, put in its extensions by the gate; `GET /me`.
 #[derive(Clone, Debug, Serialize, TS)]
 pub struct Caller {
 	pub user_id: Uuid,
-	pub role: Role,
 	pub email: String,
+	#[serde(skip)]
+	#[ts(skip)]
+	pub email_verified: bool,
 	pub preferred_name: String,
+	/// Concrete `sa` permissions, as concierge resolved them.
+	#[ts(type = "Array<Permission>")]
+	pub permissions: PermissionSet,
 	/// Signed in by `PANEL_DEV_SIGN_IN`, not concierge: `/me` says so, for the UI to show.
 	pub dev_sign_in: bool,
 }
@@ -167,7 +178,7 @@ fn private(mut res: Response) -> Response {
 }
 
 /// Percent-encodes a query value: everything but RFC 3986's unreserved characters.
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
 	let mut out = String::with_capacity(value.len());
 	for b in value.bytes() {
 		if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
@@ -179,9 +190,27 @@ fn encode(value: &str) -> String {
 	out
 }
 
+#[derive(Deserialize)]
+pub struct Login {
+	return_to: Option<String>,
+}
+
+/// Longest `return_to`: a path the panel links to, with room for its query.
+const MAX_RETURN_TO: usize = 512;
+
+/// Whether `/auth/callback` may send the browser to `path`: a path on this origin, and
+/// nothing a browser could read as another (`//host`, `/\host`), nor anything but visible
+/// ASCII (no control character, no space).
+fn same_origin_path(path: &str) -> bool {
+	path.len() <= MAX_RETURN_TO && path.starts_with('/') && !path[1..].starts_with('/') && !path.contains('\\') && path.bytes().all(|b| b.is_ascii_graphic())
+}
+
 /// `GET /auth/login`.
-pub async fn login(State(s): State<SignIn>) -> Response {
-	let begun = match s.panel.begin_sign_in(Timestamp::now()) {
+pub async fn login(State(s): State<SignIn>, Query(q): Query<Login>) -> Response {
+	if q.return_to.as_deref().is_some_and(|p| !same_origin_path(p)) {
+		return private(page(StatusCode::BAD_REQUEST, "Sign-in failed", "This sign-in link is not valid here. Start again."));
+	}
+	let begun = match s.panel.begin_sign_in(q.return_to.as_deref(), Timestamp::now()) {
 		Ok(b) => b,
 		Err(e) => {
 			crate::report(&e, "starting a sign-in");
@@ -308,7 +337,8 @@ pub async fn callback(State(s): State<SignIn>, headers: HeaderMap, Query(q): Que
 	};
 	let max_age = opened.expires_at.duration_since(now).as_secs();
 	tracing::info!(user_id = %issued.user_id, "signed in");
-	let mut res = with_clear((StatusCode::SEE_OTHER, [(header::LOCATION, HeaderValue::from_static("/"))]).into_response());
+	let landing = HeaderValue::from_str(pre.return_to.as_deref().unwrap_or("/")).expect("`/auth/login` let in visible ASCII only");
+	let mut res = with_clear((StatusCode::SEE_OTHER, [(header::LOCATION, landing)]).into_response());
 	let h = res.headers_mut();
 	h.append(header::SET_COOKIE, s.cookies.set(cookies::SESSION, &opened.cookie, max_age, true));
 	h.append(header::SET_COOKIE, s.cookies.set(cookies::CSRF, &csrf, max_age, false));
@@ -345,33 +375,38 @@ fn signed_out(s: &SignIn, mut res: Response) -> Response {
 	res
 }
 
-/// The gate of `/api/v1`: CSRF for anything that is not a read, then the session and the
-/// caller's role, into the request's extensions as a [`Caller`].
-pub async fn gate(State(s): State<SignIn>, req: Request, next: Next) -> Response {
-	gated(s, req, next, Freshness::Cached).await
-}
-
-/// [`gate`], asking concierge afresh rather than trusting the cached `GetMe`: for what must
-/// not outlive a revoked grant by even [`ME_TTL`].
-pub async fn gate_fresh(State(s): State<SignIn>, req: Request, next: Next) -> Response {
-	gated(s, req, next, Freshness::Fresh).await
-}
-
-#[derive(Clone, Copy, PartialEq)]
+/// Whether a route trusts the cached `GetMe`, or asks concierge afresh: for what must not
+/// outlive a revoked permission by even [`ME_TTL`].
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Freshness {
 	Cached,
 	Fresh,
 }
 
-async fn gated(s: SignIn, mut req: Request, next: Next, me: Freshness) -> Response {
+/// What [`gate`] asks of a route's caller.
+#[derive(Clone, Debug)]
+pub(crate) struct Gate {
+	pub sign_in: SignIn,
+	pub freshness: Freshness,
+	/// `None`: every signed-in user.
+	pub section: Option<Section>,
+}
+
+/// The gate of `/api/v1`: CSRF for anything that is not a read, then the session and the
+/// caller's permissions, into the request's extensions as a [`Caller`]; then the route's
+/// section, else 403.
+pub(crate) async fn gate(State(g): State<Gate>, mut req: Request, next: Next) -> Response {
 	let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-	if !safe && !s.cookies.csrf_ok(req.headers()) {
+	if !safe && !g.sign_in.cookies.csrf_ok(req.headers()) {
 		return json_error(StatusCode::FORBIDDEN, "csrf");
 	}
-	let caller = match authenticate(&s, req.headers(), me).await {
+	let caller = match authenticate(&g.sign_in, req.headers(), g.freshness).await {
 		Ok(c) => c,
 		Err(res) => return *res,
 	};
+	if g.section.is_some_and(|section| !section.may(&caller.permissions)) {
+		return ApiError::Forbidden.into_response();
+	}
 	req.extensions_mut().insert(caller);
 	let mut res = next.run(req).await;
 	// PII and secrets pass through here: nothing is cached.
@@ -397,8 +432,6 @@ async fn get_me(s: &SignIn, access: &str) -> Result<Me, ConciergeError> {
 pub(crate) enum Denied {
 	/// No session, or one closed: sign in again (401, the cookies cleared).
 	Unauthenticated,
-	/// Signed in, and no role in the panel (403).
-	Forbidden,
 	/// Concierge cannot be asked now; nothing is closed (503).
 	Unavailable,
 	/// Our failure, or concierge's: the status and the message the caller sees.
@@ -409,7 +442,6 @@ impl Denied {
 	pub(crate) fn into_response(self, s: &SignIn) -> Response {
 		match self {
 			Self::Unauthenticated => signed_out(s, json_error(StatusCode::UNAUTHORIZED, "sign in")),
-			Self::Forbidden => json_error(StatusCode::FORBIDDEN, "no access to the panel"),
 			Self::Unavailable => json_error(StatusCode::SERVICE_UNAVAILABLE, "sign-in is unavailable, try again"),
 			Self::Failed(status, msg) => json_error(status, msg),
 		}
@@ -421,7 +453,7 @@ async fn authenticate(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> 
 	check(s, headers, freshness).await.map_err(|denied| Box::new(denied.into_response(s)))
 }
 
-/// The session behind the request's cookie and the role concierge gives its user: what
+/// The session behind the request's cookie and what concierge says its user may do: what
 /// [`gate`] lets through, and what a live socket asks again while it is open.
 pub(crate) async fn check(s: &SignIn, headers: &HeaderMap, freshness: Freshness) -> Result<Caller, Denied> {
 	let cookie = s.cookies.get(headers, cookies::SESSION).ok_or(Denied::Unauthenticated)?;
@@ -471,24 +503,20 @@ pub(crate) async fn check(s: &SignIn, headers: &HeaderMap, freshness: Freshness)
 		crate::report(&eyre::eyre!("GetMe answered another user than the session's"), "GetMe");
 		return Err(Denied::Failed(StatusCode::BAD_GATEWAY, "sign-in failed"));
 	}
-	let grants = me.scopes.iter().map(|(scope, role)| (scope.as_str(), role.as_str()));
-	let admitted = Role::admitted(&me.role, grants);
 	if fresh {
-		// A Telegram link sends only on a role concierge confirmed lately; every answer the
-		// gate gets is such a confirmation (or its withdrawal). A no-op for an unlinked user.
+		// A Telegram link sends only on permissions concierge confirmed lately; every answer
+		// the gate gets is such a confirmation. A no-op for an unlinked user.
 		let display = if me.preferred_name.trim().is_empty() { &me.email } else { &me.preferred_name };
-		if let Err(e) = s.panel.telegram_access_seen(me.user_id, admitted, display, Timestamp::now()).await {
+		if let Err(e) = s.panel.telegram_access_seen(me.user_id, &me.permissions, display, Timestamp::now()).await {
 			crate::report(&e, "recording a user's access for Telegram");
 		}
 	}
-	let Some(role) = admitted else {
-		return Err(Denied::Forbidden);
-	};
 	Ok(Caller {
 		user_id: me.user_id,
-		role,
 		email: me.email,
+		email_verified: me.email_verified,
 		preferred_name: me.preferred_name,
+		permissions: me.permissions,
 		dev_sign_in: s.concierge.is_dev(),
 	})
 }

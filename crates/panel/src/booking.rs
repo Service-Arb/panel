@@ -167,7 +167,7 @@ pub struct Synced {
 	pub ingested: Ingested,
 }
 
-/// A provider's booking as the screens show it, with its attendee for a role that sees PII.
+/// A provider's booking as the screens show it, with its attendee for whoever sees PII.
 #[derive(Clone, Debug)]
 pub struct BookingView {
 	pub row: BookingRow,
@@ -442,7 +442,7 @@ impl Panel {
 	}
 
 	/// The providers' bookings no lead was found for, the next slot first, with the attendee
-	/// for a role that sees PII.
+	/// for whoever sees PII.
 	pub async fn unmatched_bookings(&self, brand: Option<&BrandId>, pii: Pii, limit: u32) -> eyre::Result<Vec<BookingView>> {
 		let rows = {
 			let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;

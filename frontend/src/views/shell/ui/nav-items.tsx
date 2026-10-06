@@ -1,7 +1,7 @@
 import { NavDot, type NavGroup, type NavItem } from "@evinvest/uikit";
-import { ArrowUpRight, BarChart3, Ellipsis, FlaskConical, Inbox, KeyRound, LayoutGrid, MapPin, Tags } from "lucide-react";
+import { Archive, ArrowUpRight, BarChart3, Ellipsis, FlaskConical, Inbox, KeyRound, LayoutGrid, MapPin, Tags } from "lucide-react";
 
-import { type Role, MAY } from "@/entities/session";
+import { type Caller, may } from "@/entities/session";
 import { ROUTES } from "@/shared/config/routes";
 import type { T } from "@/shared/i18n";
 
@@ -13,13 +13,15 @@ export interface PanelNav {
 }
 
 /**
- * The rail (spec §10, hybrid 1+2) in groups, and the phone's four tabs: the
- * three daily screens, and More standing in for the rest (Pricing among them:
- * an admin edits it, an operator reads it, neither daily). Marks ride on both:
- * a count where there is one, a dot where "something changed" is all there is.
+ * The rail (spec §10, hybrid 1+2) in groups, one per section the caller's
+ * permissions open, and the phone's tabs: the three daily screens, and More
+ * standing in for the rest (Pricing among them: daily for nobody). Marks ride on
+ * both: a count where there is one, a dot where "something changed" is all there is.
  */
-export function panelNav(t: T, role: Role, marks: Marks): PanelNav {
-  const admin = MAY[role].manages_sources;
+export function panelNav(t: T, caller: Caller, marks: Marks): PanelNav {
+  const work = may(caller, "sa:work:read");
+  const analysis = may(caller, "sa:analysis:read");
+  const admin = may(caller, "sa:admin:sources:manage");
   const dot = (corner: boolean) => <NavDot corner={corner} label={t("nav.changed")} />;
   const overview: NavItem = { id: "overview", href: ROUTES.overview, label: t("nav.overview"), icon: BarChart3 };
   // New leads are counted; bookings without one only say "something waits", and a count says it already.
@@ -38,23 +40,24 @@ export function panelNav(t: T, role: Role, marks: Marks): PanelNav {
     target: "_blank",
     trailing: <ArrowUpRight aria-hidden className="size-4 text-ink-soft" />,
   };
-  const elsewhere = marks.experiments || (admin && marks.sources);
+  const reviewArchive: NavItem = { id: "review_archive", href: ROUTES.reviewArchive, label: t("nav.reviewArchive"), icon: Archive };
+  const elsewhere = (analysis && marks.experiments) || (admin && marks.sources);
   const more: NavItem = {
     id: "more",
     href: ROUTES.more,
     label: t("nav.more"),
     icon: Ellipsis,
-    also: admin ? [ROUTES.pricing, ROUTES.experiments, ROUTES.sources] : [ROUTES.pricing, ROUTES.experiments],
+    also: [...(work ? [ROUTES.reviewArchive, ROUTES.pricing] : []), ...(analysis ? [ROUTES.experiments] : []), ...(admin ? [ROUTES.sources] : [])],
     ...(elsewhere ? { badge: dot(true) } : {}),
   };
 
-  const groups: NavGroup[] = [
-    { id: "work", label: t("nav.group.work"), items: [overview, leads, places, pricing] },
-    { id: "analysis", label: t("nav.group.analysis"), items: [experiments, grafana] },
-  ];
+  const groups: NavGroup[] = [];
+  if (work) groups.push({ id: "work", label: t("nav.group.work"), items: [overview, leads, places, pricing] });
+  if (analysis) groups.push({ id: "analysis", label: t("nav.group.analysis"), items: [experiments, grafana] });
   if (admin) groups.push({ id: "admin", label: t("nav.group.admin"), items: [sources] });
+  groups.push({ id: "archive", label: t("nav.group.archive"), items: [reviewArchive] });
   return {
     groups,
-    tabs: [overview, leads, places, more],
+    tabs: [...(work ? [overview, leads, places] : [reviewArchive]), more],
   };
 }

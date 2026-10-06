@@ -29,12 +29,8 @@
 use std::time::Duration;
 
 use jiff::Timestamp;
-use panel_core::{
-	fact::Fact,
-	ids::BrandId,
-	lead::Recorded,
-	role::{Permission, Role},
-};
+use panel_core::{fact::Fact, ids::BrandId, lead::Recorded};
+use sa_auth::{Analysis, PermissionSet, Sources, Work};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -94,14 +90,14 @@ pub struct Change {
 }
 
 impl Change {
-	/// Whether `user`, of `role`, may be told of it: exactly when they may read what changed.
-	/// Every admitted role reads leads, places, pricing, the experiments and the bookings, for every brand (spec §5.4: the
-	/// panel's grant is `allocation:service_arb`, with no narrower scope); sources are an
-	/// admin's; a Telegram link is its own user's.
-	pub fn visible_to(&self, user: Uuid, role: Role) -> bool {
+	/// Whether `user`, holding `permissions`, may be told of it: exactly when they may read
+	/// what changed, for every brand (no permission is narrower than the whole panel); a
+	/// Telegram link is its own user's.
+	pub fn visible_to(&self, user: Uuid, permissions: &PermissionSet) -> bool {
 		match self.topic {
-			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Experiments | Topic::Bookings => true,
-			Topic::Sources => role.may(Permission::ManagesSources),
+			Topic::Leads | Topic::Lead | Topic::Places | Topic::Pricing | Topic::Bookings => permissions.may(Work::Read),
+			Topic::Experiments => permissions.may(Analysis::Read),
+			Topic::Sources => permissions.may(Sources::Manage),
 			Topic::Telegram => self.user == Some(user),
 		}
 	}
@@ -257,15 +253,19 @@ mod tests {
 	#[test]
 	fn who_is_told() {
 		let (ann, bob) = (Uuid::from_u128(1), Uuid::from_u128(2));
+		let operator: PermissionSet = sa_auth::SA_OPERATOR.members.iter().copied().collect();
+		let admin: PermissionSet = sa_auth::SA_ADMIN.members.iter().copied().collect();
+		let work_only: PermissionSet = [Work::Read.as_str()].into_iter().collect();
 		for topic in [Topic::Leads, Topic::Lead, Topic::Places, Topic::Pricing, Topic::Experiments, Topic::Bookings] {
-			assert!(change(topic, None).visible_to(ann, Role::Operator), "{topic:?}");
-			assert!(change(topic, None).visible_to(ann, Role::Admin), "{topic:?}");
+			assert!(change(topic, None).visible_to(ann, &operator), "{topic:?}");
+			assert!(change(topic, None).visible_to(ann, &admin), "{topic:?}");
 		}
-		assert!(!change(Topic::Sources, None).visible_to(ann, Role::Operator), "an admin's read");
-		assert!(change(Topic::Sources, None).visible_to(ann, Role::Admin));
-		assert!(change(Topic::Telegram, Some(ann)).visible_to(ann, Role::Operator));
-		assert!(!change(Topic::Telegram, Some(ann)).visible_to(bob, Role::Admin), "another user's link, admin or not");
-		assert!(!change(Topic::Telegram, None).visible_to(ann, Role::Admin), "nobody's");
+		assert!(!change(Topic::Experiments, None).visible_to(ann, &work_only), "an analyst's read");
+		assert!(!change(Topic::Sources, None).visible_to(ann, &operator), "an admin's read");
+		assert!(change(Topic::Sources, None).visible_to(ann, &admin));
+		assert!(change(Topic::Telegram, Some(ann)).visible_to(ann, &operator));
+		assert!(!change(Topic::Telegram, Some(ann)).visible_to(bob, &admin), "another user's link, admin or not");
+		assert!(!change(Topic::Telegram, None).visible_to(ann, &admin), "nobody's");
 	}
 
 	#[tokio::test]

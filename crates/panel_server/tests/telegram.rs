@@ -22,16 +22,16 @@ use panel::{
 	operator::{Actor, NewLead, Payment, Pii},
 	session::{RefreshError, Refresher, Tokens},
 	telegram::{Account, Chat, Directory, DirectoryError, Identity, Notifier, Update},
-	testing::{TestDb, event, panel, sign},
+	testing::{self as aliases, TestDb, event, panel, sign},
 };
 use panel_core::{
 	event::SourceKind,
 	ids::{BrandId, LeadId, LocationId},
 	lead::Stage,
 	notify::{Entity, Locale, Rendered},
-	role::Role,
 };
 use panel_server::telegram::BotApi;
+use sa_auth::PermissionSet;
 use serde_json::{Value, json};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -173,8 +173,8 @@ fn private(id: i64) -> Chat {
 
 impl Setup {
 	/// A user linked to `chat` at `now`, as the profile and `/start` do it.
-	async fn link(&self, user: Uuid, role: Role, chat: i64, now: Timestamp) {
-		let token = self.panel.telegram_link_token(user, role, &format!("user-{chat}"), now).await.unwrap();
+	async fn link(&self, user: Uuid, permissions: PermissionSet, chat: i64, now: Timestamp) {
+		let token = self.panel.telegram_link_token(user, &permissions, &format!("user-{chat}"), now).await.unwrap();
 		self.n
 			.handle(
 				Update::Start {
@@ -189,12 +189,12 @@ impl Setup {
 	}
 
 	/// A live panel session for `user`, whose access token concierge answers `GetMe` for.
-	async fn session(&self, user: Uuid, role: Option<Role>, name: &str) {
-		self.session_until(user, role, name, t0() + SignedDuration::from_hours(24 * 30)).await;
+	async fn session(&self, user: Uuid, permissions: PermissionSet, name: &str) {
+		self.session_until(user, permissions, name, t0() + SignedDuration::from_hours(24 * 30)).await;
 	}
 
 	/// [`Self::session`], its access token expiring at `access_until`.
-	async fn session_until(&self, user: Uuid, role: Option<Role>, name: &str, access_until: Timestamp) {
+	async fn session_until(&self, user: Uuid, permissions: PermissionSet, name: &str, access_until: Timestamp) {
 		let access = format!("access-{user}");
 		let far = t0() + SignedDuration::from_hours(24 * 30);
 		let tokens = Tokens {
@@ -208,7 +208,7 @@ impl Setup {
 			access,
 			Ok(Identity {
 				user_id: user,
-				role,
+				permissions,
 				display_name: name.to_owned(),
 			}),
 		);
@@ -240,7 +240,7 @@ impl Setup {
 	}
 
 	async fn linked(&self, user: Uuid) -> bool {
-		self.panel.telegram_settings(user, Role::Admin).await.unwrap().linked
+		self.panel.telegram_settings(user, &aliases::admin()).await.unwrap().linked
 	}
 
 	async fn events_of(&self, lead: &LeadId, r#type: &str) -> usize {
@@ -264,7 +264,7 @@ async fn a_link_token_is_single_use_private_and_expires() {
 	let s = setup().await;
 	let (alice, bob) = (Uuid::now_v7(), Uuid::now_v7());
 
-	let token = s.panel.telegram_link_token(alice, Role::Operator, "Alice", t0()).await.unwrap();
+	let token = s.panel.telegram_link_token(alice, &aliases::operator(), "Alice", t0()).await.unwrap();
 	assert!(token.len() >= 43, "256 bits, base64url");
 	let raw: Option<(Vec<u8>,)> = sqlx::query_as("SELECT token_hash FROM telegram_link_tokens").fetch_optional(&s.db).await.unwrap();
 	assert_ne!(raw.unwrap().0, token.as_bytes(), "only a hash is stored");
@@ -300,7 +300,7 @@ async fn a_link_token_is_single_use_private_and_expires() {
 	assert_eq!(chat, 7);
 
 	// Expired: past ten minutes it opens nothing.
-	let late = s.panel.telegram_link_token(bob, Role::Operator, "Bob", t0()).await.unwrap();
+	let late = s.panel.telegram_link_token(bob, &aliases::operator(), "Bob", t0()).await.unwrap();
 	s.n.handle(start(9, &late), t0() + SignedDuration::from_mins(10)).await.unwrap();
 	assert!(!s.linked(bob).await);
 	let forged = start(9, "A".repeat(43).as_str());
@@ -310,7 +310,7 @@ async fn a_link_token_is_single_use_private_and_expires() {
 	// /stop unlinks; the profile's DELETE does too.
 	s.n.handle(Update::Stop { chat: private(7) }, t0()).await.unwrap();
 	assert!(!s.linked(alice).await);
-	s.link(alice, Role::Operator, 7, t0()).await;
+	s.link(alice, aliases::operator(), 7, t0()).await;
 	assert!(s.panel.telegram_unlink(alice).await.unwrap());
 	assert!(!s.panel.telegram_unlink(alice).await.unwrap());
 }
@@ -325,15 +325,15 @@ async fn a_new_lead_goes_to_linked_users_with_access_only() {
 	let revoked = Uuid::now_v7(); // concierge said no since
 	let stale = Uuid::now_v7(); // not confirmed for over an hour
 	let _unlinked = Uuid::now_v7();
-	s.link(operator, Role::Operator, 1, t0()).await;
-	s.link(muted, Role::Admin, 2, t0()).await;
-	s.link(revoked, Role::Operator, 3, t0()).await;
-	s.link(stale, Role::Operator, 4, t0() - SignedDuration::from_mins(61)).await;
-	s.panel.telegram_set_rules(muted, Role::Admin, &[(panel_core::notify::Rule::NewLead, false)]).await.unwrap();
-	s.panel.telegram_access_seen(revoked, None, "Rex", t0()).await.unwrap();
+	s.link(operator, aliases::operator(), 1, t0()).await;
+	s.link(muted, aliases::admin(), 2, t0()).await;
+	s.link(revoked, aliases::operator(), 3, t0()).await;
+	s.link(stale, aliases::operator(), 4, t0() - SignedDuration::from_mins(61)).await;
+	s.panel.telegram_set_rules(muted, &aliases::admin(), &[(panel_core::notify::Rule::NewLead, false)]).await.unwrap();
+	s.panel.telegram_access_seen(revoked, &PermissionSet::from_iter(Vec::<String>::new()), "Rex", t0()).await.unwrap();
 	assert!(
 		s.panel
-			.telegram_set_rules(operator, Role::Operator, &[(panel_core::notify::Rule::PaymentReceived, true)])
+			.telegram_set_rules(operator, &aliases::operator(), &[(panel_core::notify::Rule::PaymentReceived, true)])
 			.await
 			.is_err(),
 		"payments are the admins'"
@@ -354,7 +354,7 @@ async fn a_new_lead_goes_to_linked_users_with_access_only() {
 	assert_eq!(sent[0]["chat_id"], 1);
 	assert_eq!(
 		sent[0]["text"], "Новая заявка\naquafix · paris-11\nНужно: a leaking tap\nТелефон: +33 6 00 00 00 00",
-		"PII for a role that sees it in the panel"
+		"PII for whoever sees it in the panel"
 	);
 	let labels: Vec<&str> = sent[0]["reply_markup"]["inline_keyboard"]
 		.as_array()
@@ -368,8 +368,8 @@ async fn a_new_lead_goes_to_linked_users_with_access_only() {
 
 	// Past the SLA, one reminder; the operator gets it, once.
 	let later = t0() + SignedDuration::from_mins(31);
-	s.panel.telegram_access_seen(operator, Some(Role::Operator), "Olga", later).await.unwrap();
-	s.panel.telegram_access_seen(muted, Some(Role::Admin), "Mia", later).await.unwrap();
+	s.panel.telegram_access_seen(operator, &aliases::operator(), "Olga", later).await.unwrap();
+	s.panel.telegram_access_seen(muted, &aliases::admin(), "Mia", later).await.unwrap();
 	assert_eq!(s.panel.telegram_fan_out(later, Locale::Ru).await.unwrap(), 2, "the admin muted new leads, not reminders");
 	assert_eq!(s.panel.telegram_fan_out(later + SignedDuration::from_mins(5), Locale::Ru).await.unwrap(), 0);
 	assert_eq!(s.n.deliver(later).await.unwrap().sent, 2);
@@ -378,7 +378,7 @@ async fn a_new_lead_goes_to_linked_users_with_access_only() {
 
 	// A payment goes to the admins who asked for it.
 	s.panel
-		.telegram_set_rules(muted, Role::Admin, &[(panel_core::notify::Rule::PaymentReceived, true)])
+		.telegram_set_rules(muted, &aliases::admin(), &[(panel_core::notify::Rule::PaymentReceived, true)])
 		.await
 		.unwrap();
 	let payment = Payment {
@@ -400,7 +400,7 @@ async fn a_new_lead_goes_to_linked_users_with_access_only() {
 async fn a_suspect_lead_is_told_apart_and_not_chased() {
 	let s = setup().await;
 	let operator = Uuid::now_v7();
-	s.link(operator, Role::Operator, 1, t0()).await;
+	s.link(operator, aliases::operator(), 1, t0()).await;
 	let secret = s.panel.add_source("aquafix-site", SourceKind::Site, [brand()].into()).await.unwrap().unwrap().secret.to_string();
 	let created = |lead: &str, properties: Value| event("lead.created", t0(), "site", json!({"brandId": "aquafix", "locationId": "paris-11", "leadId": lead}), properties);
 	let events = [created("L-1", json!({"channel": "form"})), created("L-2", json!({"channel": "form", "suspect": "too_fast"}))];
@@ -421,7 +421,7 @@ async fn a_suspect_lead_is_told_apart_and_not_chased() {
 	assert_eq!(sent[1]["reply_markup"]["inline_keyboard"].as_array().unwrap().len(), 2, "it may be a person: the buttons stay");
 
 	let later = t0() + SignedDuration::from_mins(31);
-	s.panel.telegram_access_seen(operator, Some(Role::Operator), "Olga", later).await.unwrap();
+	s.panel.telegram_access_seen(operator, &aliases::operator(), "Olga", later).await.unwrap();
 	assert_eq!(s.panel.telegram_fan_out(later, Locale::Ru).await.unwrap(), 1, "only the ordinary lead is overdue");
 	s.n.deliver(later).await.unwrap();
 	let reminder = s.mock.calls("sendMessage").pop().unwrap();
@@ -432,8 +432,8 @@ async fn a_suspect_lead_is_told_apart_and_not_chased() {
 async fn a_lead_typed_in_is_not_told_to_whoever_typed_it() {
 	let s = setup().await;
 	let (typist, colleague) = (Uuid::now_v7(), Uuid::now_v7());
-	s.link(typist, Role::Operator, 1, t0()).await;
-	s.link(colleague, Role::Operator, 2, t0()).await;
+	s.link(typist, aliases::operator(), 1, t0()).await;
+	s.link(colleague, aliases::operator(), 2, t0()).await;
 	s.mock.clear();
 	let new = NewLead {
 		brand: brand(),
@@ -460,15 +460,18 @@ async fn a_silent_source_is_told_to_admins_once_a_day() {
 	// for this throwaway database alone.
 	sqlx::raw_sql("DROP TRIGGER sources_only_revoked").execute(&s.db).await.unwrap();
 	sqlx::query("UPDATE sources SET created_at = $1").bind(added.as_microsecond()).execute(&s.db).await.unwrap();
-	s.link(admin, Role::Admin, 5, t0()).await;
-	s.panel.telegram_set_rules(admin, Role::Admin, &[(panel_core::notify::Rule::SourceSilent, true)]).await.unwrap();
+	s.link(admin, aliases::admin(), 5, t0()).await;
+	s.panel
+		.telegram_set_rules(admin, &aliases::admin(), &[(panel_core::notify::Rule::SourceSilent, true)])
+		.await
+		.unwrap();
 	s.mock.clear();
 	assert_eq!(s.panel.telegram_fan_out(t0(), Locale::En).await.unwrap(), 1);
 	let hour = SignedDuration::from_hours(1);
 	// Silent for 25 h at t0: told. At 47 h, still the same day of silence; at 48 h, the next.
-	s.panel.telegram_access_seen(admin, Some(Role::Admin), "Ann", t0() + hour * 22).await.unwrap();
+	s.panel.telegram_access_seen(admin, &aliases::admin(), "Ann", t0() + hour * 22).await.unwrap();
 	assert_eq!(s.panel.telegram_fan_out(t0() + hour * 22, Locale::En).await.unwrap(), 0, "not twice for one day of silence");
-	s.panel.telegram_access_seen(admin, Some(Role::Admin), "Ann", t0() + hour * 23).await.unwrap();
+	s.panel.telegram_access_seen(admin, &aliases::admin(), "Ann", t0() + hour * 23).await.unwrap();
 	assert_eq!(s.panel.telegram_fan_out(t0() + hour * 23, Locale::En).await.unwrap(), 1, "the next day of it");
 	s.n.deliver(t0() + hour * 23).await.unwrap();
 	let told = texts(&s.mock.calls("sendMessage"));
@@ -481,7 +484,7 @@ async fn a_silent_source_is_told_to_admins_once_a_day() {
 async fn the_outbox_keeps_one_a_second_per_chat_and_25_in_all() {
 	let s = setup().await;
 	for chat in 1..=30 {
-		s.link(Uuid::now_v7(), Role::Operator, chat, t0()).await;
+		s.link(Uuid::now_v7(), aliases::operator(), chat, t0()).await;
 	}
 	s.mock.clear();
 	for i in 0..2 {
@@ -517,7 +520,7 @@ async fn the_outbox_keeps_one_a_second_per_chat_and_25_in_all() {
 #[tokio::test]
 async fn a_429_waits_what_telegram_says_and_a_5xx_backs_off() {
 	let s = setup().await;
-	s.link(Uuid::now_v7(), Role::Operator, 1, t0()).await;
+	s.link(Uuid::now_v7(), aliases::operator(), 1, t0()).await;
 	s.mock.clear();
 	s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
@@ -539,7 +542,7 @@ async fn a_429_waits_what_telegram_says_and_a_5xx_backs_off() {
 async fn a_blocked_bot_marks_the_chat_dead() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
+	s.link(user, aliases::operator(), 1, t0()).await;
 	s.mock.clear();
 	s.lead(t0()).await;
 	s.lead(t0()).await;
@@ -550,7 +553,7 @@ async fn a_blocked_bot_marks_the_chat_dead() {
 	assert_eq!(s.n.deliver(at(0)).await.unwrap().dead, 1);
 	let states: Vec<String> = s.outbox().await.into_iter().map(|(_, _, state, _)| state).collect();
 	assert_eq!(states, ["dead", "dead"], "and what it was still owed is given up too");
-	let settings = s.panel.telegram_settings(user, Role::Operator).await.unwrap();
+	let settings = s.panel.telegram_settings(user, &aliases::operator()).await.unwrap();
 	assert!(settings.linked && settings.blocked);
 
 	s.lead(at(5_000)).await;
@@ -558,8 +561,8 @@ async fn a_blocked_bot_marks_the_chat_dead() {
 	assert_eq!(s.n.deliver(at(10_000)).await.unwrap(), Default::default());
 
 	// Linking again brings it back.
-	s.link(user, Role::Operator, 1, at(20_000)).await;
-	assert!(!s.panel.telegram_settings(user, Role::Operator).await.unwrap().blocked);
+	s.link(user, aliases::operator(), 1, at(20_000)).await;
+	assert!(!s.panel.telegram_settings(user, &aliases::operator()).await.unwrap().blocked);
 }
 
 // ── the buttons ──────────────────────────────────────────────────────────────────────────
@@ -620,8 +623,8 @@ fn answers(s: &Setup) -> Vec<String> {
 async fn a_button_records_its_event_once() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
-	s.session(user, Some(Role::Operator), "Olga").await;
+	s.link(user, aliases::operator(), 1, t0()).await;
+	s.session(user, aliases::operator(), "Olga").await;
 	let lead = s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
 	let (mid, data, text) = delivered(&s, t0()).await;
@@ -663,7 +666,7 @@ async fn a_button_records_its_event_once() {
 async fn a_button_needs_access_now() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
+	s.link(user, aliases::operator(), 1, t0()).await;
 	let lead = s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
 	let (mid, data, text) = delivered(&s, t0()).await;
@@ -671,7 +674,7 @@ async fn a_button_needs_access_now() {
 	// No panel session to ask concierge with: nothing is written on the link's old answer.
 	s.n.handle(press("cb-1", 1, mid, &data[0], &text), at(1_000)).await.unwrap();
 	// A session, but concierge says the grant is gone.
-	s.session(user, None, "Olga").await;
+	s.session(user, PermissionSet::from_iter(Vec::<String>::new()), "Olga").await;
 	s.n.handle(press("cb-2", 1, mid, &data[0], &text), at(2_000)).await.unwrap();
 	assert_eq!(answers(&s), ["Откройте панель, чтобы подтвердить доступ, и нажмите снова.", "Нет доступа к панели."]);
 	assert_eq!(s.events_of(&lead, "lead.contacted").await, 0);
@@ -686,8 +689,8 @@ async fn a_button_needs_access_now() {
 async fn a_forged_button_is_refused() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
-	s.session(user, Some(Role::Operator), "Olga").await;
+	s.link(user, aliases::operator(), 1, t0()).await;
+	s.session(user, aliases::operator(), "Olga").await;
 	let lead = s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
 	let (mid, data, text) = delivered(&s, t0()).await;
@@ -725,29 +728,30 @@ async fn outbox_errors(s: &Setup) -> Vec<(String, Option<String>)> {
 async fn access_is_asked_again_when_a_message_is_sent() {
 	let s = setup().await;
 	let (stale, revoked) = (Uuid::now_v7(), Uuid::now_v7());
-	s.link(stale, Role::Operator, 1, t0() - SignedDuration::from_mins(50)).await;
-	s.link(revoked, Role::Operator, 2, t0()).await;
+	s.link(stale, aliases::operator(), 1, t0() - SignedDuration::from_mins(50)).await;
+	s.link(revoked, aliases::operator(), 2, t0()).await;
 	s.mock.clear();
 	s.lead(t0()).await;
 	assert_eq!(s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap(), 2, "both confirmed within the hour, then");
 
-	// concierge said no for one: what was queued for them goes nowhere, at once.
-	s.panel.telegram_access_seen(revoked, None, "Rex", at(1_000)).await.unwrap();
-	// The other's confirmation lapses while the message waits.
-	assert_eq!(s.n.deliver(t0() + SignedDuration::from_mins(11)).await.unwrap().dead, 1);
-	assert!(s.mock.calls("sendMessage").is_empty(), "no PII on a stale or withdrawn role");
-	assert_eq!(
-		outbox_errors(&s).await,
-		[("dead".to_owned(), Some("access not confirmed".to_owned())), ("dead".to_owned(), Some("access lost".to_owned()))]
-	);
+	// concierge now says one holds nothing; the other's confirmation lapses while the message
+	// waits. Neither is sent what was queued.
+	s.panel
+		.telegram_access_seen(revoked, &PermissionSet::from_iter(Vec::<String>::new()), "Rex", at(1_000))
+		.await
+		.unwrap();
+	assert_eq!(s.n.deliver(t0() + SignedDuration::from_mins(11)).await.unwrap().dead, 2);
+	assert!(s.mock.calls("sendMessage").is_empty(), "no PII on stale or withdrawn permissions");
+	let not_confirmed = ("dead".to_owned(), Some("access not confirmed".to_owned()));
+	assert_eq!(outbox_errors(&s).await, [not_confirmed.clone(), not_confirmed]);
 }
 
 #[tokio::test]
 async fn a_session_concierge_will_not_rotate_ends_access_and_one_refusal_does_not() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
-	s.session(user, Some(Role::Operator), "Olga").await;
+	s.link(user, aliases::operator(), 1, t0()).await;
+	s.session(user, aliases::operator(), "Olga").await;
 	let lead = s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
 	let (mid, data, message) = delivered(&s, t0()).await;
@@ -761,18 +765,18 @@ async fn a_session_concierge_will_not_rotate_ends_access_and_one_refusal_does_no
 	// A session whose access token is due and whose refresh concierge refuses: the user's
 	// notifications end, and what waited for them is dropped.
 	let other = Uuid::now_v7();
-	s.link(other, Role::Operator, 2, t0()).await;
-	s.session_until(other, Some(Role::Operator), "Oleg", t0() + SignedDuration::from_secs(10)).await;
+	s.link(other, aliases::operator(), 2, t0()).await;
+	s.session_until(other, aliases::operator(), "Oleg", t0() + SignedDuration::from_secs(10)).await;
 	s.lead(at(2_000)).await;
 	s.panel.telegram_fan_out(at(2_000), Locale::Ru).await.unwrap();
 	let access = s.n.confirm_access(other, at(3_000)).await.unwrap();
 	assert!(matches!(access, panel::telegram::Access::NoSession), "{access:?}");
-	let role: Option<String> = sqlx::query_scalar("SELECT role FROM telegram_links WHERE user_id = $1")
+	let permissions: Option<String> = sqlx::query_scalar("SELECT permissions FROM telegram_links WHERE user_id = $1")
 		.bind(other)
 		.fetch_one(&s.db)
 		.await
 		.unwrap();
-	assert_eq!(role, None);
+	assert_eq!(permissions, None);
 	let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM telegram_outbox WHERE user_id = $1 AND state = 'pending'")
 		.bind(other)
 		.fetch_one(&s.db)
@@ -795,15 +799,15 @@ async fn linking_names_both_accounts_and_never_takes_a_chat_over() {
 	};
 
 	// A second token replaces the first.
-	let first = s.panel.telegram_link_token(alice, Role::Operator, "Alice Panel", t0()).await.unwrap();
-	let second = s.panel.telegram_link_token(alice, Role::Operator, "Alice Panel", t0()).await.unwrap();
+	let first = s.panel.telegram_link_token(alice, &aliases::operator(), "Alice Panel", t0()).await.unwrap();
+	let second = s.panel.telegram_link_token(alice, &aliases::operator(), "Alice Panel", t0()).await.unwrap();
 	s.n.handle(start(1, &first, "alice_tg"), t0()).await.unwrap();
 	assert!(!s.linked(alice).await, "the older token is gone");
 	s.n.handle(start(1, &second, "alice_tg"), t0() + SignedDuration::from_mins(9)).await.unwrap();
 	let replies = texts(&s.mock.calls("sendMessage"));
 	assert!(replies.last().unwrap().contains("аккаунт: Alice Panel"), "{replies:?}");
-	assert_eq!(s.panel.telegram_settings(alice, Role::Operator).await.unwrap().account.as_deref(), Some("@alice_tg"));
-	let checked: String = sqlx::query_scalar("SELECT datetime(role_checked_at / 1000000, 'unixepoch') FROM telegram_links WHERE user_id = $1")
+	assert_eq!(s.panel.telegram_settings(alice, &aliases::operator()).await.unwrap().account.as_deref(), Some("@alice_tg"));
+	let checked: String = sqlx::query_scalar("SELECT datetime(permissions_checked_at / 1000000, 'unixepoch') FROM telegram_links WHERE user_id = $1")
 		.bind(alice)
 		.fetch_one(&s.db)
 		.await
@@ -811,7 +815,7 @@ async fn linking_names_both_accounts_and_never_takes_a_chat_over() {
 	assert!(checked.starts_with("2026-09-30 18:00:00"), "confirmed as of the token's issue, not the /start: {checked}");
 
 	// Bob's link opened in Alice's chat: refused, and the token not spent.
-	let bobs = s.panel.telegram_link_token(bob, Role::Operator, "Bob", t0()).await.unwrap();
+	let bobs = s.panel.telegram_link_token(bob, &aliases::operator(), "Bob", t0()).await.unwrap();
 	s.n.handle(start(1, &bobs, "alice_tg"), t0()).await.unwrap();
 	assert!(texts(&s.mock.calls("sendMessage")).last().unwrap().starts_with("Этот чат привязан к другому аккаунту"));
 	assert!(!s.linked(bob).await);
@@ -829,8 +833,8 @@ async fn linking_names_both_accounts_and_never_takes_a_chat_over() {
 async fn what_a_customer_typed_cannot_forge_a_line_or_a_link() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
-	s.session(user, Some(Role::Operator), "Olga").await;
+	s.link(user, aliases::operator(), 1, t0()).await;
+	s.session(user, aliases::operator(), "Olga").await;
 	s.mock.clear();
 	let secret = s
 		.panel
@@ -901,8 +905,8 @@ async fn the_bot_does_not_chatter_and_a_429_pauses_everything() {
 	.unwrap();
 	assert_eq!(s.mock.calls("sendMessage").len(), 2);
 
-	s.link(Uuid::now_v7(), Role::Operator, 1, t0()).await;
-	s.link(Uuid::now_v7(), Role::Operator, 2, t0()).await;
+	s.link(Uuid::now_v7(), aliases::operator(), 1, t0()).await;
+	s.link(Uuid::now_v7(), aliases::operator(), 2, t0()).await;
 	s.mock.clear();
 	s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
@@ -922,12 +926,12 @@ async fn the_bot_does_not_chatter_and_a_429_pauses_everything() {
 async fn stale_lead_messages_are_dropped_and_a_flood_is_summarized() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
+	s.link(user, aliases::operator(), 1, t0()).await;
 	s.mock.clear();
 	s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
 	let late = t0() + SignedDuration::from_mins(61);
-	s.panel.telegram_access_seen(user, Some(Role::Operator), "Olga", late).await.unwrap();
+	s.panel.telegram_access_seen(user, &aliases::operator(), "Olga", late).await.unwrap();
 	assert_eq!(s.n.deliver(late).await.unwrap(), Default::default());
 	assert_eq!(outbox_errors(&s).await, [("dead".to_owned(), Some("stale".to_owned()))]);
 
@@ -953,8 +957,8 @@ async fn stale_lead_messages_are_dropped_and_a_flood_is_summarized() {
 async fn the_bot_asks_only_with_a_session_in_use() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
-	s.session(user, Some(Role::Operator), "Olga").await;
+	s.link(user, aliases::operator(), 1, t0()).await;
+	s.session(user, aliases::operator(), "Olga").await;
 	sqlx::query("UPDATE sessions SET last_seen_at = $1")
 		.bind((t0() - SignedDuration::from_hours(24 * 8)).as_microsecond())
 		.execute(&s.db)
@@ -975,13 +979,13 @@ async fn the_bot_asks_only_with_a_session_in_use() {
 async fn a_chat_telegram_cannot_find_is_dead() {
 	let s = setup().await;
 	let user = Uuid::now_v7();
-	s.link(user, Role::Operator, 1, t0()).await;
+	s.link(user, aliases::operator(), 1, t0()).await;
 	s.mock.clear();
 	s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
 	s.mock.script(400, json!({"ok": false, "error_code": 400, "description": "Bad Request: chat not found"}));
 	assert_eq!(s.n.deliver(t0()).await.unwrap().dead, 1);
-	assert!(s.panel.telegram_settings(user, Role::Operator).await.unwrap().blocked);
+	assert!(s.panel.telegram_settings(user, &aliases::operator()).await.unwrap().blocked);
 }
 
 /// Each change of a link tells the live sockets of its user, and nobody else's: linked,
@@ -997,23 +1001,23 @@ async fn a_link_changing_tells_its_user() {
 			if let panel::live::Signal::Changed(c) = signal
 				&& c.topic == panel::live::Topic::Telegram
 			{
-				assert!(c.visible_to(user, Role::Operator) && !c.visible_to(Uuid::now_v7(), Role::Admin));
+				assert!(c.visible_to(user, &aliases::operator()) && !c.visible_to(Uuid::now_v7(), &aliases::admin()));
 				users.push(c.user);
 			}
 		}
 		users
 	};
-	s.link(user, Role::Operator, 1, t0()).await;
+	s.link(user, aliases::operator(), 1, t0()).await;
 	assert_eq!(told(), [Some(user)], "linked");
 	s.n.handle(Update::Stop { chat: private(1) }, t0()).await.unwrap();
 	assert_eq!(told(), [Some(user)], "/stop");
 	s.n.handle(Update::Stop { chat: private(1) }, t0()).await.unwrap();
 	assert_eq!(told(), [], "nothing was linked");
-	s.link(user, Role::Operator, 1, t0()).await;
+	s.link(user, aliases::operator(), 1, t0()).await;
 	assert!(s.panel.telegram_unlink(user).await.unwrap());
 	assert_eq!(told(), [Some(user), Some(user)], "linked, unlinked from the profile");
 
-	s.link(user, Role::Operator, 1, t0()).await;
+	s.link(user, aliases::operator(), 1, t0()).await;
 	s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
 	told();
@@ -1031,8 +1035,8 @@ async fn bookings_are_told_under_booked() {
 
 	let s = setup().await;
 	let (op, admin) = (Uuid::now_v7(), Uuid::now_v7());
-	s.link(op, Role::Operator, 1, t0()).await;
-	s.link(admin, Role::Admin, 2, t0()).await;
+	s.link(op, aliases::operator(), 1, t0()).await;
+	s.link(admin, aliases::admin(), 2, t0()).await;
 	let lead = s.lead(t0()).await;
 	s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap();
 	s.n.deliver(t0()).await.unwrap();

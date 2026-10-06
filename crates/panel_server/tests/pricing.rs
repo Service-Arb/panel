@@ -1,5 +1,5 @@
 //! A brand's pricing over HTTP, end to end on the real router: the editor's routes behind the
-//! sign-in (dev sign-in for the session, so the gate and the role run unchanged), the preview
+//! sign-in (dev sign-in for the session, so the gate and the permissions run unchanged), the preview
 //! held to kitstart's cases, and the sites' read under `/api/internal`.
 
 use std::collections::HashMap;
@@ -10,7 +10,6 @@ use axum::{
 	http::{Method, Request, StatusCode, header},
 };
 use panel::testing::{TestDb, panel};
-use panel_core::role::Role;
 use panel_server::{
 	concierge::{Concierge, DevIdentity},
 	http,
@@ -23,10 +22,10 @@ const ORIGIN: &str = "http://127.0.0.1:59120";
 const ITEM: &str = "/api/v1/pricing/vifnet";
 const LIVE: &str = "/api/internal/brands/vifnet/pricing?locale=fr";
 
-fn app(panel: panel::Panel, role: Role) -> Router {
+fn app(panel: panel::Panel, alias: &str) -> Router {
 	let who = DevIdentity {
-		role,
-		email: format!("dev-{}@localhost", role.as_str()),
+		permissions: sa_auth::Catalog::collect("sa", 0).aliases[alias].iter().cloned().collect(),
+		email: format!("dev-{}@localhost", alias.trim_start_matches("sa:")),
 	};
 	let config = SignInConfig {
 		panel_origin: ORIGIN.to_owned(),
@@ -101,7 +100,7 @@ impl Browser {
 #[tokio::test]
 async fn an_operator_reads_and_previews_but_changes_nothing() {
 	let db = TestDb::create().await;
-	let app = app(panel(&db).await, Role::Operator);
+	let app = app(panel(&db).await, "sa:operator");
 	let mut b = Browser::signed_in(&app).await;
 
 	let (status, item) = b.get(&app, ITEM).await;
@@ -126,7 +125,7 @@ async fn an_operator_reads_and_previews_but_changes_nothing() {
 async fn an_admin_saves_a_model_and_the_sites_read_it() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await;
-	let app = app(panel.clone(), Role::Admin);
+	let app = app(panel.clone(), "sa:admin");
 	let mut b = Browser::signed_in(&app).await;
 	let mut site = Browser::default();
 	let cleaning = fixture("valid/cleaning.json");
@@ -208,7 +207,7 @@ async fn an_admin_saves_a_model_and_the_sites_read_it() {
 #[tokio::test]
 async fn the_preview_prices_kitstarts_cases() {
 	let db = TestDb::create().await;
-	let app = app(panel(&db).await, Role::Operator);
+	let app = app(panel(&db).await, "sa:operator");
 	let mut b = Browser::signed_in(&app).await;
 	let Value::Array(cases) = fixture("cases.json") else { panic!("a list") };
 	let cleaning: Vec<&Value> = cases.iter().filter(|c| c["name"].as_str().unwrap().starts_with("cleaning:")).collect();

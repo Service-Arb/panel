@@ -112,8 +112,7 @@ pub struct Payment {
 	pub currency: String,
 }
 
-/// Whether the caller may see PII: the point where the role is asked (§5.4). Every role may
-/// today; the parameter keeps the answer the caller's to give.
+/// Whether the caller may see PII: the answer is the caller's to give, from their permissions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Pii {
 	Reveal,

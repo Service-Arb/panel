@@ -2,7 +2,9 @@
 //! `PANEL_WEB_DIR` on the same origin as `/api` and `/auth`, behind every route of its own.
 //!
 //! ```text
-//! /api, /auth, /health, /grafana   never the front end: a route of theirs, else a JSON 404
+//! /api, /auth, /health, /grafana,  never the front end: a route of theirs, else a JSON 404
+//! the forward's prefixes
+//! /review_archive/<view>           the review_archive page: the dashboard routes inside it
 //! a directory                      its index.html (the export writes leads/index.html);
 //!                                  /leads is redirected to /leads/ first
 //! a file                           itself
@@ -31,9 +33,10 @@ use tower_http::{
 };
 
 /// Next inlines its bootstrap and the RSC payload as `<script>` elements, and the kit sets
-/// inline styles, hence `'unsafe-inline'`; nothing is loaded from another origin (the fonts
+/// inline styles, hence `'unsafe-inline'`; review_archive's dashboard is wasm, hence
+/// `'wasm-unsafe-eval'`; nothing is loaded from another origin (the fonts
 /// are the system's, the kit's CSS is bundled), and the pages talk to this origin alone.
-pub const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+pub const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 /// Where the build puts what it names by content hash.
 const HASHED: &str = "/_next/static/";
@@ -67,14 +70,25 @@ pub fn serve(app: Router, files: Files) -> Router {
 }
 
 fn reserved(path: &str) -> bool {
-	RESERVED.iter().any(|r| path.strip_prefix(r).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')))
+	RESERVED.iter().copied().chain(crate::forward::prefixes()).any(|r| crate::forward::under(path, r))
+}
+
+/// The page the dashboard's own views load from, when a link to one of them is opened.
+const DASHBOARD: &str = "/review_archive";
+
+/// A view of the dashboard: below its page, and not a file (the export's payloads have a dot).
+fn dashboard_view(path: &str) -> bool {
+	path.strip_prefix(DASHBOARD).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1 && !rest.rsplit('/').next().is_some_and(|last| last.contains('.')))
 }
 
 async fn page(mut files: Files, mut req: Request) -> Response {
-	let path = req.uri().path();
-	if reserved(path) {
+	if reserved(req.uri().path()) {
 		return dressed((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(), false);
 	}
+	if dashboard_view(req.uri().path()) {
+		*req.uri_mut() = axum::http::Uri::from_static("/review_archive/");
+	}
+	let path = req.uri().path();
 	let hashed = path.starts_with(HASHED);
 	// Every file in the image has the Nix store's mtime, 1970: answering If-Modified-Since
 	// from it would keep a browser on the previous release's HTML, whose chunks are gone.
@@ -118,8 +132,21 @@ mod tests {
 		for p in ["/api", "/api/", "/api/v1/nope", "/auth/x", "/health", "/grafana", "/grafana/d/1"] {
 			assert!(reserved(p), "{p}");
 		}
-		for p in ["/", "/apiary/", "/authors", "/healthy", "/leads/", "/_next/static/a.js"] {
+		for p in ["/", "/apiary/", "/authors", "/healthy", "/leads/", "/_next/static/a.js", "/review_archive", "/review_archive/gmails/3"] {
 			assert!(!reserved(p), "{p}");
+		}
+		for p in ["/review_archive/mfe/x.js", "/playbook_mcp/token", "/.well-known/oauth-protected-resource/playbook_mcp"] {
+			assert!(reserved(p), "{p}");
+		}
+	}
+
+	#[test]
+	fn the_dashboards_views_load_its_page() {
+		for p in ["/review_archive/gmails/3", "/review_archive/members/1/tokens", "/review_archive/telegram"] {
+			assert!(dashboard_view(p), "{p}");
+		}
+		for p in ["/review_archive", "/review_archive/", "/review_archive/index.txt", "/review_archived/x"] {
+			assert!(!dashboard_view(p), "{p}");
 		}
 	}
 }

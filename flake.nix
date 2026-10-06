@@ -147,12 +147,13 @@
         deploy = {
           # Settings::required_var_names("production"): the pod exits 78 without any of them.
           # PANEL_DB_PATH is the container's own env (below); the rest the deploy supplies.
-          requiredEnv = [ "PANEL_DB_PATH" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" ];
+          requiredEnv = [ "PANEL_DB_PATH" "PANEL_DATA_KEY" "PANEL_PUBLIC_ORIGIN" "CONCIERGE_PUBLIC_ORIGIN" "CONCIERGE_GRPC_ADDR" "RP_CLIENT_SECRET_SA" "PANEL_ASSERTION_KEY" "PANEL_REVIEW_ARCHIVE_URL" "PANEL_PLAYBOOK_URL" ];
           # from the sops-backed Secret, never literal env
           secretEnv = [
             "PANEL_DATA_KEY"
             "SENTRY_DSN"
             "RP_CLIENT_SECRET_SA"
+            "PANEL_ASSERTION_KEY"
             "TELEGRAM_BOT_TOKEN"
             "GOOGLE_OAUTH_CLIENT_SECRET"
             "GOOGLE_CALENDAR_REFRESH_TOKEN_AQUAFIX"
@@ -192,8 +193,9 @@
             rateLimitPathPrefixes = [ "/auth" "/api/hooks" ];
           };
           egress = {
-            # concierge's gRPC, at the address CONCIERGE_GRPC_ADDR names
-            grpcEnv = [ "CONCIERGE_GRPC_ADDR" ];
+            # in-cluster peers, at the addresses these name: concierge's gRPC, and the services
+            # the forward reaches (docs/ARCHITECTURE.md, Forward)
+            grpcEnv = [ "CONCIERGE_GRPC_ADDR" "PANEL_REVIEW_ARCHIVE_URL" "PANEL_PLAYBOOK_URL" ];
             # the Bot API; PostHog's capture host (POSTHOG_HOST's default — follow it if it is
             # pointed elsewhere); Google's token endpoint and Calendar API for the booking pull
             hosts = [ "api.telegram.org:443" "us.i.posthog.com:443" "oauth2.googleapis.com:443" "www.googleapis.com:443" ];
@@ -220,6 +222,8 @@
               PANEL_DB_PATH = dbPath;
               POSTHOG_PROJECT_API_KEY = "phc_sBwWEgdgockVmfyucBRkTTo6iZ4Y2eApSGorD22WLzj3";
               POSTHOG_PROJECT_ID = "614067";
+              # the version of the sa catalog `serve` publishes to concierge
+              PANEL_BUILD_EPOCH = toString self.lastModified;
             };
             imageEnv = [ "PANEL_WEB_DIR=${frontend}" ];
           };

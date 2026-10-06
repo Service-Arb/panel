@@ -17,8 +17,8 @@ use panel_core::{
 	event::SourceKind,
 	ids::{BrandId, LocationId},
 	notify::{Failure, Locale, Rendered, Rule},
-	role::Role,
 };
+use sa_auth::{PermissionSet, SA_ADMIN, SA_OPERATOR};
 use serde_json::json;
 use zeroize::Zeroizing;
 
@@ -160,15 +160,16 @@ async fn the_runtime_does_its_work_on_a_fresh_database() {
 			concierge: Operators,
 			locale: Locale::Ru,
 		};
-		let token = panel.telegram_link_token(user, Role::Operator, "Olga", now).await.unwrap();
+		let operator: PermissionSet = SA_OPERATOR.members.iter().copied().collect();
+		let token = panel.telegram_link_token(user, &operator, "Olga", now).await.unwrap();
 		let start = |chat| Update::Start {
 			chat: Chat { id: chat, private: true },
 			payload: Some(token.to_string()),
 			from: Account::default(),
 		};
 		notifier(false).handle(start(7), now).await.unwrap();
-		panel.telegram_set_rules(user, Role::Operator, &[(Rule::NewLead, true)]).await.unwrap();
-		panel.telegram_access_seen(user, Some(Role::Operator), "Olga", now).await.unwrap();
+		panel.telegram_set_rules(user, &operator, &[(Rule::NewLead, true)]).await.unwrap();
+		panel.telegram_access_seen(user, &operator, "Olga", now).await.unwrap();
 		// By a colleague: the user's own lead above is not told to them.
 		let colleague = Actor(uuid::Uuid::now_v7());
 		for need in ["a tap", "a sink"] {
@@ -195,7 +196,7 @@ async fn the_runtime_does_its_work_on_a_fresh_database() {
 			)
 			.await
 			.unwrap();
-		assert!(!panel.telegram_settings(user, Role::Operator).await.unwrap().linked);
+		assert!(!panel.telegram_settings(user, &operator).await.unwrap().linked);
 
 		let pool = panel.store().pool();
 		for (sql, refusal) in [
@@ -230,4 +231,58 @@ async fn the_runtime_does_its_work_on_a_fresh_database() {
 		assert_eq!(n, 4, "the ingested lead and the three taken by phone");
 		pool.close().await;
 	}
+}
+
+/// A Telegram link and a link token made under roles carry, after the migration, exactly what
+/// the role's alias held; and go back to the role on the way down.
+#[tokio::test]
+async fn telegram_roles_become_permissions_both_ways() {
+	const PERMISSIONS: i64 = 20261006090000;
+	let db = TestDb::create().await;
+	let pool = db.pool().await;
+	let migrator = sqlx::migrate!("./migrations");
+	migrator.undo(&pool, PERMISSIONS - 1).await.unwrap();
+	let (ann, bob) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+	for (user, chat, role) in [(ann, 7, "operator"), (bob, 8, "admin")] {
+		sqlx::query("INSERT INTO telegram_links (user_id, chat_id, linked_at, role, role_checked_at, display_name) VALUES ($1, $2, 0, $3, 5, 'x')")
+			.bind(user)
+			.bind(chat)
+			.bind(role)
+			.execute(&pool)
+			.await
+			.unwrap();
+	}
+	sqlx::query("INSERT INTO telegram_link_tokens (token_hash, user_id, role, display_name, expires_at) VALUES (zeroblob(32), $1, 'admin', 'x', 9)")
+		.bind(bob)
+		.execute(&pool)
+		.await
+		.unwrap();
+
+	migrator.run(&pool).await.unwrap();
+	let held = |sql: &'static str, user: uuid::Uuid| {
+		let pool = pool.clone();
+		async move {
+			let raw: String = sqlx::query_scalar(sql).bind(user).fetch_one(&pool).await.unwrap();
+			(serde_json::from_str::<PermissionSet>(&raw).unwrap(), raw)
+		}
+	};
+	let alias = |a: &[&str]| a.iter().copied().collect::<PermissionSet>();
+	let links = "SELECT permissions FROM telegram_links WHERE user_id = $1";
+	let (operator, raw) = held(links, ann).await;
+	assert_eq!(operator, alias(SA_OPERATOR.members));
+	assert_eq!(raw, serde_json::to_string(&operator).unwrap(), "written as the panel writes a set");
+	assert_eq!(held(links, bob).await.0, alias(SA_ADMIN.members));
+	assert_eq!(held("SELECT permissions FROM telegram_link_tokens WHERE user_id = $1", bob).await.0, alias(SA_ADMIN.members));
+	let checked: i64 = sqlx::query_scalar("SELECT permissions_checked_at FROM telegram_links WHERE user_id = $1")
+		.bind(ann)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+	assert_eq!(checked, 5);
+
+	migrator.undo(&pool, PERMISSIONS - 1).await.unwrap();
+	let roles: Vec<(uuid::Uuid, String)> = sqlx::query_as("SELECT user_id, role FROM telegram_links ORDER BY user_id").fetch_all(&pool).await.unwrap();
+	assert_eq!(roles, [(ann, "operator".to_owned()), (bob, "admin".to_owned())]);
+	let token: String = sqlx::query_scalar("SELECT role FROM telegram_link_tokens").fetch_one(&pool).await.unwrap();
+	assert_eq!(token, "admin");
 }

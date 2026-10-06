@@ -31,14 +31,16 @@ use axum::{
 	body::{Body, to_bytes},
 	error_handling::HandleErrorLayer,
 	extract::State,
-	http::{HeaderMap, HeaderValue, StatusCode, header},
+	handler::Handler,
+	http::{HeaderMap, HeaderValue, Method, StatusCode, header},
 	middleware,
 	response::{IntoResponse, Response},
-	routing::{get, post},
+	routing::{MethodFilter, MethodRouter, get, on, post},
 };
 use panel::{IngestError, Outcome, Panel, SignedBatch, booking::PushSources};
 use panel_contracts::v1::{EventResult, IngestResponse};
 use panel_core::signature::{self, SignatureError};
+use sa_auth::{Analysis, PermissionSet, Sources, Work};
 use serde_json::json;
 use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
@@ -47,9 +49,63 @@ use crate::{
 	api, booking, experiments,
 	live::{self, Live, LiveLimits},
 	places, pricing,
-	signin::{self, SignIn},
+	signin::{self, Freshness, Gate, SignIn},
 	telegram::{self, BotName, TelegramState},
 };
+
+/// A part of the panel, as its screens are grouped, and the permission that opens it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Section {
+	/// Leads, bookings, places, pricing, the overview: the daily work.
+	Work,
+	/// Experiments.
+	Analysis,
+	/// Sources and their keys.
+	Admin,
+}
+
+impl Section {
+	pub fn may(self, permissions: &PermissionSet) -> bool {
+		match self {
+			Self::Work => permissions.may(Work::Read),
+			Self::Analysis => permissions.may(Analysis::Read),
+			Self::Admin => permissions.may(Sources::Manage),
+		}
+	}
+}
+
+/// One `/api/v1` route served on the engine's state, and who passes its gate.
+pub struct ApiRoute {
+	pub method: Method,
+	/// Under `/api/v1`.
+	pub path: &'static str,
+	/// `None`: every signed-in user.
+	pub section: Option<Section>,
+	freshness: Freshness,
+	handler: MethodRouter<Panel>,
+}
+
+impl ApiRoute {
+	pub(crate) fn new<H: Handler<T, Panel>, T: 'static>(method: Method, path: &'static str, section: Option<Section>, freshness: Freshness, handler: H) -> Self {
+		let filter = MethodFilter::try_from(method.clone()).expect("the routes name standard methods");
+		Self {
+			method,
+			path,
+			section,
+			freshness,
+			handler: on(filter, handler),
+		}
+	}
+}
+
+/// Every `/api/v1` route on the engine's state; the profile's Telegram routes, open to every
+/// signed-in user, are [`crate::telegram`]'s.
+pub fn api_routes() -> Vec<ApiRoute> {
+	[api::routes(), booking::routes(), places::routes(), pricing::routes(), experiments::routes()]
+		.into_iter()
+		.flatten()
+		.collect()
+}
 
 /// 500 events of about 8 KiB each: a batch is refused well before it strains anything.
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
@@ -110,30 +166,23 @@ pub fn app_with_telegram(sign_in: SignIn, limits: Limits, bot: BotName) -> Route
 		.route("/auth/callback", get(signin::callback))
 		.route("/auth/logout", post(signin::logout));
 	let auth = bounded(auth, limits.auth_concurrent, limits.auth_timeout).with_state(sign_in.clone());
-	let reads_and_edits = api::routes()
-		.merge(booking::routes())
-		.merge(places::reads())
-		.merge(pricing::reads())
-		.merge(experiments::reads())
-		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate));
-	// Minting and revoking source keys, changing a place, a brand's pricing or its experiments, ask concierge
-	// afresh: a grant revoked a moment ago must not still mint a key, move a phone number or
-	// change a price from the cache.
-	let key_changes = api::key_changes()
-		.merge(places::writes())
-		.merge(pricing::writes())
-		.merge(experiments::writes())
-		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate_fresh));
+	let gate = |freshness, section| {
+		let gate = Gate {
+			sign_in: sign_in.clone(),
+			freshness,
+			section,
+		};
+		middleware::from_fn_with_state(gate, signin::gate)
+	};
+	let routes = api_routes().into_iter().fold(Router::new(), |routes, r| {
+		routes.merge(Router::new().route(r.path, r.handler).route_layer(gate(r.freshness, r.section)))
+	});
 	let telegram_state = TelegramState { panel: sign_in.panel.clone(), bot };
 	let telegram = telegram::routes()
-		.route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate))
-		.merge(telegram::link_routes().route_layer(middleware::from_fn_with_state(sign_in.clone(), signin::gate_fresh)))
+		.route_layer(gate(Freshness::Cached, None))
+		.merge(telegram::link_routes().route_layer(gate(Freshness::Fresh, None)))
 		.with_state(telegram_state);
-	let api = bounded(
-		reads_and_edits.merge(key_changes).with_state(sign_in.panel.clone()).merge(telegram),
-		limits.api_concurrent,
-		limits.api_timeout,
-	);
+	let api = bounded(routes.with_state(sign_in.panel.clone()).merge(telegram), limits.api_concurrent, limits.api_timeout);
 	// Its own budget: the bound and the timeout cover the handshake only (the socket lives on
 	// after the 101), and a burst of reconnecting tabs must not shed the API's requests.
 	let live = Router::new().route("/api/v1/live", get(live::upgrade)).with_state(Live::new(sign_in.clone(), limits.live));

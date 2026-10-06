@@ -303,8 +303,8 @@ pub struct TelegramState {
 	pub bot: BotName,
 }
 
-/// `GET /telegram`, `POST|DELETE /telegram/link`, `PUT /telegram/rules`: behind the gate,
-/// so a [`Caller`] is there and CSRF was checked on the writes.
+/// `GET /telegram`, `POST|DELETE /telegram/link`, `PUT /telegram/rules`: behind the gate, open
+/// to every signed-in user, so a [`Caller`] is there and CSRF was checked on the writes.
 pub fn routes() -> Router<TelegramState> {
 	Router::new()
 		.route("/telegram", get(settings))
@@ -312,7 +312,7 @@ pub fn routes() -> Router<TelegramState> {
 		.route("/telegram/rules", put(set_rules))
 }
 
-/// `POST /telegram/link`: served behind `gate_fresh` — the role a link token carries is
+/// `POST /telegram/link`: asks concierge afresh — the permissions a link token carries are
 /// concierge's answer of this moment, not the cache's.
 pub fn link_routes() -> Router<TelegramState> {
 	Router::new().route("/telegram/link", axum::routing::post(link))
@@ -327,7 +327,7 @@ fn display(caller: &Caller) -> String {
 }
 
 async fn settings(State(s): State<TelegramState>, Extension(caller): Extension<Caller>) -> Result<Json<Value>, ApiError> {
-	let settings = s.panel.telegram_settings(caller.user_id, caller.role).await?;
+	let settings = s.panel.telegram_settings(caller.user_id, &caller.permissions).await?;
 	let rules: serde_json::Map<String, Value> = settings.rules.iter().map(|(r, on)| (r.as_str().to_owned(), json!(on))).collect();
 	Ok(Json(json!({
 		"enabled": s.bot.configured(),
@@ -347,7 +347,7 @@ async fn link(State(s): State<TelegramState>, Extension(caller): Extension<Calle
 		};
 		return Ok((StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": why }))).into_response());
 	};
-	let token = s.panel.telegram_link_token(caller.user_id, caller.role, &display(&caller), Timestamp::now()).await?;
+	let token = s.panel.telegram_link_token(caller.user_id, &caller.permissions, &display(&caller), Timestamp::now()).await?;
 	tracing::info!(user_id = %caller.user_id, "telegram: link token issued");
 	Ok((StatusCode::CREATED, Json(json!({ "url": format!("https://t.me/{bot}?start={}", token.as_str()) }))).into_response())
 }
@@ -370,7 +370,7 @@ struct RulesBody {
 async fn set_rules(State(s): State<TelegramState>, Extension(caller): Extension<Caller>, b: Result<Json<RulesBody>, JsonRejection>) -> Result<Json<Value>, ApiError> {
 	let Json(b) = b.map_err(|e| ApiError::BadRequest(e.body_text()))?;
 	let rules = b.rules.iter().map(|(r, on)| Ok((r.parse::<Rule>()?, *on))).collect::<Result<Vec<_>, panel_core::Invalid>>()?;
-	s.panel.telegram_set_rules(caller.user_id, caller.role, &rules).await.map_err(|e| match e {
+	s.panel.telegram_set_rules(caller.user_id, &caller.permissions, &rules).await.map_err(|e| match e {
 		ActionError::Invalid(e) => ApiError::BadRequest(e.0),
 		other => ApiError::from(other),
 	})?;
@@ -484,14 +484,11 @@ impl Directory for Concierge {
 
 		use crate::concierge::ConciergeError;
 		match Concierge::me(self, access).await {
-			Ok(me) => {
-				let grants = me.scopes.iter().map(|(scope, role)| (scope.as_str(), role.as_str()));
-				Ok(panel::telegram::Identity {
-					user_id: me.user_id,
-					role: panel_core::role::Role::admitted(&me.role, grants),
-					display_name: if me.preferred_name.trim().is_empty() { me.email } else { me.preferred_name },
-				})
-			}
+			Ok(me) => Ok(panel::telegram::Identity {
+				user_id: me.user_id,
+				permissions: me.permissions,
+				display_name: if me.preferred_name.trim().is_empty() { me.email } else { me.preferred_name },
+			}),
 			Err(ConciergeError::Refused(_)) => Err(DirectoryError::Refused),
 			Err(ConciergeError::Unavailable(why)) => Err(DirectoryError::Unavailable(why)),
 			Err(ConciergeError::Failed(why)) => Err(DirectoryError::Failed(why)),

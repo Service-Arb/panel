@@ -17,8 +17,9 @@ journal in SQLite (one file, replicated off the pod by litestream), PII sealed a
 funnel's projections (`leads` with their stages, `calls`, `payments`) are derived from it and
 can be rebuilt from it at any time. The `reporting_*` views expose them without PII.
 
-People sign in through concierge (the panel is its relying party, client `sa`): the scope
-`allocation:service_arb` lets them in, as an operator or an admin, and `/api/v1` is the
+People sign in through concierge (the panel is its relying party, client `sa`): any active
+account signs in, and the `sa` permissions it holds (the panel publishes their catalog; the
+aliases `sa:operator` and `sa:admin` bundle them) open its sections. `/api/v1` is the
 operator API the panel's front end works through — leads and their stages, semi-manual
 calls, payments typed in by hand, the funnel, and (admins) the sources.
 
@@ -138,7 +139,7 @@ nix run .#local-stack    # the panel on :59120 (signed in as a dev admin) and th
 ```
 
 A lead posted on a local site lands in the local panel, a phone edited in the panel shows on
-the site. `PANEL_DEV_SIGN_IN=admin|operator` stands in for concierge, in development on
+the site. `PANEL_DEV_SIGN_IN=sa:admin|sa:operator|<permissions>|none` stands in for concierge, in development on
 loopback only. The prerequisites, the end-to-end check and troubleshooting are in
 [docs/LOCAL.md](docs/LOCAL.md).
 

@@ -7,14 +7,11 @@ use std::{fmt, str::FromStr};
 
 use hmac::{Hmac, KeyInit, Mac};
 use jiff::{SignedDuration, Timestamp};
+use sa_auth::{Leads, PermissionSet, Sources};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use crate::{
-	Invalid,
-	fact::LeadSuspect,
-	role::{Permission, Role},
-};
+use crate::{Invalid, fact::LeadSuspect};
 
 /// What a user may be notified of. Each is on or off per user; [`Rule::on_by_default`] is
 /// what a user who never chose gets.
@@ -59,12 +56,12 @@ impl Rule {
 		}
 	}
 
-	/// Whether a role gets this rule's messages at all: leads are everyone's work; money and
-	/// the sources are the admins'.
-	pub fn open_to(self, role: Role) -> bool {
+	/// Whether someone holding `permissions` gets this rule's messages at all: leads are
+	/// whoever works them; money and the sources are whoever manages the sources.
+	pub fn open_to(self, permissions: &PermissionSet) -> bool {
 		match self {
-			Self::NewLead | Self::ContactOverdue | Self::Booked => role.may(Permission::EditsLeads),
-			Self::PaymentReceived | Self::SourceSilent => role.may(Permission::ManagesSources),
+			Self::NewLead | Self::ContactOverdue | Self::Booked => permissions.may(Leads::Edit),
+			Self::PaymentReceived | Self::SourceSilent => permissions.may(Sources::Manage),
 		}
 	}
 }
@@ -655,10 +652,13 @@ mod tests {
 		}
 		assert!("review_low".parse::<Rule>().is_err(), "not yet");
 		assert_eq!(Rule::ALL.iter().filter(|r| r.on_by_default()).count(), 3);
-		assert!(Rule::Booked.on_by_default() && Rule::Booked.open_to(Role::Operator));
-		assert!(Rule::NewLead.open_to(Role::Operator) && Rule::ContactOverdue.open_to(Role::Operator));
-		assert!(!Rule::PaymentReceived.open_to(Role::Operator) && !Rule::SourceSilent.open_to(Role::Operator));
-		assert!(Rule::ALL.iter().all(|r| r.open_to(Role::Admin)));
+		let operator: PermissionSet = sa_auth::SA_OPERATOR.members.iter().copied().collect();
+		let admin: PermissionSet = sa_auth::SA_ADMIN.members.iter().copied().collect();
+		assert!(Rule::Booked.on_by_default() && Rule::Booked.open_to(&operator));
+		assert!(Rule::NewLead.open_to(&operator) && Rule::ContactOverdue.open_to(&operator));
+		assert!(!Rule::PaymentReceived.open_to(&operator) && !Rule::SourceSilent.open_to(&operator));
+		assert!(Rule::ALL.iter().all(|r| r.open_to(&admin)));
+		assert!(Rule::ALL.iter().all(|r| !r.open_to(&std::iter::empty::<&str>().collect())), "no permission, no rule");
 	}
 
 	#[test]

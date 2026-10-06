@@ -43,7 +43,6 @@ function AccountBlock() {
       <span className="truncate text-sm text-ink" title={me.email}>
         {me.preferred_name || me.email}
       </span>
-      <span className="text-xs text-ink-soft">{t(`nav.role.${me.role}`)}</span>
       <Button variant="ghost" size="sm" className="mt-2 self-start px-0" onClick={signOut}>
         {t("nav.signOut")}
       </Button>

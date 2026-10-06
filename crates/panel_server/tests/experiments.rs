@@ -15,7 +15,7 @@ use panel::{
 	posthog::PosthogProject,
 	testing::{TestDb, event, panel, sign},
 };
-use panel_core::{event::SourceKind, ids::BrandId, role::Role};
+use panel_core::{event::SourceKind, ids::BrandId};
 use panel_server::{
 	concierge::{Concierge, DevIdentity},
 	http,
@@ -27,10 +27,10 @@ use tower::ServiceExt;
 const ORIGIN: &str = "http://127.0.0.1:59120";
 const LIVE: &str = "/api/internal/brands/aquafix/experiments";
 
-fn app(panel: Panel, role: Role) -> Router {
+fn app(panel: Panel, alias: &str) -> Router {
 	let who = DevIdentity {
-		role,
-		email: format!("dev-{}@localhost", role.as_str()),
+		permissions: sa_auth::Catalog::collect("sa", 0).aliases[alias].iter().cloned().collect(),
+		email: format!("dev-{}@localhost", alias.trim_start_matches("sa:")),
 	};
 	let config = SignInConfig {
 		panel_origin: ORIGIN.to_owned(),
@@ -118,7 +118,7 @@ async fn a_declaration_an_override_and_what_the_site_is_told() {
 	};
 	let panel = panel(&db).await.with_posthog_project(Some(project));
 	let secret = site_key(&panel).await;
-	let admin = app(panel.clone(), Role::Admin);
+	let admin = app(panel.clone(), "sa:admin");
 	let mut b = Browser::signed_in(&admin).await;
 
 	assert_eq!(b.get(&admin, LIVE).await, (StatusCode::OK, json!({"experiments": {}})), "nothing declared yet");
@@ -175,8 +175,8 @@ async fn a_declaration_an_override_and_what_the_site_is_told() {
 		.await
 		.unwrap();
 	let admin_id = DevIdentity {
-		role: Role::Admin,
-		email: String::new(),
+		permissions: panel::testing::admin(),
+		email: "dev-admin@localhost".to_owned(),
 	}
 	.user_id();
 	assert_eq!(source, admin_id.to_string(), "the source is the admin's id");
@@ -222,7 +222,7 @@ async fn a_declaration_an_override_and_what_the_site_is_told() {
 	assert_eq!(b.get(&admin, "/api/v1/experiments").await.1, before, "the rebuild lands on the same");
 
 	// An operator reads, and changes nothing.
-	let operator = app(panel.clone(), Role::Operator);
+	let operator = app(panel.clone(), "sa:operator");
 	let mut o = Browser::signed_in(&operator).await;
 	assert_eq!(o.get(&operator, "/api/v1/experiments").await.0, StatusCode::OK);
 	let refused = o.write(&operator, Method::PUT, "/api/v1/experiments/aquafix/lead_layout", json!({"enabled": false})).await;
@@ -234,7 +234,7 @@ async fn an_override_that_no_longer_fits_is_not_sent() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let secret = site_key(&panel).await;
-	let admin = app(panel.clone(), Role::Admin);
+	let admin = app(panel.clone(), "sa:admin");
 	let mut b = Browser::signed_in(&admin).await;
 	let t0 = Timestamp::now() - SignedDuration::from_mins(10);
 	declare(&panel, &secret, json!([{"key": "hero", "variants": ["a", "b"], "weights": [1, 1], "enabled": true}]), t0).await;

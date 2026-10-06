@@ -10,8 +10,9 @@ journal in SQLite (one file, replicated off the pod by litestream), PII sealed a
 funnel's projections (`leads` with their stages, `calls`, `payments`) are derived from it and
 can be rebuilt from it at any time. The `reporting_*` views expose them without PII.
 
-People sign in through concierge (the panel is its relying party, client `sa`): the scope
-`allocation:service_arb` lets them in, as an operator or an admin, and `/api/v1` is the
+People sign in through concierge (the panel is its relying party, client `sa`): any active
+account signs in, and the `sa` permissions it holds (the panel publishes their catalog; the
+aliases `sa:operator` and `sa:admin` bundle them) open its sections. `/api/v1` is the
 operator API the panel's front end works through — leads and their stages, semi-manual
 calls, payments typed in by hand, the funnel, and (admins) the sources.
 

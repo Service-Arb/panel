@@ -26,6 +26,7 @@ import { randomUUID } from "node:crypto";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { Duplex } from "node:stream";
 
+import { ALIASES } from "../src/entities/session/model/generated.ts";
 import { BOOKING_STATUSES, arriveUnmatched, bookingDto, bookingWrite, bookingsRoute, providerMoves } from "./stub-bookings.ts";
 import { changed, every, liveUpgrade } from "./stub-live.ts";
 import { type StubDeal, dealDto, estimate, fixed, flowParam, quote, seedDeals } from "./stub-deals.ts";
@@ -206,7 +207,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
   if (ME_FAILURE === "401" || !signedIn(req)) return send(res, 401, { error: "sign in" }, { "set-cookie": "sa_session=; Path=/; Max-Age=0" });
 
   // The stub signs anyone in, as the backend's dev sign-in does: it says so.
-  if (path === "/me") return send(res, 200, { user_id: USER_ID, role: ROLE, email: "stub@example.test", preferred_name: `Stub ${ROLE}`, dev_sign_in: true });
+  if (path === "/me") return send(res, 200, { user_id: USER_ID, permissions: ALIASES[`sa:${ROLE}`], email: "stub@example.test", preferred_name: `Stub ${ROLE}`, dev_sign_in: true });
   if (path === "/funnel") return send(res, 200, funnel(url.searchParams.get("brand"), url.searchParams.get("by")));
   if (path.startsWith("/experiments")) {
     const reply = experimentsRoute(req.method ?? "GET", path, url.searchParams, write ? await readJson(req) : {}, ROLE, `stub-${ROLE}@example.test`);
@@ -256,7 +257,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     changed("leads", l.brand, l.lead_id);
     return send(res, 201, { brand: l.brand, lead_id: l.lead_id, event_id: randomUUID() });
   }
-  if (path === "/sources" && ROLE !== "admin") return send(res, 403, { error: "your role may not do this" });
+  if (path === "/sources" && ROLE !== "admin") return send(res, 403, { error: "your permissions do not allow this" });
   if (path === "/sources" && req.method === "GET") return send(res, 200, { sources });
   if (path === "/sources" && req.method === "POST") {
     const b = await readJson(req);

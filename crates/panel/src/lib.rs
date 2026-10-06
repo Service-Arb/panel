@@ -447,7 +447,7 @@ impl Panel {
 		})
 	}
 
-	/// An event's PII, opened. For the roles that may see it (spec §5.4); the caller checks.
+	/// An event's PII, opened. For whoever may see it; the caller checks.
 	pub async fn pii(&self, id: uuid::Uuid) -> eyre::Result<Option<Value>> {
 		/// `pii_sealed`, `data_key_fp`.
 		type Sealed = (Option<Vec<u8>>, Option<Vec<u8>>);

@@ -15,7 +15,7 @@ use panel::{
 	live::{Bus, Change, Signal, Topic},
 	testing::{TestDb, event, panel, sign},
 };
-use panel_core::{event::SourceKind, ids::BrandId, notify::Rule, role::Role};
+use panel_core::{event::SourceKind, ids::BrandId, notify::Rule};
 use panel_server::{
 	concierge::{Concierge, DEV_CODE, DevIdentity},
 	http::{self, Limits},
@@ -33,20 +33,20 @@ const ORIGIN: &str = "http://127.0.0.1:59120";
 /// Long enough for a loaded CI machine; every wait here ends as soon as its frame arrives.
 const PATIENCE: Duration = Duration::from_secs(10);
 
-fn who(role: Role) -> DevIdentity {
+fn who(alias: &str) -> DevIdentity {
 	DevIdentity {
-		role,
-		email: format!("dev-{}@localhost", role.as_str()),
+		permissions: sa_auth::Catalog::collect("sa", 0).aliases[alias].iter().cloned().collect(),
+		email: format!("dev-{}@localhost", alias.trim_start_matches("sa:")),
 	}
 }
 
-/// The panel's router signing everyone in as `role`, served on a port of its own.
-async fn serve(panel: Panel, role: Role, limits: Limits) -> (Router, SocketAddr) {
+/// The panel's router signing everyone in as `alias` holds, served on a port of its own.
+async fn serve(panel: Panel, alias: &str, limits: Limits) -> (Router, SocketAddr) {
 	let config = SignInConfig {
 		panel_origin: ORIGIN.to_owned(),
 		concierge_origin: ORIGIN.to_owned(),
 	};
-	let app = http::app_with(SignIn::new(panel, Concierge::dev(who(role)), config), limits);
+	let app = http::app_with(SignIn::new(panel, Concierge::dev(who(alias)), config), limits);
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let addr = listener.local_addr().unwrap();
 	let served = app.clone();
@@ -258,7 +258,7 @@ async fn post_lead(app: &Router, secret: &str, lead_id: &str) {
 #[tokio::test]
 async fn refused_before_the_upgrade() {
 	let db = TestDb::create().await;
-	let (app, addr) = serve(panel(&db).await, Role::Admin, Limits::default()).await;
+	let (app, addr) = serve(panel(&db).await, "sa:admin", Limits::default()).await;
 	assert_eq!(Ws::connect(addr, Some(ORIGIN), None).await.err(), Some(401), "no session");
 	assert_eq!(Ws::connect(addr, Some(ORIGIN), Some("sa_session=nonsense")).await.err(), Some(401), "no such session");
 
@@ -275,13 +275,13 @@ async fn hello_then_a_new_lead() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let secret = aquafix_site(&panel).await;
-	let (app, addr) = serve(panel, Role::Operator, Limits::default()).await;
+	let (app, addr) = serve(panel, "sa:operator", Limits::default()).await;
 	let b = signed_in(&app).await;
 
 	let mut ws = Ws::connect(addr, Some(ORIGIN), b.cookie().as_deref()).await.expect("upgraded");
 	let hello = ws.text().await;
 	assert_eq!(hello["type"], "hello");
-	assert_eq!(hello["user_id"], who(Role::Operator).user_id().to_string());
+	assert_eq!(hello["user_id"], who("sa:operator").user_id().to_string());
 	hello["at"].as_str().unwrap().parse::<Timestamp>().expect("RFC 3339");
 
 	post_lead(&app, &secret, "L-1").await;
@@ -311,7 +311,7 @@ async fn hello_then_a_new_lead() {
 	);
 }
 
-/// There is no narrower grant than the allocation (spec §5.4): every role reads every brand,
+/// No permission is narrower than the whole panel: whoever works reads every brand,
 /// so what an operator is kept from is what it cannot read — sources, and another user's
 /// Telegram link.
 #[tokio::test]
@@ -319,8 +319,8 @@ async fn told_only_what_one_may_read() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await;
 	let secret = aquafix_site(&panel).await;
-	let (admin_app, admin_addr) = serve(panel.clone(), Role::Admin, Limits::default()).await;
-	let (op_app, op_addr) = serve(panel.clone(), Role::Operator, Limits::default()).await;
+	let (admin_app, admin_addr) = serve(panel.clone(), "sa:admin", Limits::default()).await;
+	let (op_app, op_addr) = serve(panel.clone(), "sa:operator", Limits::default()).await;
 	let mut admin = open(admin_addr, &signed_in(&admin_app).await).await;
 	let mut op = open(op_addr, &signed_in(&op_app).await).await;
 
@@ -329,7 +329,10 @@ async fn told_only_what_one_may_read() {
 		.await
 		.unwrap()
 		.unwrap();
-	panel.telegram_set_rules(who(Role::Admin).user_id(), Role::Admin, &[(Rule::PaymentReceived, true)]).await.unwrap();
+	panel
+		.telegram_set_rules(who("sa:admin").user_id(), &panel::testing::admin(), &[(Rule::PaymentReceived, true)])
+		.await
+		.unwrap();
 	post_lead(&admin_app, &secret, "L-2").await;
 
 	let admin_saw: Vec<String> = [admin.text().await, admin.text().await, admin.text().await]
@@ -342,13 +345,13 @@ async fn told_only_what_one_may_read() {
 	assert_eq!((first["topic"].as_str(), first["id"].as_str()), (Some("leads"), Some("L-2")), "{first}");
 }
 
-/// A brand's pricing saved by an admin over the API: every role's screens are told.
+/// A brand's pricing saved by an admin over the API: every reader.s screens are told.
 #[tokio::test]
-async fn a_pricing_save_is_told_to_every_role() {
+async fn a_pricing_save_is_told_to_every_reader() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await;
-	let (admin_app, _) = serve(panel.clone(), Role::Admin, Limits::default()).await;
-	let (op_app, op_addr) = serve(panel.clone(), Role::Operator, Limits::default()).await;
+	let (admin_app, _) = serve(panel.clone(), "sa:admin", Limits::default()).await;
+	let (op_app, op_addr) = serve(panel.clone(), "sa:operator", Limits::default()).await;
 	let mut op = open(op_addr, &signed_in(&op_app).await).await;
 	let admin = signed_in(&admin_app).await;
 
@@ -378,7 +381,7 @@ async fn a_pricing_save_is_told_to_every_role() {
 #[tokio::test]
 async fn signing_out_closes_the_socket() {
 	let db = TestDb::create().await;
-	let (app, addr) = serve(panel(&db).await, Role::Admin, Limits::default()).await;
+	let (app, addr) = serve(panel(&db).await, "sa:admin", Limits::default()).await;
 	let mut b = signed_in(&app).await;
 	let mut ws = open(addr, &b).await;
 	assert_eq!(b.send(&app, Method::POST, "/auth/logout").await.0, StatusCode::NO_CONTENT);
@@ -388,7 +391,7 @@ async fn signing_out_closes_the_socket() {
 #[tokio::test]
 async fn a_new_sign_in_closes_the_socket_of_the_session_it_replaces() {
 	let db = TestDb::create().await;
-	let (app, addr) = serve(panel(&db).await, Role::Admin, Limits::default()).await;
+	let (app, addr) = serve(panel(&db).await, "sa:admin", Limits::default()).await;
 	let mut b = signed_in(&app).await;
 	let mut ws = open(addr, &b).await;
 	b.sign_in(&app).await;
@@ -407,7 +410,7 @@ async fn a_session_gone_is_found_at_the_recheck() {
 		},
 		..Default::default()
 	};
-	let (app, addr) = serve(panel(&db).await, Role::Admin, limits).await;
+	let (app, addr) = serve(panel(&db).await, "sa:admin", limits).await;
 	let mut ws = open(addr, &signed_in(&app).await).await;
 	sqlx::query("DELETE FROM sessions").execute(&db.pool().await).await.unwrap();
 	assert_eq!(ws.next().await, Frame::Close(CLOSE_SESSION_ENDED));
@@ -419,7 +422,7 @@ async fn a_session_gone_is_found_at_the_recheck() {
 async fn a_reader_behind_is_told_to_resync() {
 	let db = TestDb::create().await;
 	let panel = panel(&db).await.with_live(Bus::new(2));
-	let (app, addr) = serve(panel.clone(), Role::Admin, Limits::default()).await;
+	let (app, addr) = serve(panel.clone(), "sa:admin", Limits::default()).await;
 	let mut ws = open(addr, &signed_in(&app).await).await;
 	for i in 0..10 {
 		panel.bus().changed(Change {
@@ -451,7 +454,7 @@ async fn too_many_sockets_are_refused() {
 		live: LiveLimits { per_user: 2, ..Default::default() },
 		..Default::default()
 	};
-	let (app, addr) = serve(panel(&db).await, Role::Admin, limits).await;
+	let (app, addr) = serve(panel(&db).await, "sa:admin", limits).await;
 	let b = signed_in(&app).await;
 	let first = open(addr, &b).await;
 	let _second = open(addr, &b).await;
@@ -475,7 +478,7 @@ async fn a_silent_peer_is_dropped() {
 		},
 		..Default::default()
 	};
-	let (app, addr) = serve(panel(&db).await, Role::Admin, limits).await;
+	let (app, addr) = serve(panel(&db).await, "sa:admin", limits).await;
 	let mut ws = open(addr, &signed_in(&app).await).await;
 	// Pings arrive and go unanswered, then the server hangs up.
 	assert_eq!(ws.raw().await, Frame::Ping);
