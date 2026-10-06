@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! GET /api/v1/live    Origin = PANEL_PUBLIC_ORIGIN, exactly                 else 403
-//!                     the session and role, as the /api/v1 gate             else 401 / 403 / 503
+//!                     the session, as the /api/v1 gate                      else 401 / 503
+//!                     the Work section's permission (sa:work:read)          else 403
 //!                     ≤ 5 sockets per user, ≤ 200 in all                    else 429
 //!                     → 101; the bus subscribed before the answer, so nothing committed after
 //!                       it is missed
@@ -13,7 +14,7 @@
 //!                     {"type":"resync"}                                     fell behind; read all
 //!                     Ping every 25 s; no Pong for 60 s → dropped
 //! closes              4401 the session ended (sign-out, replaced, refused, expired)
-//!                     4403 the role is gone
+//!                     4403 the permission is gone
 //!                     1001 the server is stopping
 //! ```
 //!
@@ -22,7 +23,7 @@
 //! page from opening a socket with the user's cookie (cross-site WebSocket hijacking): a
 //! browser always sends it on a WebSocket handshake, and a request without one is refused.
 //!
-//! The session is asked again every [`LiveLimits::recheck_every`] (and the role, through the
+//! The session is asked again every [`LiveLimits::recheck_every`] (and the permissions, through the
 //! gate's `GetMe` cache), and at once when the engine says a session ended. What a user is told
 //! is what they may read ([`panel::live::Change::visible_to`]). A slow reader never makes the
 //! server hold more: the bus keeps a bounded backlog per subscriber and says "lagged" past it,
@@ -53,7 +54,9 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
+	api::ApiError,
 	cookies,
+	http::Section,
 	signin::{self, Caller, Denied, Freshness, SignIn},
 };
 
@@ -75,7 +78,7 @@ pub struct LiveLimits {
 	pub ping_every: Duration,
 	/// How long without a Pong before the peer is taken for dead.
 	pub pong_within: Duration,
-	/// How often the session and the role are asked again.
+	/// How often the session and the permissions are asked again.
 	pub recheck_every: Duration,
 	/// How long one frame may take to go out before the socket is dropped.
 	pub send_within: Duration,
@@ -219,6 +222,9 @@ pub async fn upgrade(State(live): State<Live>, headers: HeaderMap, ws: Result<We
 		Ok(c) => c,
 		Err(denied) => return denied.into_response(&live.sign_in),
 	};
+	if !Section::Work.may(&caller.permissions) {
+		return ApiError::Forbidden.into_response();
+	}
 	let ws = match ws {
 		Ok(ws) => ws,
 		Err(rejection) => return rejection.into_response(),
@@ -311,12 +317,12 @@ impl Connection {
 				}
 				_ = ping.tick() => Step::Send(Message::Ping(Default::default())),
 				_ = recheck.tick() => match signin::check(&self.live.sign_in, &self.cookie, Freshness::Cached).await {
+					Ok(caller) if !Section::Work.may(&caller.permissions) => Step::Close(CLOSE_NO_ACCESS, "no access to the panel"),
 					Ok(caller) => {
 						self.caller = caller;
 						Step::Nothing
 					}
 					Err(Denied::Unauthenticated) => Step::Close(CLOSE_SESSION_ENDED, "session ended"),
-					Err(Denied::Forbidden) => Step::Close(CLOSE_NO_ACCESS, "no access to the panel"),
 					// The API would answer 503 and keep the session: so does the socket, and it
 					// asks again at the next tick.
 					Err(Denied::Unavailable | Denied::Failed(..)) => Step::Nothing,
@@ -352,7 +358,7 @@ impl Connection {
 
 	fn on_signal(&self, signal: Result<Signal, RecvError>) -> Step {
 		match signal {
-			Ok(Signal::Changed(c)) if c.visible_to(self.caller.user_id, self.caller.role) => Step::Send(Out::changed(&c).message()),
+			Ok(Signal::Changed(c)) if c.visible_to(self.caller.user_id, &self.caller.permissions) => Step::Send(Out::changed(&c).message()),
 			Ok(Signal::Changed(_)) => Step::Nothing,
 			Ok(Signal::Resync) => Step::Send(Out::Resync.message()),
 			Ok(Signal::SessionsEnded(ended)) => {

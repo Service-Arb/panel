@@ -8,7 +8,6 @@
 //! - [`experiment`]: a brand's experiments as its landing declares them and an admin sets them;
 //! - [`funnel`]: shares no more precise than the data, and the contact SLA;
 //! - [`signature`]: how a source signs a batch, and how the panel checks it;
-//! - [`role`]: who may do what inside the panel;
 //! - [`place`]: a place's live settings (phones, hours, …), checked as the sites read them;
 //! - [`pricing`]: a brand's price list, checked and priced as kitstart does, to the cent;
 //! - [`analytics`]: what PostHog is told of a lead's life, without PII;
@@ -28,7 +27,6 @@ pub mod notify;
 pub mod phone;
 pub mod place;
 pub mod pricing;
-pub mod role;
 pub mod signature;
 
 /// Why an event (or a part of one) cannot be accepted. The message is what the source is

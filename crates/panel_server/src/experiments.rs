@@ -18,9 +18,9 @@
 use std::time::Duration;
 
 use axum::{
-	Extension, Json, Router,
+	Extension, Json,
 	extract::{Path, Query, State},
-	routing::{get, put},
+	http::Method,
 };
 use jiff::Timestamp;
 use panel::{
@@ -31,24 +31,28 @@ use panel_core::{
 	Invalid,
 	experiment::{Patch, is_key},
 	ids::BrandId,
-	role::Permission,
 };
+use sa_auth::Experiments;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::{api::ApiError, places::editor, signin::Caller};
+use crate::{
+	api::ApiError,
+	http::{ApiRoute, Section},
+	places::editor,
+	signin::{Caller, Freshness},
+};
 
 /// How long a site's read may take before it is answered with no overrides.
 const LIVE_WITHIN: Duration = Duration::from_millis(2500);
 
-/// The screens' read: behind the gate, every role.
-pub fn reads() -> Router<Panel> {
-	Router::new().route("/experiments", get(list))
-}
-
-/// An admin's change: behind `gate_fresh`, as a place's or a price list's.
-pub fn writes() -> Router<Panel> {
-	Router::new().route("/experiments/{brand}/{key}", put(configure))
+/// The screens' read, and a change, which asks concierge afresh as a place's does.
+pub(crate) fn routes() -> Vec<ApiRoute> {
+	let analysis = Some(Section::Analysis);
+	vec![
+		ApiRoute::new(Method::GET, "/experiments", analysis, Freshness::Cached, list),
+		ApiRoute::new(Method::PUT, "/experiments/{brand}/{key}", analysis, Freshness::Fresh, configure),
+	]
 }
 
 fn ts(t: Option<Timestamp>) -> Value {
@@ -129,7 +133,7 @@ fn patch(key: &str, body: &Value) -> Result<Patch, Invalid> {
 }
 
 async fn configure(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path((brand, key)): Path<(String, String)>, body: axum::body::Bytes) -> Result<Json<Value>, ApiError> {
-	if !caller.role.may(Permission::EditsExperiments) {
+	if !caller.permissions.may(Experiments::Edit) {
 		return Err(ApiError::Forbidden);
 	}
 	let brand = BrandId::parse(&brand).map_err(|_| ApiError::NotFound)?;

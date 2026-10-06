@@ -25,9 +25,9 @@ use axum::{
 	body::Bytes,
 	error_handling::HandleErrorLayer,
 	extract::{Path, State, rejection::JsonRejection},
-	http::StatusCode,
+	http::{Method, StatusCode},
 	response::{IntoResponse, Response},
-	routing::{get, post, put},
+	routing::get,
 };
 use jiff::Timestamp;
 use panel::{
@@ -37,8 +37,8 @@ use panel::{
 use panel_core::{
 	ids::{BrandId, LocationId},
 	place::{Editor, PlaceSettings},
-	role::Permission,
 };
+use sa_auth::Places;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
@@ -46,24 +46,27 @@ use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
-use crate::{api::ApiError, signin::Caller};
+use crate::{
+	api::ApiError,
+	http::{ApiRoute, Section},
+	signin::{Caller, Freshness},
+};
 
-/// The editor's reads: behind the gate, every role.
-pub fn reads() -> Router<Panel> {
-	Router::new()
-		.route("/places/{brand}/{slug}/settings", get(settings))
-		.route("/places/{brand}/{slug}/settings/history", get(history))
-}
-
-/// The editor's writes, an admin's: served behind `gate_fresh`, so a grant revoked a moment
-/// ago cannot still move a phone number.
-pub fn writes() -> Router<Panel> {
-	Router::new()
-		.route("/places", post(register))
-		.route("/places/{brand}/{slug}/settings", put(set))
-		.route("/places/{brand}/{slug}/settings/revert/{id}", post(revert))
-		.route("/places/{brand}/{slug}/withdraw", post(withdraw))
-		.route("/places/{brand}/{slug}/restore", post(restore))
+/// The editor's routes. A write asks concierge afresh: a permission revoked a moment ago
+/// must not still move a phone number.
+pub(crate) fn routes() -> Vec<ApiRoute> {
+	use Freshness::{Cached, Fresh};
+	use Method as M;
+	let work = Some(Section::Work);
+	vec![
+		ApiRoute::new(M::GET, "/places/{brand}/{slug}/settings", work, Cached, settings),
+		ApiRoute::new(M::GET, "/places/{brand}/{slug}/settings/history", work, Cached, history),
+		ApiRoute::new(M::POST, "/places", work, Fresh, register),
+		ApiRoute::new(M::PUT, "/places/{brand}/{slug}/settings", work, Fresh, set),
+		ApiRoute::new(M::POST, "/places/{brand}/{slug}/settings/revert/{id}", work, Fresh, revert),
+		ApiRoute::new(M::POST, "/places/{brand}/{slug}/withdraw", work, Fresh, withdraw),
+		ApiRoute::new(M::POST, "/places/{brand}/{slug}/restore", work, Fresh, restore),
+	]
 }
 
 /// The sites' reads — a place's settings, a brand's pricing and experiments — mounted whether or not signing
@@ -143,7 +146,7 @@ fn ids(brand: &str, slug: &str) -> Result<(BrandId, LocationId), ApiError> {
 }
 
 fn admin(caller: &Caller) -> Result<(), ApiError> {
-	if caller.role.may(Permission::EditsPlaces) { Ok(()) } else { Err(ApiError::Forbidden) }
+	if caller.permissions.may(Places::Edit) { Ok(()) } else { Err(ApiError::Forbidden) }
 }
 
 /// Who the history names: the user's email, their id when concierge gave none.
@@ -162,7 +165,7 @@ fn body(v: PlaceView, caller: &Caller) -> Value {
 		"settings": v.settings.as_json(),
 		"updated_at": v.updated_at.map(|t| t.to_string()),
 		"updated_by": v.updated_by,
-		"can_edit": caller.role.may(Permission::EditsPlaces),
+		"can_edit": caller.permissions.may(Places::Edit),
 	})
 }
 

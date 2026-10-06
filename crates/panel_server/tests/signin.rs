@@ -1,4 +1,4 @@
-//! Signing in and the operator API end to end: the real router and a real Postgres, with a
+//! Signing in and the operator API end to end: the real router and a real SQLite file, with a
 //! fake concierge speaking the vendored gRPC contract on a local port.
 
 use std::{
@@ -14,7 +14,7 @@ use axum::{
 use jiff::{SignedDuration, Timestamp};
 use panel::{
 	session::pkce_challenge,
-	testing::{TestDb, event, panel, sign},
+	testing::{TestDb, admin, event, operator, panel, sign},
 };
 use panel_contracts::concierge::v1::{
 	self as pb,
@@ -28,6 +28,7 @@ use panel_server::{
 	signin::{SignIn, SignInConfig},
 	telegram,
 };
+use sa_auth::{PermissionSet, SA_ADMIN, SA_OPERATOR};
 use serde_json::{Value, json};
 use tonic::{Code, Request as GrpcRequest, Response as GrpcResponse, Status, transport::server::TcpIncoming};
 use tower::ServiceExt;
@@ -57,6 +58,9 @@ struct Fake {
 	me_calls: u32,
 	/// The next `GetMe` fails with this, once.
 	me_fails_once: Option<Code>,
+	/// Every catalog published, and whether the next is refused.
+	published: Vec<pb::PublishCatalogRequest>,
+	refuse_catalog: bool,
 }
 
 #[derive(Clone, Default)]
@@ -116,6 +120,20 @@ impl AuthService for FakeConcierge {
 			}
 			let user = f.refresh_tokens.remove(&r.refresh_token).ok_or_else(|| Status::unauthenticated("refresh"))?;
 			Ok(GrpcResponse::new(tokens(f, &user, SignedDuration::from_mins(15))))
+		})
+	}
+
+	async fn publish_catalog(&self, req: GrpcRequest<pb::PublishCatalogRequest>) -> Result<GrpcResponse<pb::PublishCatalogResponse>, Status> {
+		let r = req.into_inner();
+		self.with(|f| {
+			if r.client_id != CLIENT_ID || r.client_secret != SECRET {
+				return Err(Status::unauthenticated("client"));
+			}
+			if f.refuse_catalog {
+				return Err(Status::failed_precondition("older than the stored catalog"));
+			}
+			f.published.push(r);
+			Ok(GrpcResponse::new(pb::PublishCatalogResponse {}))
 		})
 	}
 
@@ -204,16 +222,16 @@ impl UserDirectory for FakeConcierge {
 		Err(Status::unimplemented("set_role"))
 	}
 
-	async fn grant_scope(&self, _: GrpcRequest<pb::GrantScopeRequest>) -> Result<GrpcResponse<pb::GrantScopeResponse>, Status> {
-		Err(Status::unimplemented("grant_scope"))
+	async fn grant_permission(&self, _: GrpcRequest<pb::GrantPermissionRequest>) -> Result<GrpcResponse<pb::GrantPermissionResponse>, Status> {
+		Err(Status::unimplemented("grant_permission"))
 	}
 
-	async fn revoke_scope(&self, _: GrpcRequest<pb::RevokeScopeRequest>) -> Result<GrpcResponse<pb::RevokeScopeResponse>, Status> {
-		Err(Status::unimplemented("revoke_scope"))
+	async fn revoke_permission(&self, _: GrpcRequest<pb::RevokePermissionRequest>) -> Result<GrpcResponse<pb::RevokePermissionResponse>, Status> {
+		Err(Status::unimplemented("revoke_permission"))
 	}
 
-	async fn list_scoped_grants(&self, _: GrpcRequest<pb::ListScopedGrantsRequest>) -> Result<GrpcResponse<pb::ListScopedGrantsResponse>, Status> {
-		Err(Status::unimplemented("list_scoped_grants"))
+	async fn list_grants(&self, _: GrpcRequest<pb::ListGrantsRequest>) -> Result<GrpcResponse<pb::ListGrantsResponse>, Status> {
+		Err(Status::unimplemented("list_grants"))
 	}
 }
 
@@ -230,21 +248,14 @@ async fn serve_fake(fake: FakeConcierge) -> String {
 	format!("http://{addr}")
 }
 
-fn profile(user_id: &str, global: &str, grant: Option<&str>) -> pb::UserProfile {
+/// `who@example.com`, holding `permissions` in `sa`.
+fn profile(user_id: &str, who: &str, permissions: &[&str]) -> pb::UserProfile {
 	pb::UserProfile {
 		user_id: user_id.to_owned(),
-		email: format!("{global}@example.com"),
+		email: format!("{who}@example.com"),
+		email_verified: true,
 		preferred_name: "Ann".to_owned(),
-		role: global.to_owned(),
-		scopes: grant
-			.map(|role| pb::ScopedGrant {
-				user_id: user_id.to_owned(),
-				scope: "allocation:service_arb".to_owned(),
-				role: role.to_owned(),
-				..Default::default()
-			})
-			.into_iter()
-			.collect(),
+		permissions: permissions.iter().map(|p| (*p).to_owned()).collect(),
 		..Default::default()
 	}
 }
@@ -307,7 +318,12 @@ impl Browser {
 
 	/// `/auth/login` → (concierge) → `/auth/callback`; the callback's answer.
 	async fn sign_in(&mut self, app: &Router, fake: &FakeConcierge, state_override: Option<&str>) -> Answer {
-		let login = self.get(app, "/auth/login").await;
+		self.sign_in_from(app, fake, "/auth/login", state_override).await
+	}
+
+	/// [`Self::sign_in`], starting at `login` (`/auth/login?…`).
+	async fn sign_in_from(&mut self, app: &Router, fake: &FakeConcierge, login: &str, state_override: Option<&str>) -> Answer {
+		let login = self.get(app, login).await;
 		assert_eq!(login.status, StatusCode::FOUND);
 		let location = login.headers[header::LOCATION].to_str().unwrap().to_owned();
 		assert!(location.starts_with("http://concierge.test/api/auth/authorize?client_id=sa&"), "{location}");
@@ -353,7 +369,7 @@ async fn an_operator_signs_in_works_leads_and_signs_out() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	fake.with(|f| {
-		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", SA_OPERATOR.members)));
 		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
 	});
 	let mut b = Browser::default();
@@ -370,7 +386,7 @@ async fn an_operator_signs_in_works_leads_and_signs_out() {
 	assert_eq!(me.status, StatusCode::OK, "{}", me.body);
 	assert_eq!(
 		me.body,
-		json!({"user_id": OPERATOR, "role": "operator", "email": "investor@example.com", "preferred_name": "Ann", "dev_sign_in": false})
+		json!({"user_id": OPERATOR, "email": "investor@example.com", "preferred_name": "Ann", "permissions": operator(), "dev_sign_in": false})
 	);
 	assert_eq!(me.headers[header::CACHE_CONTROL], "no-store");
 
@@ -432,7 +448,7 @@ async fn the_screens_read_places_counts_slices_and_payments() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	fake.with(|f| {
-		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", SA_OPERATOR.members)));
 		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
 	});
 	let mut b = Browser::default();
@@ -519,7 +535,7 @@ async fn suspect_leads_are_marked_and_filtered() {
 	let db = TestDb::create().await;
 	let (app, fake, panel) = setup(&db).await;
 	fake.with(|f| {
-		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", SA_OPERATOR.members)));
 		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
 	});
 	let mut b = Browser::default();
@@ -586,7 +602,7 @@ async fn leads_carry_their_flow_and_price() {
 	let db = TestDb::create().await;
 	let (app, fake, panel) = setup(&db).await;
 	fake.with(|f| {
-		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", SA_OPERATOR.members)));
 		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
 	});
 	let mut b = Browser::default();
@@ -655,7 +671,7 @@ async fn the_retired_counts_are_still_taken_and_shown_nowhere() {
 	let db = TestDb::create().await;
 	let (app, fake, panel) = setup(&db).await;
 	fake.with(|f| {
-		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", SA_OPERATOR.members)));
 		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
 	});
 	let mut b = Browser::default();
@@ -723,29 +739,31 @@ async fn a_forged_callback_never_presents_the_code() {
 }
 
 #[tokio::test]
-async fn only_the_scope_lets_in_and_a_refusal_ends_the_session() {
+async fn every_account_signs_in_and_its_permissions_open_the_sections() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 
-	// A plain investor: concierge would not issue a code, but if it did the panel still
-	// refuses.
+	// An account holding nothing here signs in, and is shown nothing.
 	fake.with(|f| {
-		f.profiles.insert("seed-outsider".into(), Ok(profile(OUTSIDER, "investor", None)));
+		f.profiles.insert("seed-outsider".into(), Ok(profile(OUTSIDER, "investor", &[])));
 		f.next_user = Some((OUTSIDER.into(), SignedDuration::from_mins(15)));
 	});
 	let mut outsider = Browser::default();
 	assert_eq!(outsider.sign_in(&app, &fake, None).await.status, StatusCode::SEE_OTHER);
 	let me = outsider.get(&app, "/api/v1/me").await;
-	assert_eq!(me.status, StatusCode::FORBIDDEN, "{}", me.body);
+	assert_eq!((me.status, &me.body["permissions"]), (StatusCode::OK, &json!([])), "{}", me.body);
+	assert_eq!(outsider.get(&app, "/api/v1/leads").await.status, StatusCode::FORBIDDEN);
 
-	// A global admin without a grant is an admin here.
 	fake.with(|f| {
-		f.profiles.insert("seed-admin".into(), Ok(profile(ADMIN, "admin", None)));
+		f.profiles.insert("seed-admin".into(), Ok(profile(ADMIN, "admin", SA_ADMIN.members)));
 		f.next_user = Some((ADMIN.into(), SignedDuration::from_mins(15)));
 	});
 	let mut admin = Browser::default();
 	admin.sign_in(&app, &fake, None).await;
-	assert_eq!(admin.get(&app, "/api/v1/me").await.body["role"], "admin");
+	assert_eq!(
+		admin.get(&app, "/api/v1/me").await.body["permissions"],
+		json!(SA_ADMIN.members.iter().copied().collect::<PermissionSet>())
+	);
 	let added = admin.post(&app, "/api/v1/sources", json!({"key_id": "vifnet-site", "kind": "site", "brands": ["vifnet"]})).await;
 	assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
 	assert_eq!(added.body["secret"].as_str().unwrap().len(), 64);
@@ -759,7 +777,7 @@ async fn only_the_scope_lets_in_and_a_refusal_ends_the_session() {
 	// concierge revokes the operator (signed out of evinvest.ltd): GetMe refuses, and the
 	// session is closed here too.
 	fake.with(|f| {
-		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", SA_OPERATOR.members)));
 		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
 	});
 	let mut op = Browser::default();
@@ -781,7 +799,7 @@ async fn a_stale_access_token_is_rotated_once() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
 	fake.with(|f| {
-		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", Some("operator"))));
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", SA_OPERATOR.members)));
 		// Inside the refresh margin from the start.
 		f.next_user = Some((OPERATOR.into(), SignedDuration::from_secs(5)));
 	});
@@ -824,9 +842,9 @@ async fn concierge_down_is_a_503_not_a_sign_out() {
 }
 
 /// Seeds the fake with a user and makes the next code theirs.
-fn user(fake: &FakeConcierge, id: &str, global: &str, grant: Option<&str>) {
+fn user(fake: &FakeConcierge, id: &str, who: &str, permissions: &[&str]) {
 	fake.with(|f| {
-		f.profiles.insert(format!("seed-{id}"), Ok(profile(id, global, grant)));
+		f.profiles.insert(format!("seed-{id}"), Ok(profile(id, who, permissions)));
 		f.next_user = Some((id.into(), SignedDuration::from_mins(15)));
 	});
 }
@@ -837,7 +855,7 @@ fn user(fake: &FakeConcierge, id: &str, global: &str, grant: Option<&str>) {
 async fn a_callback_is_redeemed_once() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
-	user(&fake, OPERATOR, "investor", Some("operator"));
+	user(&fake, OPERATOR, "investor", SA_OPERATOR.members);
 	let mut b = Browser::default();
 	let login = b.get(&app, "/auth/login").await;
 	let location = login.headers[header::LOCATION].to_str().unwrap().to_owned();
@@ -868,7 +886,7 @@ async fn auth_and_api_shed_and_time_out() {
 		..Default::default()
 	};
 	let (app, fake, _) = setup_with(&db, limits).await;
-	user(&fake, OPERATOR, "investor", Some("operator"));
+	user(&fake, OPERATOR, "investor", SA_OPERATOR.members);
 	fake.with(|f| f.exchange_delay = std::time::Duration::from_millis(500));
 
 	// One slow callback holds /auth's only slot: the next /auth request is shed, not queued.
@@ -894,22 +912,22 @@ async fn auth_and_api_shed_and_time_out() {
 async fn key_changes_ask_concierge_afresh() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
-	user(&fake, ADMIN, "investor", Some("admin"));
+	user(&fake, ADMIN, "investor", SA_ADMIN.members);
 	let mut b = Browser::default();
 	b.sign_in(&app, &fake, None).await;
-	assert_eq!(b.get(&app, "/api/v1/me").await.body["role"], "admin");
+	assert_eq!(b.get(&app, "/api/v1/me").await.body["permissions"], json!(admin()));
 
 	let panel_key = b.post(&app, "/api/v1/sources", json!({"key_id": "hand", "kind": "panel", "brands": ["aquafix"]})).await;
 	assert_eq!(panel_key.status, StatusCode::BAD_REQUEST, "{}", panel_key.body);
 	let site = b.post(&app, "/api/v1/sources", json!({"key_id": "aquafix-site", "kind": "site", "brands": ["aquafix"]})).await;
 	assert_eq!(site.status, StatusCode::CREATED, "{}", site.body);
 
-	// The grant is taken away at concierge. Reads ride the cache for up to a minute; minting
+	// The permission is taken away at concierge. Reads ride the cache for up to a minute; minting
 	// and revoking keys do not.
 	fake.with(|f| {
 		for p in f.profiles.values_mut().flatten() {
 			if p.user_id == ADMIN {
-				*p = profile(ADMIN, "investor", None);
+				*p = profile(ADMIN, "investor", &[]);
 			}
 		}
 	});
@@ -924,7 +942,7 @@ async fn key_changes_ask_concierge_afresh() {
 async fn signing_in_again_and_out_closes_the_old_sessions() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
-	user(&fake, OPERATOR, "investor", Some("operator"));
+	user(&fake, OPERATOR, "investor", SA_OPERATOR.members);
 
 	let mut laptop = Browser::default();
 	laptop.sign_in(&app, &fake, None).await;
@@ -948,7 +966,7 @@ async fn signing_in_again_and_out_closes_the_old_sessions() {
 async fn money_is_bounded_and_writes_are_idempotent() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
-	user(&fake, OPERATOR, "investor", Some("operator"));
+	user(&fake, OPERATOR, "investor", SA_OPERATOR.members);
 	fake.with(|f| f.me_fails_once = Some(Code::DeadlineExceeded));
 	let mut b = Browser::default();
 	b.sign_in(&app, &fake, None).await;
@@ -1026,10 +1044,10 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 	);
 	let app = http::app_with_telegram(sign_in.clone(), http::Limits::default(), telegram::BotName::on(Some("@evinvest_sa_bot".into())));
 	let off = http::app_with(sign_in, http::Limits::default());
-	user(&fake, OPERATOR, "investor", Some("operator"));
+	user(&fake, OPERATOR, "investor", SA_OPERATOR.members);
 	// A link whose access was last confirmed long ago, and denied: the gate's GetMe renews it.
 	let pool = db.pool().await;
-	sqlx::query("INSERT INTO telegram_links (user_id, chat_id, linked_at, role, role_checked_at, display_name) VALUES ($1, 7, $2, NULL, $3, 'x')")
+	sqlx::query("INSERT INTO telegram_links (user_id, chat_id, linked_at, permissions, permissions_checked_at, display_name) VALUES ($1, 7, $2, NULL, $3, 'x')")
 		.bind(uuid::Uuid::parse_str(OPERATOR).unwrap())
 		.bind(jiff::Timestamp::now().as_microsecond())
 		.bind("2026-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap().as_microsecond())
@@ -1047,8 +1065,9 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 		json!({"enabled": true, "linked": true, "blocked": false, "account": null, "rules": {"new_lead": true, "contact_overdue": true, "booked": true}}),
 		"an operator's rules, at their defaults"
 	);
-	let (role, name): (Option<String>, String) = sqlx::query_as("SELECT role, display_name FROM telegram_links").fetch_one(&pool).await.unwrap();
-	assert_eq!((role.as_deref(), name.as_str()), (Some("operator"), "Ann"), "the gate's GetMe confirmed the link");
+	let (permissions, name): (Option<String>, String) = sqlx::query_as("SELECT permissions, display_name FROM telegram_links").fetch_one(&pool).await.unwrap();
+	let permissions: PermissionSet = serde_json::from_str(&permissions.unwrap()).unwrap();
+	assert_eq!((permissions, name.as_str()), (operator(), "Ann"), "the gate's GetMe confirmed the link");
 
 	assert_eq!(b.send(&app, Method::POST, "/api/v1/telegram/link", None, false).await.status, StatusCode::FORBIDDEN, "CSRF");
 	let seen: Option<i64> = sqlx::query_scalar("SELECT last_seen_at FROM sessions").fetch_one(&pool).await.unwrap();
@@ -1086,7 +1105,7 @@ async fn the_profile_links_telegram_and_chooses_rules() {
 async fn an_admin_edits_a_places_settings_and_the_sites_read_them() {
 	let db = TestDb::create().await;
 	let (app, fake, panel) = setup(&db).await;
-	user(&fake, ADMIN, "investor", Some("admin"));
+	user(&fake, ADMIN, "investor", SA_ADMIN.members);
 	let mut b = Browser::default();
 	b.sign_in(&app, &fake, None).await;
 	let mut site = Browser::default();
@@ -1186,7 +1205,7 @@ async fn an_admin_edits_a_places_settings_and_the_sites_read_them() {
 async fn an_operator_reads_a_places_settings_and_changes_nothing() {
 	let db = TestDb::create().await;
 	let (app, fake, _) = setup(&db).await;
-	user(&fake, OPERATOR, "investor", Some("operator"));
+	user(&fake, OPERATOR, "investor", SA_OPERATOR.members);
 	let mut b = Browser::default();
 	b.sign_in(&app, &fake, None).await;
 	let read = b.get(&app, "/api/v1/places/aquafix/royat/settings").await;
@@ -1204,4 +1223,134 @@ async fn an_operator_reads_a_places_settings_and_changes_nothing() {
 
 async fn put(b: &mut Browser, app: &Router, uri: &str, body: Value) -> Answer {
 	b.send(app, Method::PUT, uri, Some(body), true).await
+}
+
+// ── permissions ──────────────────────────────────────────────────────────────────────────
+
+/// A signed-in caller holding nothing in `sa` is shown nothing: every `/api/v1` route but `/me`
+/// and the profile's Telegram ones answers 403, and so does the live socket; with every
+/// permission, none of them does.
+#[tokio::test]
+async fn no_permission_opens_no_section() {
+	let db = TestDb::create().await;
+	let panel = panel(&db).await;
+	let app = |permissions: PermissionSet, email: &str| {
+		let who = panel_server::concierge::DevIdentity {
+			permissions,
+			email: email.to_owned(),
+		};
+		let config = SignInConfig {
+			panel_origin: PANEL.to_owned(),
+			concierge_origin: PANEL.to_owned(),
+		};
+		http::app_with_telegram(SignIn::new(panel.clone(), Concierge::dev(who), config), http::Limits::default(), telegram::BotName::off())
+	};
+	let routes = http::api_routes();
+	let open: Vec<&str> = routes.iter().filter(|r| r.section.is_none()).map(|r| r.path).collect();
+	assert_eq!(open, ["/me"], "every other route sits under a section");
+	for (permissions, email, holds) in [(PermissionSet::from_iter(Vec::<String>::new()), "nobody", false), (admin(), "admin", true)] {
+		let app = app(permissions, &format!("{email}@localhost"));
+		let mut b = Browser::default();
+		let login = b.get(&app, "/auth/login").await;
+		let callback = login.headers[header::LOCATION].to_str().unwrap().strip_prefix(PANEL).unwrap().to_owned();
+		assert_eq!(b.get(&app, &callback).await.status, StatusCode::SEE_OTHER);
+		for r in &routes {
+			let path: Vec<String> = r.path.split('/').map(|seg| if seg.starts_with('{') { "x".to_owned() } else { seg.to_owned() }).collect();
+			let uri = format!("/api/v1{}", path.join("/"));
+			let got = b.send(&app, r.method.clone(), &uri, Some(json!({})), true).await;
+			let forbidden = got.status == StatusCode::FORBIDDEN;
+			match (r.section, holds) {
+				(None, _) => assert_eq!(got.status, StatusCode::OK, "{} {uri}: {}", r.method, got.body),
+				(Some(_), false) => assert!(forbidden, "{} {uri}: {} {}", r.method, got.status, got.body),
+				(Some(_), true) => assert!(!forbidden, "{} {uri}: {}", r.method, got.body),
+			}
+		}
+		assert_eq!(b.get(&app, "/api/v1/telegram").await.status, StatusCode::OK, "the profile is everyone's");
+		let cookie: Vec<String> = b.jar.iter().map(|(k, v)| format!("{k}={v}")).collect();
+		let live = Request::get("/api/v1/live")
+			.header(header::ORIGIN, PANEL)
+			.header(header::COOKIE, cookie.join("; "))
+			.body(Body::empty())
+			.unwrap();
+		let live = app.clone().oneshot(live).await.unwrap().status();
+		assert_eq!(live == StatusCode::FORBIDDEN, !holds, "the live socket: {live}");
+	}
+}
+
+/// `/auth/login?return_to=` lands the browser back on a path of this origin, and refuses
+/// anything a browser could read as another origin.
+#[tokio::test]
+async fn a_sign_in_returns_to_a_path_of_this_origin_only() {
+	let db = TestDb::create().await;
+	let (app, fake, _) = setup(&db).await;
+	for evil in ["%2F%2Fevil.com", "https%3A%2F%2Fevil.com", "%2F%5Cevil.com", "evil.com", "%2Fa%0Ab", "%2Fa%20b"] {
+		let got = Browser::default().get(&app, &format!("/auth/login?return_to={evil}")).await;
+		assert_eq!(got.status, StatusCode::BAD_REQUEST, "{evil}");
+		assert!(got.headers.get(header::LOCATION).is_none(), "{evil}");
+	}
+	user(&fake, OPERATOR, "investor", SA_OPERATOR.members);
+	let cb = Browser::default()
+		.sign_in_from(&app, &fake, "/auth/login?return_to=%2Freview_archive%3Ftab%3Dtargets", None)
+		.await;
+	assert_eq!(
+		(cb.status, cb.headers[header::LOCATION].to_str().unwrap()),
+		(StatusCode::SEE_OTHER, "/review_archive?tab=targets")
+	);
+	fake.with(|f| f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15))));
+	let cb = Browser::default().sign_in(&app, &fake, None).await;
+	assert_eq!(cb.headers[header::LOCATION], "/", "none given");
+}
+
+/// `serve` publishes the `sa` catalog, versioned by PANEL_BUILD_EPOCH, before it serves; a
+/// catalog concierge refuses fails the boot.
+#[tokio::test]
+async fn serve_publishes_the_catalog_first() {
+	let db = TestDb::create().await;
+	let fake = FakeConcierge::default();
+	let addr = serve_fake(fake.clone()).await;
+	let path = db.path().display().to_string();
+	let serve = || {
+		tokio::process::Command::new(env!("CARGO_BIN_EXE_panel"))
+			.args(["serve", "--bind", "127.0.0.1:0"])
+			.env_clear()
+			.envs([
+				("APP_ENV", "development"),
+				("PANEL_DB_PATH", path.as_str()),
+				("PANEL_DATA_KEY", &"0".repeat(64)),
+				("PANEL_PUBLIC_ORIGIN", PANEL),
+				("CONCIERGE_PUBLIC_ORIGIN", "http://concierge.test"),
+				("CONCIERGE_GRPC_ADDR", addr.as_str()),
+				("RP_CLIENT_SECRET_SA", SECRET),
+				("PANEL_BUILD_EPOCH", "1791100000"),
+			])
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.kill_on_drop(true)
+			.spawn()
+			.unwrap()
+	};
+	let mut panel = serve();
+	let published = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+		loop {
+			if let Some(p) = fake.with(|f| f.published.first().cloned()) {
+				return p;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		}
+	})
+	.await
+	.expect("serve publishes at boot");
+	panel.kill().await.unwrap();
+	let catalog = sa_auth::Catalog::collect("sa", 1_791_100_000);
+	assert_eq!(published.version, catalog.version);
+	assert_eq!(published.permissions, catalog.permissions.iter().cloned().collect::<Vec<_>>());
+	let admin = published.aliases.iter().find(|a| a.name == "sa:admin").unwrap();
+	assert_eq!(admin.delegates, ["sa:operator"], "an admin grants operators");
+
+	fake.with(|f| f.refuse_catalog = true);
+	let status = tokio::time::timeout(std::time::Duration::from_secs(20), serve().wait())
+		.await
+		.expect("a refused catalog ends the boot")
+		.unwrap();
+	assert!(!status.success(), "{status}");
 }

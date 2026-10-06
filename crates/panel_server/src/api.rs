@@ -1,17 +1,17 @@
 //! The operator API, `/api/v1`, for the panel's front end. JSON in and out; every request has
 //! passed [`crate::signin::gate`], so a [`Caller`] is in its extensions. What an action
-//! means is the engine's (`panel::operator`); this only translates and asks the role.
+//! means is the engine's (`panel::operator`); this only translates and asks the caller's
+//! permissions.
 //!
 //! Timestamps are RFC 3339 strings, money is minor units of its currency.
 
 use std::collections::BTreeSet;
 
 use axum::{
-	Extension, Json, Router,
+	Extension, Json,
 	extract::{Path, Query, State, rejection::JsonRejection},
-	http::{HeaderMap, HeaderValue, StatusCode, header},
+	http::{HeaderMap, HeaderValue, Method, StatusCode, header},
 	response::{IntoResponse, Response},
-	routing::{delete, get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jiff::{SignedDuration, Timestamp, civil::Date, tz::TimeZone};
@@ -26,13 +26,16 @@ use panel_core::{
 	funnel::{MIN_SAMPLE, Share},
 	ids::{BrandId, JobId, LeadId, LocationId},
 	lead::Stage,
-	role::Permission,
 };
+use sa_auth::{Leads, Pii as SeesPii};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::signin::Caller;
+use crate::{
+	http::{ApiRoute, Section},
+	signin::{Caller, Freshness},
+};
 
 /// The longest span the funnel sums over.
 const MAX_FUNNEL_DAYS: i32 = 366;
@@ -76,24 +79,28 @@ fn recorded(replayed: bool, v: Value) -> Response {
 	(status, Json(v)).into_response()
 }
 
-pub fn routes() -> Router<Panel> {
-	Router::new()
-		.route("/me", get(me))
-		.route("/leads", get(leads).post(create_lead))
-		.route("/leads/counts", get(lead_counts))
-		.route("/leads/{brand}/{lead}", get(lead))
-		.route("/leads/{brand}/{lead}/stage", post(stage))
-		.route("/leads/{brand}/{lead}/calls/attempt", post(attempt_call))
-		.route("/leads/{brand}/{lead}/calls/{attempt}/outcome", post(call_outcome))
-		.route("/leads/{brand}/{lead}/payments", post(payment))
-		.route("/funnel", get(funnel))
-		.route("/places", get(places))
-		.route("/sources", get(sources))
-}
-
-/// Minting and revoking source keys: served behind [`crate::signin::gate_fresh`].
-pub fn key_changes() -> Router<Panel> {
-	Router::new().route("/sources", post(add_source)).route("/sources/{key_id}", delete(revoke_source))
+pub(crate) fn routes() -> Vec<ApiRoute> {
+	use Freshness::{Cached, Fresh};
+	use Method as M;
+	let work = Some(Section::Work);
+	let admin = Some(Section::Admin);
+	vec![
+		ApiRoute::new(M::GET, "/me", None, Cached, me),
+		ApiRoute::new(M::GET, "/leads", work, Cached, leads),
+		ApiRoute::new(M::POST, "/leads", work, Cached, create_lead),
+		ApiRoute::new(M::GET, "/leads/counts", work, Cached, lead_counts),
+		ApiRoute::new(M::GET, "/leads/{brand}/{lead}", work, Cached, lead),
+		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/stage", work, Cached, stage),
+		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/calls/attempt", work, Cached, attempt_call),
+		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/calls/{attempt}/outcome", work, Cached, call_outcome),
+		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/payments", work, Cached, payment),
+		ApiRoute::new(M::GET, "/funnel", work, Cached, funnel),
+		ApiRoute::new(M::GET, "/places", work, Cached, places),
+		ApiRoute::new(M::GET, "/sources", admin, Cached, sources),
+		// A key must not be minted or revoked on a permission revoked a moment ago.
+		ApiRoute::new(M::POST, "/sources", admin, Fresh, add_source),
+		ApiRoute::new(M::DELETE, "/sources/{key_id}", admin, Fresh, revoke_source),
+	]
 }
 
 /// Why a request failed, as the front end is told.
@@ -110,7 +117,7 @@ impl IntoResponse for ApiError {
 	fn into_response(self) -> Response {
 		let (status, msg) = match self {
 			Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-			Self::Forbidden => (StatusCode::FORBIDDEN, "your role may not do this".to_owned()),
+			Self::Forbidden => (StatusCode::FORBIDDEN, "your permissions do not allow this".to_owned()),
 			Self::NotFound => (StatusCode::NOT_FOUND, "not found".to_owned()),
 			Self::Conflict(m) => (StatusCode::CONFLICT, m),
 			Self::Internal(e) => {
@@ -156,9 +163,9 @@ fn allow(ok: bool) -> ApiResult<()> {
 	if ok { Ok(()) } else { Err(ApiError::Forbidden) }
 }
 
-/// The point where the role decides whether PII is shown (§5.4).
-fn pii(caller: &Caller) -> Pii {
-	if caller.role.may(Permission::SeesPii) { Pii::Reveal } else { Pii::Withhold }
+/// The point where the caller's permissions decide whether PII is shown.
+pub(crate) fn pii(caller: &Caller) -> Pii {
+	if caller.permissions.may(SeesPii::See) { Pii::Reveal } else { Pii::Withhold }
 }
 
 fn ids(brand: &str, lead: &str) -> ApiResult<(BrandId, LeadId)> {
@@ -249,7 +256,7 @@ struct LeadDto {
 	last_event_at: String,
 	/// Set while it waits for its first contact.
 	sla: Option<SlaDto>,
-	/// What the customer left (name, phone, need, …), for the roles that see it; absent
+	/// What the customer left (name, phone, need, …), for a caller who sees it; absent
 	/// otherwise or when there is none.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pii: Option<Value>,
@@ -448,7 +455,7 @@ struct CreateLead {
 }
 
 async fn create_lead(State(panel): State<Panel>, Extension(caller): Extension<Caller>, headers: HeaderMap, b: Result<Json<CreateLead>, JsonRejection>) -> ApiResult<Response> {
-	allow(caller.role.may(Permission::EditsLeads))?;
+	allow(caller.permissions.may(Leads::Edit))?;
 	let key = idempotency_key(&headers)?;
 	let b = body(b)?;
 	let new = NewLead {
@@ -487,7 +494,7 @@ async fn stage(
 	headers: HeaderMap,
 	b: Result<Json<StageBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	allow(caller.role.may(Permission::EditsLeads))?;
+	allow(caller.permissions.may(Leads::Edit))?;
 	let key = idempotency_key(&headers)?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let to = match body(b)? {
@@ -507,7 +514,7 @@ async fn stage(
 }
 
 async fn attempt_call(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path((brand, lead)): Path<(String, String)>) -> ApiResult<Response> {
-	allow(caller.role.may(Permission::EditsLeads))?;
+	allow(caller.permissions.may(Leads::Edit))?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let attempt = panel.attempt_call(Actor(caller.user_id), &brand, &lead, Timestamp::now()).await?;
 	Ok(created(json!({ "attempt_id": attempt.raw().to_string() })))
@@ -525,7 +532,7 @@ async fn call_outcome(
 	Path((brand, lead, attempt)): Path<(String, String, String)>,
 	b: Result<Json<OutcomeBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	allow(caller.role.may(Permission::EditsLeads))?;
+	allow(caller.permissions.may(Leads::Edit))?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let attempt = Uuid::parse_str(&attempt).map_err(|_| ApiError::NotFound)?;
 	let call = CallOutcome { attempt, outcome: body(b)?.outcome };
@@ -548,7 +555,7 @@ async fn payment(
 	headers: HeaderMap,
 	b: Result<Json<PaymentBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	allow(caller.role.may(Permission::EditsLeads))?;
+	allow(caller.permissions.may(Leads::Edit))?;
 	let key = idempotency_key(&headers)?;
 	let (brand, lead) = ids(&brand, &lead)?;
 	let b = body(b)?;
@@ -732,8 +739,7 @@ struct SourceDto {
 	revoked_at: Option<String>,
 }
 
-async fn sources(State(panel): State<Panel>, Extension(caller): Extension<Caller>) -> ApiResult<Json<Value>> {
-	allow(caller.role.may(Permission::ManagesSources))?;
+async fn sources(State(panel): State<Panel>) -> ApiResult<Json<Value>> {
 	let sources: Vec<SourceDto> = panel
 		.store()
 		.sources()
@@ -759,7 +765,6 @@ struct AddSource {
 }
 
 async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Caller>, b: Result<Json<AddSource>, JsonRejection>) -> ApiResult<Response> {
-	allow(caller.role.may(Permission::ManagesSources))?;
 	let b = body(b)?;
 	let kind: SourceKind = b.kind.parse()?;
 	// The panel's own events carry no key (`key_id` NULL): a key of kind panel would only let
@@ -785,7 +790,6 @@ async fn add_source(State(panel): State<Panel>, Extension(caller): Extension<Cal
 }
 
 async fn revoke_source(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path(key_id): Path<String>) -> ApiResult<StatusCode> {
-	allow(caller.role.may(Permission::ManagesSources))?;
 	if !panel.revoke_source(&key_id).await? {
 		return Err(ApiError::NotFound);
 	}
@@ -795,8 +799,6 @@ async fn revoke_source(State(panel): State<Panel>, Extension(caller): Extension<
 
 #[cfg(test)]
 mod tests {
-	use panel_core::role::Role;
-
 	use super::*;
 
 	#[test]
@@ -805,11 +807,5 @@ mod tests {
 		assert_eq!(cursor_decode(&cursor_encode(&c)).unwrap(), c);
 		assert!(cursor_decode("nope!").is_err());
 		assert!(cursor_decode(&URL_SAFE_NO_PAD.encode("x|y")).is_err());
-	}
-
-	#[test]
-	fn operators_do_not_manage_sources() {
-		assert!(allow(Role::Operator.may(Permission::ManagesSources)).is_err());
-		assert!(allow(Role::Admin.may(Permission::ManagesSources)).is_ok());
 	}
 }

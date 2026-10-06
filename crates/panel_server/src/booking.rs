@@ -19,20 +19,18 @@ use axum::{
 	body::{Body, to_bytes},
 	error_handling::HandleErrorLayer,
 	extract::{Path, Query, State, rejection::JsonRejection},
-	http::{HeaderMap, StatusCode},
+	http::{HeaderMap, Method, StatusCode},
 	response::{IntoResponse, Response},
-	routing::{get, post},
+	routing::post,
 };
 use jiff::Timestamp;
 use panel::{
 	Panel,
 	booking::{BookingView, Provider, PushError, PushRequest, PushSources, SlotAction},
-	operator::{Actor, Pii},
+	operator::Actor,
 };
-use panel_core::{
-	ids::{BrandId, LeadId},
-	role::Permission,
-};
+use panel_core::ids::{BrandId, LeadId};
+use sa_auth::Leads;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
@@ -42,16 +40,21 @@ use uuid::Uuid;
 
 use crate::{
 	api::{ApiError, ApiResult},
-	signin::Caller,
+	http::{ApiRoute, Section},
+	signin::{Caller, Freshness},
 };
 
-/// The operator's booking routes, behind the gate.
-pub fn routes() -> Router<Panel> {
-	Router::new()
-		.route("/leads/{brand}/{lead}/booking", post(slot))
-		.route("/leads/{brand}/{lead}/booking/status", post(close))
-		.route("/bookings/unmatched", get(unmatched))
-		.route("/bookings/{id}/attach", post(attach))
+/// The operator's booking routes.
+pub(crate) fn routes() -> Vec<ApiRoute> {
+	use Freshness::Cached;
+	use Method as M;
+	let work = Some(Section::Work);
+	vec![
+		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/booking", work, Cached, slot),
+		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/booking/status", work, Cached, close),
+		ApiRoute::new(M::GET, "/bookings/unmatched", work, Cached, unmatched),
+		ApiRoute::new(M::POST, "/bookings/{id}/attach", work, Cached, attach),
+	]
 }
 
 /// A webhook's body at most: a booking is a few KiB.
@@ -158,7 +161,7 @@ async fn slot(
 	headers: HeaderMap,
 	b: Result<Json<SlotBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	if !caller.role.may(Permission::EditsLeads) {
+	if !caller.permissions.may(Leads::Edit) {
 		return Err(ApiError::Forbidden);
 	}
 	let key = crate::api::idempotency_key(&headers)?;
@@ -184,7 +187,7 @@ async fn close(
 	headers: HeaderMap,
 	b: Result<Json<CloseBody>, JsonRejection>,
 ) -> ApiResult<Response> {
-	if !caller.role.may(Permission::EditsLeads) {
+	if !caller.permissions.may(Leads::Edit) {
 		return Err(ApiError::Forbidden);
 	}
 	let key = crate::api::idempotency_key(&headers)?;
@@ -226,7 +229,7 @@ pub(crate) fn booking_body(v: BookingView) -> Value {
 async fn unmatched(State(panel): State<Panel>, Extension(caller): Extension<Caller>, q: Result<Query<UnmatchedQuery>, axum::extract::rejection::QueryRejection>) -> ApiResult<Json<Value>> {
 	let Query(q) = q.map_err(|e| ApiError::BadRequest(e.body_text()))?;
 	let brand = q.brand.as_deref().map(BrandId::parse).transpose()?;
-	let pii = if caller.role.may(Permission::SeesPii) { Pii::Reveal } else { Pii::Withhold };
+	let pii = crate::api::pii(&caller);
 	let rows = panel.unmatched_bookings(brand.as_ref(), pii, q.limit.unwrap_or(100)).await?;
 	Ok(Json(json!({ "bookings": rows.into_iter().map(booking_body).collect::<Vec<_>>() })))
 }
@@ -238,7 +241,7 @@ struct AttachBody {
 }
 
 async fn attach(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path(id): Path<String>, b: Result<Json<AttachBody>, JsonRejection>) -> ApiResult<Response> {
-	if !caller.role.may(Permission::EditsLeads) {
+	if !caller.permissions.may(Leads::Edit) {
 		return Err(ApiError::Forbidden);
 	}
 	let id = Uuid::parse_str(&id).map_err(|_| ApiError::NotFound)?;

@@ -7,32 +7,28 @@ use jiff::{SignedDuration, Timestamp};
 use panel_core::{
 	fact::LeadSuspect,
 	notify::{GLOBAL_PER_SECOND, PER_CHAT_GAP, Rule},
-	role::Role,
 };
+use sa_auth::PermissionSet;
 use sqlx::{SqliteConnection, types::Json};
 use uuid::Uuid;
 
 use super::{begin_write, from_db, to_db};
 
-fn role_of(raw: Option<String>) -> eyre::Result<Option<Role>> {
-	raw.map(|r| r.parse::<Role>().wrap_err("a stored role")).transpose()
-}
-
 // ── link tokens ─────────────────────────────────────────────────────────────────────────
 
 /// Stores a link token's hash, in place of any the user had before; expired ones are
 /// dropped on the way.
-pub async fn insert_link_token(conn: &mut SqliteConnection, hash: &[u8], user: Uuid, role: Role, display: &str, now: Timestamp, expires_at: Timestamp) -> eyre::Result<()> {
+pub async fn insert_link_token(conn: &mut SqliteConnection, hash: &[u8], user: Uuid, permissions: &PermissionSet, display: &str, now: Timestamp, expires_at: Timestamp) -> eyre::Result<()> {
 	sqlx::query("DELETE FROM telegram_link_tokens WHERE expires_at <= $1 OR user_id = $2")
 		.bind(to_db(now))
 		.bind(user)
 		.execute(&mut *conn)
 		.await
 		.wrap_err("pruning link tokens")?;
-	sqlx::query("INSERT INTO telegram_link_tokens (token_hash, user_id, role, display_name, expires_at, issued_at) VALUES ($1, $2, $3, $4, $5, $6)")
+	sqlx::query("INSERT INTO telegram_link_tokens (token_hash, user_id, permissions, display_name, expires_at, issued_at) VALUES ($1, $2, $3, $4, $5, $6)")
 		.bind(hash)
 		.bind(user)
-		.bind(role.as_str())
+		.bind(Json(permissions))
 		.bind(display)
 		.bind(to_db(expires_at))
 		.bind(to_db(now))
@@ -42,11 +38,11 @@ pub async fn insert_link_token(conn: &mut SqliteConnection, hash: &[u8], user: U
 	Ok(())
 }
 
-/// A redeemed link token: whose, their role and name, and when it was issued.
+/// A redeemed link token: whose, their permissions and name, and when it was issued.
 #[derive(Clone, Debug)]
 pub struct Redeemed {
 	pub user_id: Uuid,
-	pub role: Role,
+	pub permissions: PermissionSet,
 	pub display_name: String,
 	pub issued_at: Timestamp,
 }
@@ -54,20 +50,22 @@ pub struct Redeemed {
 /// Redeems a link token: whose it was, if it existed and had not expired. Gone either way,
 /// so a token opens at most one link — unless the caller rolls its transaction back.
 pub async fn redeem_link_token(conn: &mut SqliteConnection, hash: &[u8], now: Timestamp) -> eyre::Result<Option<Redeemed>> {
-	type Row = (Uuid, String, String, i64, Option<i64>);
-	let row: Option<Row> = sqlx::query_as("DELETE FROM telegram_link_tokens WHERE token_hash = $1 RETURNING user_id, role, display_name, expires_at, issued_at")
+	type Row = (Uuid, Json<PermissionSet>, String, i64, Option<i64>);
+	let row: Option<Row> = sqlx::query_as("DELETE FROM telegram_link_tokens WHERE token_hash = $1 RETURNING user_id, permissions, display_name, expires_at, issued_at")
 		.bind(hash)
 		.fetch_optional(&mut *conn)
 		.await
 		.wrap_err("redeeming a link token")?;
-	let Some((user_id, role, display_name, expires_at, issued_at)) = row else { return Ok(None) };
+	let Some((user_id, Json(permissions), display_name, expires_at, issued_at)) = row else {
+		return Ok(None);
+	};
 	let expires_at = from_db(expires_at)?;
 	if expires_at <= now {
 		return Ok(None);
 	}
 	Ok(Some(Redeemed {
 		user_id,
-		role: role.parse().wrap_err("a stored role")?,
+		permissions,
 		display_name,
 		// A token from before `issued_at` was stored: the earliest it could have been issued.
 		issued_at: issued_at.map(from_db).transpose()?.unwrap_or(expires_at - crate::telegram::LINK_TTL),
@@ -81,22 +79,23 @@ pub async fn redeem_link_token(conn: &mut SqliteConnection, hash: &[u8], now: Ti
 pub struct LinkRow {
 	pub user_id: Uuid,
 	pub chat_id: i64,
-	pub role: Option<Role>,
-	pub role_checked_at: Timestamp,
+	/// `None`: their access is known lost.
+	pub permissions: Option<PermissionSet>,
+	pub permissions_checked_at: Timestamp,
 	pub display_name: String,
 	pub dead: bool,
 	/// The Telegram account: `@username`, else its first name.
 	pub account: Option<String>,
 }
 
-type LinkDb = (Uuid, i64, Option<String>, i64, String, Option<i64>, Option<String>, Option<String>);
+type LinkDb = (Uuid, i64, Option<Json<PermissionSet>>, i64, String, Option<i64>, Option<String>, Option<String>);
 
-fn link_row((user_id, chat_id, role, checked, display_name, dead_at, username, first_name): LinkDb) -> eyre::Result<LinkRow> {
+fn link_row((user_id, chat_id, permissions, checked, display_name, dead_at, username, first_name): LinkDb) -> eyre::Result<LinkRow> {
 	Ok(LinkRow {
 		user_id,
 		chat_id,
-		role: role_of(role)?,
-		role_checked_at: from_db(checked)?,
+		permissions: permissions.map(|Json(p)| p),
+		permissions_checked_at: from_db(checked)?,
 		display_name,
 		dead: dead_at.is_some(),
 		account: username.map(|u| format!("@{u}")).or(first_name),
@@ -106,7 +105,7 @@ fn link_row((user_id, chat_id, role, checked, display_name, dead_at, username, f
 // A macro, not a const, so every query stays a literal (`concat!`) that sqlx takes as audited.
 macro_rules! link_select {
 	() => {
-		"SELECT user_id, chat_id, role, role_checked_at, display_name, dead_at, tg_username, tg_first_name FROM telegram_links "
+		"SELECT user_id, chat_id, permissions, permissions_checked_at, display_name, dead_at, tg_username, tg_first_name FROM telegram_links "
 	};
 }
 
@@ -147,7 +146,7 @@ async fn drop_pending_of_chat(conn: &mut SqliteConnection, chat: i64, why: &str)
 	Ok(())
 }
 
-/// Links `chat` to the token's user, their role confirmed as of the token's issue. The user's
+/// Links `chat` to the token's user, their permissions confirmed as of the token's issue. The user's
 /// previous chat is let go, with what the outbox still owed it. The caller has made sure the
 /// chat is no one else's.
 pub async fn link(conn: &mut SqliteConnection, t: &Redeemed, chat: i64, account: &Account, now: Timestamp) -> eyre::Result<()> {
@@ -159,15 +158,15 @@ pub async fn link(conn: &mut SqliteConnection, t: &Redeemed, chat: i64, account:
 		.await
 		.wrap_err("dropping what a relinked chat was owed")?;
 	sqlx::query(
-		"INSERT INTO telegram_links (user_id, chat_id, linked_at, role, role_checked_at, display_name, tg_username, tg_first_name) \
+		"INSERT INTO telegram_links (user_id, chat_id, linked_at, permissions, permissions_checked_at, display_name, tg_username, tg_first_name) \
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-		 ON CONFLICT (user_id) DO UPDATE SET chat_id = $2, linked_at = $3, role = $4, role_checked_at = $5, access_tried_at = NULL, \
+		 ON CONFLICT (user_id) DO UPDATE SET chat_id = $2, linked_at = $3, permissions = $4, permissions_checked_at = $5, access_tried_at = NULL, \
 		 display_name = $6, dead_at = NULL, tg_username = $7, tg_first_name = $8",
 	)
 	.bind(t.user_id)
 	.bind(chat)
 	.bind(to_db(now))
-	.bind(t.role.as_str())
+	.bind(Json(&t.permissions))
 	.bind(to_db(t.issued_at))
 	.bind(&t.display_name)
 	.bind(&account.username)
@@ -230,11 +229,11 @@ pub async fn link_of_chat(conn: &mut SqliteConnection, chat: i64) -> eyre::Resul
 	row.map(link_row).transpose()
 }
 
-/// What concierge just said of a linked user: their role (`None`: no access) and name.
-pub async fn access_seen(conn: &mut SqliteConnection, user: Uuid, role: Option<Role>, display: &str, now: Timestamp) -> eyre::Result<()> {
-	sqlx::query("UPDATE telegram_links SET role = $2, display_name = $3, role_checked_at = $4, access_tried_at = $4 WHERE user_id = $1")
+/// What concierge just said of a linked user: their permissions and name.
+pub async fn access_seen(conn: &mut SqliteConnection, user: Uuid, permissions: &PermissionSet, display: &str, now: Timestamp) -> eyre::Result<()> {
+	sqlx::query("UPDATE telegram_links SET permissions = $2, display_name = $3, permissions_checked_at = $4, access_tried_at = $4 WHERE user_id = $1")
 		.bind(user)
-		.bind(role.map(Role::as_str))
+		.bind(Json(permissions))
 		.bind(display)
 		.bind(to_db(now))
 		.execute(&mut *conn)
@@ -257,7 +256,7 @@ pub async fn access_tried(conn: &mut SqliteConnection, user: Uuid, now: Timestam
 /// A user's access is known to be gone: nothing more is sent to them, queued or not.
 pub async fn access_lost(conn: &mut SqliteConnection, user: Uuid, now: Timestamp) -> eyre::Result<()> {
 	drop_pending_of_user(conn, user, "access lost").await?;
-	sqlx::query("UPDATE telegram_links SET role = NULL, role_checked_at = $2, access_tried_at = $2 WHERE user_id = $1")
+	sqlx::query("UPDATE telegram_links SET permissions = NULL, permissions_checked_at = $2, access_tried_at = $2 WHERE user_id = $1")
 		.bind(user)
 		.bind(to_db(now))
 		.execute(&mut *conn)
@@ -269,8 +268,8 @@ pub async fn access_lost(conn: &mut SqliteConnection, user: Uuid, now: Timestamp
 /// Linked users whose access was last confirmed or tried before `before`, oldest first.
 pub async fn stale_access(conn: &mut SqliteConnection, before: Timestamp, limit: i64) -> eyre::Result<Vec<Uuid>> {
 	sqlx::query_scalar(
-		"SELECT user_id FROM telegram_links WHERE dead_at IS NULL AND role_checked_at < $1 AND (access_tried_at IS NULL OR access_tried_at < $1) \
-		 ORDER BY COALESCE(access_tried_at, role_checked_at) LIMIT $2",
+		"SELECT user_id FROM telegram_links WHERE dead_at IS NULL AND permissions_checked_at < $1 AND (access_tried_at IS NULL OR access_tried_at < $1) \
+		 ORDER BY COALESCE(access_tried_at, permissions_checked_at) LIMIT $2",
 	)
 	.bind(to_db(before))
 	.bind(limit)
@@ -302,21 +301,21 @@ pub async fn set_rule(conn: &mut SqliteConnection, user: Uuid, rule: Rule, enabl
 	Ok(())
 }
 
-/// Who may get a rule's message now: linked, the chat alive, the rule on, and a role
-/// concierge confirmed at or after `confirmed_since`. Whether the role is one the rule is
-/// open to is the caller's to ask.
+/// Who may get a rule's message now: linked, the chat alive, the rule on, and permissions
+/// concierge confirmed at or after `confirmed_since`. Whether they open the rule is the
+/// caller's to ask.
 #[derive(Clone, Debug)]
 pub struct Recipient {
 	pub user_id: Uuid,
 	pub chat_id: i64,
-	pub role: Role,
+	pub permissions: PermissionSet,
 }
 
 pub async fn recipients(conn: &mut SqliteConnection, rule: Rule, confirmed_since: Timestamp) -> eyre::Result<Vec<Recipient>> {
-	let rows: Vec<(Uuid, i64, String)> = sqlx::query_as(
-		"SELECT l.user_id, l.chat_id, l.role FROM telegram_links l \
+	let rows: Vec<(Uuid, i64, Json<PermissionSet>)> = sqlx::query_as(
+		"SELECT l.user_id, l.chat_id, l.permissions FROM telegram_links l \
 		 LEFT JOIN telegram_rules r ON r.user_id = l.user_id AND r.rule = $1 \
-		 WHERE l.dead_at IS NULL AND l.role IS NOT NULL AND l.role_checked_at >= $2 AND COALESCE(r.enabled, $3) \
+		 WHERE l.dead_at IS NULL AND l.permissions IS NOT NULL AND l.permissions_checked_at >= $2 AND COALESCE(r.enabled, $3) \
 		 ORDER BY l.user_id",
 	)
 	.bind(rule.as_str())
@@ -325,15 +324,10 @@ pub async fn recipients(conn: &mut SqliteConnection, rule: Rule, confirmed_since
 	.fetch_all(&mut *conn)
 	.await
 	.wrap_err("listing a rule's recipients")?;
-	rows.into_iter()
-		.map(|(user_id, chat_id, role)| {
-			Ok(Recipient {
-				user_id,
-				chat_id,
-				role: role.parse().wrap_err("a stored role")?,
-			})
-		})
-		.collect()
+	Ok(rows
+		.into_iter()
+		.map(|(user_id, chat_id, Json(permissions))| Recipient { user_id, chat_id, permissions })
+		.collect())
 }
 
 // ── fan-out ─────────────────────────────────────────────────────────────────────────────

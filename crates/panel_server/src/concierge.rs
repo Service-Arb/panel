@@ -1,9 +1,9 @@
-//! concierge over gRPC: the three calls a relying party makes (spec §4). Redeeming a code
-//! and rotating a refresh token authenticate with the panel's client secret; `GetMe`
-//! with the user's access token, the only RPC that token opens.
+//! concierge over gRPC: the calls a relying party makes (spec §4). Redeeming a code, rotating
+//! a refresh token and publishing the `sa` catalog authenticate with the panel's client
+//! secret; `GetMe` with the user's access token, the only RPC that token opens.
 //!
-//! In development there may be no concierge at all: [`Concierge::dev`] answers the same three
-//! calls for one made-up user (`PANEL_DEV_SIGN_IN`, refused outside development and off
+//! In development there may be no concierge at all: [`Concierge::dev`] answers the sign-in's
+//! three calls for one made-up user (`PANEL_DEV_SIGN_IN`, refused outside development and off
 //! loopback by the settings), so the sign-in, the sessions and the gate run as they would.
 
 use std::{sync::Arc, time::Duration};
@@ -11,9 +11,11 @@ use std::{sync::Arc, time::Duration};
 use jiff::{SignedDuration, Timestamp};
 use panel::session::{RefreshError, Refresher, Tokens, random_token};
 use panel_contracts::concierge::v1::{
-	ClientTokenResponse, ExchangeCodeRequest, GetMeRequest, RefreshClientTokenRequest, UserProfile, auth_service_client::AuthServiceClient, user_directory_client::UserDirectoryClient,
+	CatalogAlias, ClientTokenResponse, ExchangeCodeRequest, GetMeRequest, PublishCatalogRequest, RefreshClientTokenRequest, UserProfile, auth_service_client::AuthServiceClient,
+	user_directory_client::UserDirectoryClient,
 };
-use panel_core::role::{Role, SCOPE};
+use sa_auth::{Catalog, PermissionSet};
+use sha2::{Digest, Sha256};
 use tonic::{
 	Code, Request, Status,
 	metadata::MetadataValue,
@@ -57,23 +59,25 @@ impl From<Status> for ConciergeError {
 pub struct Me {
 	pub user_id: Uuid,
 	pub email: String,
+	pub email_verified: bool,
 	pub preferred_name: String,
-	/// The platform role: investor, operator, admin, owner.
-	pub role: String,
-	/// Active scoped grants, `(scope, role)`.
-	pub scopes: Vec<(String, String)>,
+	/// What the user may do in the panel: concrete `sa` permissions.
+	pub permissions: PermissionSet,
 }
 
 impl TryFrom<UserProfile> for Me {
 	type Error = ConciergeError;
 
 	fn try_from(p: UserProfile) -> Result<Self, ConciergeError> {
+		if let Some(stray) = p.permissions.iter().find(|perm| !perm.starts_with("sa:")) {
+			return Err(ConciergeError::Failed(format!("GetMe answered `{stray}`, outside the sa namespace")));
+		}
 		Ok(Self {
 			user_id: Uuid::parse_str(&p.user_id).map_err(|_| ConciergeError::Failed("GetMe answered a user id that is not a UUID".into()))?,
 			email: p.email,
+			email_verified: p.email_verified,
 			preferred_name: p.preferred_name,
-			role: p.role,
-			scopes: p.scopes.into_iter().map(|g| (g.scope, g.role)).collect(),
+			permissions: p.permissions.into_iter().collect(),
 		})
 	}
 }
@@ -117,33 +121,29 @@ pub const DEV_CODE: &str = "dev-sign-in";
 /// Who [`Concierge::dev`] signs everyone in as.
 #[derive(Clone, Debug)]
 pub struct DevIdentity {
-	pub role: Role,
+	pub permissions: PermissionSet,
 	pub email: String,
 }
 
 impl DevIdentity {
-	/// Fixed, so a local database keeps one user per role across restarts; the last digit
-	/// tells the two apart in the journal.
+	/// Named by the email, so a local database keeps one user per dev identity across restarts.
 	pub fn user_id(&self) -> Uuid {
-		match self.role {
-			Role::Operator => Uuid::from_u128(0xde70_0000_0000_4000_8000_0000_0000_0001),
-			Role::Admin => Uuid::from_u128(0xde70_0000_0000_4000_8000_0000_0000_0002),
-		}
+		let digest = Sha256::digest(format!("sa-panel/dev-sign-in/{}", self.email));
+		uuid::Builder::from_custom_bytes(digest[..16].try_into().expect("SHA-256 is 32 bytes")).into_uuid()
 	}
 
 	/// What the panel shows as the user's name: the sidebar says that this is dev sign-in.
 	pub fn display_name(&self) -> String {
-		format!("Dev sign-in ({})", self.role.as_str())
+		format!("Dev sign-in ({})", self.email)
 	}
 
 	fn me(&self) -> Me {
 		Me {
 			user_id: self.user_id(),
 			email: self.email.clone(),
+			email_verified: true,
 			preferred_name: self.display_name(),
-			// No platform role: the panel role comes from the grant, as for a real user.
-			role: "investor".to_owned(),
-			scopes: vec![(SCOPE.to_owned(), self.role.as_str().to_owned())],
+			permissions: self.permissions.clone(),
 		}
 	}
 
@@ -218,6 +218,34 @@ impl Concierge {
 			.await?
 			.into_inner();
 		issued(answer)
+	}
+
+	/// Tells concierge what the `sa` namespace defines. Refused when the catalog is older than
+	/// the one it holds, or the same version with other content.
+	pub async fn publish_catalog(&self, catalog: &Catalog) -> Result<(), ConciergeError> {
+		let Backend::Grpc(g) = &self.backend else {
+			unreachable!("dev sign-in has no concierge to publish to; serve does not ask it");
+		};
+		let aliases = catalog
+			.aliases
+			.iter()
+			.map(|(name, members)| CatalogAlias {
+				name: name.clone(),
+				members: members.iter().cloned().collect(),
+				delegates: catalog.delegations.get(name).map(|d| d.iter().cloned().collect()).unwrap_or_default(), // only aliases that delegate are in `delegations`
+			})
+			.collect();
+		g.auth
+			.clone()
+			.publish_catalog(PublishCatalogRequest {
+				client_id: CLIENT_ID.to_owned(),
+				client_secret: g.secret.to_string(),
+				version: catalog.version,
+				permissions: catalog.permissions.iter().cloned().collect(),
+				aliases,
+			})
+			.await?;
+		Ok(())
 	}
 
 	/// The user behind an access token.

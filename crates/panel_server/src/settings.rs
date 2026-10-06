@@ -1,7 +1,9 @@
 //! The environment: secrets and the deployment profile. Where to listen is a flag.
 
 use panel::seal::DataKey;
-use panel_core::{notify::Locale, role::Role};
+use panel_core::notify::Locale;
+use sa_auth::{Catalog, PermissionSet};
+use sha2::{Digest, Sha256};
 
 ev_lib::settings! {
 	/// Each secret is needed only by what uses it; a missing one fails that, with an error
@@ -36,6 +38,9 @@ ev_lib::settings! {
 		#[secret]
 		#[required_in("production")]
 		rp_client_secret_sa: Option<String>,
+		/// Unix seconds of the commit the binary was built from (the image sets it): the
+		/// version of the `sa` catalog `serve` publishes to concierge. Needed with the sign-in.
+		panel_build_epoch: Option<u64>,
 		/// The panel's bot (`@evinvest_sa_bot`; not `telegram_token_main`). Unset: no Telegram
 		/// notifications, and `serve` says so. Needs the sign-in configured too.
 		#[secret]
@@ -69,12 +74,14 @@ ev_lib::settings! {
 		google_oauth_client_secret: Option<String>,
 		/// How often each brand's calendar is pulled, in minutes.
 		google_calendar_sync_minutes: u32 = "5",
-		/// Development only: `admin` or `operator`. Signs whoever opens `/auth/login` in as a
-		/// made-up user of that role, without concierge. Refused at start in any profile but
+		/// Development only: an alias (`sa:operator`, `sa:admin`), a comma-separated list of
+		/// `sa` permissions, or `none`. Signs whoever opens `/auth/login` in as a made-up user
+		/// holding those, without concierge. Refused at start in any profile but
 		/// `development`, beside any concierge variable, and unless PANEL_PUBLIC_ORIGIN is
 		/// `http://localhost[:port]` or `http://127.0.0.1[:port]`.
 		panel_dev_sign_in: Option<String>,
-		/// The dev user's email; `dev-<role>@localhost` by default.
+		/// The dev user's email; `dev-<alias name>@localhost`, `dev-none@localhost`, or for a
+		/// list `dev-<its hash>@localhost` by default.
 		panel_dev_sign_in_email: Option<String>,
 		app_env: String = "development",
 	}
@@ -264,6 +271,8 @@ pub struct SignInSettings {
 	pub concierge_origin: String,
 	pub concierge_grpc: String,
 	pub client_secret: String,
+	/// The version of the catalog published at boot.
+	pub build_epoch: u64,
 }
 
 impl std::fmt::Debug for SignInSettings {
@@ -272,6 +281,7 @@ impl std::fmt::Debug for SignInSettings {
 			.field("panel_origin", &self.panel_origin)
 			.field("concierge_origin", &self.concierge_origin)
 			.field("concierge_grpc", &self.concierge_grpc)
+			.field("build_epoch", &self.build_epoch)
 			.finish_non_exhaustive()
 	}
 }
@@ -292,6 +302,9 @@ impl Settings {
 			return Ok(None);
 		}
 		eyre::ensure!(missing.is_empty(), "signing in needs {} too", missing.join(", "));
+		let build_epoch = self
+			.panel_build_epoch
+			.ok_or_else(|| eyre::eyre!("signing in needs PANEL_BUILD_EPOCH too: the unix seconds of the build's commit, the version of the catalog published to concierge"))?;
 		let get = |v: &Option<String>| set(v).unwrap_or_default();
 		if self.app_env == "production" {
 			bare_https_origin("PANEL_PUBLIC_ORIGIN", &get(&self.panel_public_origin))?;
@@ -302,6 +315,7 @@ impl Settings {
 			concierge_origin: get(&self.concierge_public_origin),
 			concierge_grpc: get(&self.concierge_grpc_addr),
 			client_secret: get(&self.rp_client_secret_sa),
+			build_epoch,
 		}))
 	}
 }
@@ -309,7 +323,7 @@ impl Settings {
 /// `PANEL_DEV_SIGN_IN`, checked: who everyone signs in as, and where.
 #[derive(Debug)]
 pub struct DevSignIn {
-	pub role: Role,
+	pub permissions: PermissionSet,
 	pub email: String,
 	pub panel_origin: String,
 }
@@ -320,7 +334,7 @@ impl Settings {
 	/// reaches `/auth/login` is let in, so it must never be reachable from anywhere else.
 	pub fn dev_sign_in(&self) -> eyre::Result<Option<DevSignIn>> {
 		let set = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
-		let Some(role) = set(&self.panel_dev_sign_in) else {
+		let Some(who) = set(&self.panel_dev_sign_in) else {
 			return Ok(None);
 		};
 		eyre::ensure!(
@@ -338,12 +352,37 @@ impl Settings {
 		.map(|(name, _)| name)
 		.collect();
 		eyre::ensure!(concierge.is_empty(), "PANEL_DEV_SIGN_IN replaces the concierge sign-in: unset {}", concierge.join(", "));
-		let role: Role = role.parse().map_err(|e| eyre::eyre!("PANEL_DEV_SIGN_IN: {e}"))?;
+		let (permissions, name) = dev_permissions(&who)?;
 		let origin = set(&self.panel_public_origin).ok_or_else(|| eyre::eyre!("PANEL_DEV_SIGN_IN needs PANEL_PUBLIC_ORIGIN, e.g. http://127.0.0.1:59120"))?;
 		loopback_http_origin(&origin)?;
-		let email = set(&self.panel_dev_sign_in_email).unwrap_or_else(|| format!("dev-{}@localhost", role.as_str()));
-		Ok(Some(DevSignIn { role, email, panel_origin: origin }))
+		let email = set(&self.panel_dev_sign_in_email).unwrap_or_else(|| format!("dev-{name}@localhost"));
+		Ok(Some(DevSignIn {
+			permissions,
+			email,
+			panel_origin: origin,
+		}))
 	}
+}
+
+/// `PANEL_DEV_SIGN_IN`'s set, resolved against the `sa` catalog, and a name for its default
+/// email.
+fn dev_permissions(raw: &str) -> eyre::Result<(PermissionSet, String)> {
+	if raw == "none" {
+		return Ok((PermissionSet::from_iter(Vec::<String>::new()), "none".to_owned()));
+	}
+	let catalog = Catalog::collect("sa", 0);
+	if let Some(members) = catalog.aliases.get(raw) {
+		let name = raw.trim_start_matches("sa:").to_owned();
+		return Ok((members.iter().cloned().collect(), name));
+	}
+	let listed: Vec<&str> = raw.split(',').map(str::trim).collect();
+	if let Some(unknown) = listed.iter().find(|p| !catalog.permissions.contains(**p)) {
+		let aliases: Vec<&str> = catalog.aliases.keys().map(String::as_str).collect();
+		eyre::bail!("PANEL_DEV_SIGN_IN: `{unknown}` is neither `none`, an alias ({}), nor an sa permission", aliases.join(", "));
+	}
+	let permissions: PermissionSet = listed.into_iter().collect();
+	let digest = Sha256::digest(serde_json::to_vec(&permissions).expect("a set of strings serializes"));
+	Ok((permissions, digest[..4].iter().map(|b| format!("{b:02x}")).collect()))
 }
 
 /// `http://localhost[:port]` or `http://127.0.0.1[:port]`, nothing after it: an origin only
@@ -406,6 +445,7 @@ mod tests {
 				"CONCIERGE_PUBLIC_ORIGIN",
 				"CONCIERGE_GRPC_ADDR",
 				"RP_CLIENT_SECRET_SA",
+				"PANEL_BUILD_EPOCH",
 				"TELEGRAM_BOT_TOKEN",
 				"TELEGRAM_BOT_USERNAME",
 				"TELEGRAM_LOCALE",
@@ -469,6 +509,17 @@ mod tests {
 			("RP_CLIENT_SECRET_SA", &secret),
 		])
 		.unwrap();
+		let e = format!("{}", full.sign_in().unwrap_err());
+		assert!(e.contains("PANEL_BUILD_EPOCH"), "{e}");
+		let full = from(&[
+			("PANEL_PUBLIC_ORIGIN", "https://sa.evinvest.ltd"),
+			("CONCIERGE_PUBLIC_ORIGIN", "https://evinvest.ltd"),
+			("CONCIERGE_GRPC_ADDR", "http://concierge:55670"),
+			("RP_CLIENT_SECRET_SA", &secret),
+			("PANEL_BUILD_EPOCH", "1791100000"),
+		])
+		.unwrap();
+		assert_eq!(full.sign_in().unwrap().unwrap().build_epoch, 1_791_100_000);
 		assert_eq!(full.sign_in().unwrap().unwrap().concierge_grpc, "http://concierge:55670");
 		assert!(!format!("{full:?}").contains(&secret), "the client secret never prints");
 	}
@@ -556,6 +607,7 @@ mod tests {
 				("CONCIERGE_PUBLIC_ORIGIN", concierge),
 				("CONCIERGE_GRPC_ADDR", "http://concierge:55670"),
 				("RP_CLIENT_SECRET_SA", &secret),
+				("PANEL_BUILD_EPOCH", "1791100000"),
 			])
 			.unwrap()
 			.sign_in()
@@ -580,6 +632,7 @@ mod tests {
 				("CONCIERGE_PUBLIC_ORIGIN", "http://localhost:3000"),
 				("CONCIERGE_GRPC_ADDR", "http://localhost:55670"),
 				("RP_CLIENT_SECRET_SA", &secret),
+				("PANEL_BUILD_EPOCH", "1791100000"),
 			])
 			.unwrap()
 			.sign_in()
@@ -592,17 +645,30 @@ mod tests {
 	fn dev_sign_in_is_development_on_loopback_only() {
 		assert!(from(&[]).unwrap().dev_sign_in().unwrap().is_none());
 		let dev = |vars: &[(&str, &str)]| from(vars).unwrap().dev_sign_in();
-		let on = dev(&[("PANEL_DEV_SIGN_IN", "admin"), ("PANEL_PUBLIC_ORIGIN", "http://127.0.0.1:59120")]).unwrap().unwrap();
-		assert_eq!((on.role, on.email.as_str()), (Role::Admin, "dev-admin@localhost"));
+		let on = dev(&[("PANEL_DEV_SIGN_IN", "sa:admin"), ("PANEL_PUBLIC_ORIGIN", "http://127.0.0.1:59120")]).unwrap().unwrap();
+		assert_eq!(on.email, "dev-admin@localhost");
 		let op = dev(&[
-			("PANEL_DEV_SIGN_IN", "operator"),
+			("PANEL_DEV_SIGN_IN", "sa:operator"),
 			("PANEL_DEV_SIGN_IN_EMAIL", "ann@example.com"),
 			("PANEL_PUBLIC_ORIGIN", "http://localhost:3120"),
 		])
 		.unwrap()
 		.unwrap();
-		assert_eq!((op.role, op.email.as_str()), (Role::Operator, "ann@example.com"));
-		assert!(dev(&[("PANEL_DEV_SIGN_IN", "admin"), ("PANEL_PUBLIC_ORIGIN", "http://localhost")]).is_ok(), "port optional");
+		assert_eq!(op.email, "ann@example.com");
+		assert_eq!(op.permissions, sa_auth::SA_OPERATOR.members.iter().copied().collect());
+		let listed = dev(&[("PANEL_DEV_SIGN_IN", "sa:work:read, sa:work:leads:edit"), ("PANEL_PUBLIC_ORIGIN", "http://localhost")])
+			.unwrap()
+			.unwrap();
+		assert_eq!(listed.permissions, ["sa:work:leads:edit", "sa:work:read"].into_iter().collect());
+		assert!(dev(&[("PANEL_DEV_SIGN_IN", "sa:admin"), ("PANEL_PUBLIC_ORIGIN", "http://localhost")]).is_ok(), "port optional");
+		let e = format!(
+			"{}",
+			dev(&[("PANEL_DEV_SIGN_IN", "sa:work:read,sa:work:nope"), ("PANEL_PUBLIC_ORIGIN", "http://localhost")]).unwrap_err()
+		);
+		assert!(e.contains("`sa:work:nope`"), "the unknown one named: {e}");
+		assert!(dev(&[("PANEL_DEV_SIGN_IN", "admin"), ("PANEL_PUBLIC_ORIGIN", "http://localhost")]).is_err(), "the roles are gone");
+		let none = dev(&[("PANEL_DEV_SIGN_IN", "none"), ("PANEL_PUBLIC_ORIGIN", "http://localhost")]).unwrap().unwrap();
+		assert_eq!((none.permissions.iter().count(), none.email.as_str()), (0, "dev-none@localhost"));
 
 		for origin in [
 			"https://sa.evinvest.ltd",
@@ -616,17 +682,15 @@ mod tests {
 			"http://u:p@127.0.0.1:59120",
 			"127.0.0.1:59120",
 		] {
-			let e = format!("{}", dev(&[("PANEL_DEV_SIGN_IN", "admin"), ("PANEL_PUBLIC_ORIGIN", origin)]).unwrap_err());
+			let e = format!("{}", dev(&[("PANEL_DEV_SIGN_IN", "sa:admin"), ("PANEL_PUBLIC_ORIGIN", origin)]).unwrap_err());
 			assert!(e.contains("PANEL_PUBLIC_ORIGIN must be http://localhost"), "{origin}: {e}");
 		}
-		let e = format!("{}", dev(&[("PANEL_DEV_SIGN_IN", "admin")]).unwrap_err());
+		let e = format!("{}", dev(&[("PANEL_DEV_SIGN_IN", "sa:admin")]).unwrap_err());
 		assert!(e.contains("needs PANEL_PUBLIC_ORIGIN"), "{e}");
-		let e = format!("{}", dev(&[("PANEL_DEV_SIGN_IN", "owner"), ("PANEL_PUBLIC_ORIGIN", "http://127.0.0.1:59120")]).unwrap_err());
-		assert!(e.contains("not one of operator, admin"), "{e}");
 		let e = format!(
 			"{}",
 			dev(&[
-				("PANEL_DEV_SIGN_IN", "admin"),
+				("PANEL_DEV_SIGN_IN", "sa:admin"),
 				("PANEL_PUBLIC_ORIGIN", "http://127.0.0.1:59120"),
 				("CONCIERGE_GRPC_ADDR", "http://localhost:55670")
 			])
@@ -648,7 +712,7 @@ mod tests {
 				("CONCIERGE_PUBLIC_ORIGIN", "https://evinvest.ltd"),
 				("CONCIERGE_GRPC_ADDR", "http://concierge:55670"),
 				("RP_CLIENT_SECRET_SA", &secret),
-				("PANEL_DEV_SIGN_IN", "admin"),
+				("PANEL_DEV_SIGN_IN", "sa:admin"),
 			])
 			.unwrap()
 			.dev_sign_in()

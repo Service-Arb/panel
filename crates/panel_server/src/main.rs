@@ -30,6 +30,7 @@ use panel_server::{
 	telegram::{self, BotApi, BotName},
 	web::{self, Files},
 };
+use sa_auth::Catalog;
 
 use crate::settings::Settings;
 
@@ -494,6 +495,42 @@ async fn serve(
 	front_end: Option<Files>,
 	bind: SocketAddr,
 ) -> eyre::Result<()> {
+	let sign_in = match sign_in {
+		Some(Identity::Concierge(s)) => {
+			tracing::info!(panel_origin = s.panel_origin, "signing in through concierge");
+			let concierge = Concierge::new(&s.concierge_grpc, &s.client_secret)?;
+			// Before serving: a user's permissions name what this catalog defines.
+			concierge
+				.publish_catalog(&Catalog::collect("sa", s.build_epoch))
+				.await
+				.wrap_err_with(|| format!("publishing the sa catalog (version {}) to concierge", s.build_epoch))?;
+			tracing::info!(version = s.build_epoch, "sa catalog published to concierge");
+			let config = SignInConfig {
+				panel_origin: s.panel_origin,
+				concierge_origin: s.concierge_origin,
+			};
+			Some((concierge, config))
+		}
+		Some(Identity::Dev(d)) => {
+			let who = DevIdentity {
+				permissions: d.permissions,
+				email: d.email,
+			};
+			tracing::warn!(
+				permissions = ?who.permissions,
+				email = who.email,
+				user_id = %who.user_id(),
+				panel_origin = d.panel_origin,
+				"DEV SIGN-IN ON (PANEL_DEV_SIGN_IN): /auth/login signs anyone in as this user, no concierge — development only"
+			);
+			let config = SignInConfig {
+				concierge_origin: d.panel_origin.clone(),
+				panel_origin: d.panel_origin,
+			};
+			Some((Concierge::dev(who), config))
+		}
+		None => None,
+	};
 	let (stop, stopped) = tokio::sync::watch::channel(false);
 	let bus = panel.bus().clone();
 	let mut bot_work = None;
@@ -521,36 +558,7 @@ async fn serve(
 		}
 	};
 	let app = match sign_in {
-		Some(identity) => {
-			let (concierge, config) = match identity {
-				Identity::Concierge(s) => {
-					tracing::info!(panel_origin = s.panel_origin, "signing in through concierge");
-					(
-						Concierge::new(&s.concierge_grpc, &s.client_secret)?,
-						SignInConfig {
-							panel_origin: s.panel_origin,
-							concierge_origin: s.concierge_origin,
-						},
-					)
-				}
-				Identity::Dev(d) => {
-					let who = DevIdentity { role: d.role, email: d.email };
-					tracing::warn!(
-						role = who.role.as_str(),
-						email = who.email,
-						user_id = %who.user_id(),
-						panel_origin = d.panel_origin,
-						"DEV SIGN-IN ON (PANEL_DEV_SIGN_IN): /auth/login signs anyone in as this user, no concierge — development only"
-					);
-					(
-						Concierge::dev(who),
-						SignInConfig {
-							concierge_origin: d.panel_origin.clone(),
-							panel_origin: d.panel_origin,
-						},
-					)
-				}
-			};
+		Some((concierge, config)) => {
 			let bot = match telegram {
 				Some(tg) => {
 					let name = BotName::on(tg.username);

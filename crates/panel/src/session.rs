@@ -161,7 +161,7 @@ pub struct Begun {
 	pub state: String,
 	/// `BASE64URL(SHA-256(verifier))`, the `code_challenge` (S256).
 	pub challenge: String,
-	/// The sealed pre-login: state, verifier and when it was made.
+	/// The sealed pre-login: state, verifier, where to land and when it was made.
 	pub cookie: String,
 }
 
@@ -170,12 +170,15 @@ pub struct PreLogin {
 	pub state: String,
 	/// The PKCE verifier, presented with the code.
 	pub verifier: Zeroizing<String>,
+	/// The path `/auth/login` was asked to come back to, checked there.
+	pub return_to: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
 struct PreLoginPlain {
 	state: String,
 	verifier: String,
+	return_to: Option<String>,
 	issued_at: i64,
 }
 
@@ -211,8 +214,9 @@ fn token_aad(which: Which, key: &SessionKey) -> Vec<u8> {
 }
 
 impl Panel {
-	/// A fresh state and PKCE verifier, and the cookie that carries them to the callback.
-	pub fn begin_sign_in(&self, now: Timestamp) -> eyre::Result<Begun> {
+	/// A fresh state and PKCE verifier, and the cookie that carries them and `return_to` to
+	/// the callback.
+	pub fn begin_sign_in(&self, return_to: Option<&str>, now: Timestamp) -> eyre::Result<Begun> {
 		let state = random_token()?;
 		// 64 hex characters: inside PKCE's 43–128 unreserved characters.
 		let verifier = Zeroizing::new(random_token()?);
@@ -220,6 +224,7 @@ impl Panel {
 			serde_json::to_vec(&PreLoginPlain {
 				state: state.clone(),
 				verifier: verifier.to_string(),
+				return_to: return_to.map(str::to_owned),
 				issued_at: now.as_second(),
 			})
 			.wrap_err("serializing a pre-login")?,
@@ -246,7 +251,11 @@ impl Panel {
 			return None;
 		}
 		let same = pre.state.len() == state.len() && bool::from(pre.state.as_bytes().ct_eq(state.as_bytes()));
-		same.then_some(PreLogin { state: pre.state, verifier })
+		same.then_some(PreLogin {
+			state: pre.state,
+			verifier,
+			return_to: pre.return_to,
+		})
 	}
 
 	/// Opens a session for a user concierge has just issued tokens for. Sessions past their

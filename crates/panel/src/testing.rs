@@ -133,3 +133,13 @@ pub fn event(r#type: &str, occurred_at: Timestamp, kind: &str, subject: Value, p
 		"properties": properties,
 	})
 }
+
+/// What `sa:operator` holds.
+pub fn operator() -> sa_auth::PermissionSet {
+	sa_auth::SA_OPERATOR.members.iter().copied().collect()
+}
+
+/// What `sa:admin` holds.
+pub fn admin() -> sa_auth::PermissionSet {
+	sa_auth::SA_ADMIN.members.iter().copied().collect()
+}

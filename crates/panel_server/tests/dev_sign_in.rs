@@ -1,6 +1,6 @@
 //! `PANEL_DEV_SIGN_IN`: the binary refuses it at start in production and off loopback, and in
 //! development the sign-in runs end to end without concierge — a real session, the gate, the
-//! role.
+//! permissions.
 
 use std::{collections::HashMap, process::Command};
 
@@ -9,13 +9,13 @@ use axum::{
 	body::{Body, to_bytes},
 	http::{Method, Request, StatusCode, header},
 };
-use panel::testing::{TestDb, panel};
-use panel_core::role::Role;
+use panel::testing::{TestDb, admin, operator, panel};
 use panel_server::{
 	concierge::{Concierge, DEV_CODE, DevIdentity},
 	http,
 	signin::{SignIn, SignInConfig},
 };
+use sa_auth::PermissionSet;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -46,6 +46,7 @@ fn production(db: &str) -> Vec<(&'static str, String)> {
 		("CONCIERGE_PUBLIC_ORIGIN", "https://evinvest.ltd".to_owned()),
 		("CONCIERGE_GRPC_ADDR", "http://concierge:55670".to_owned()),
 		("RP_CLIENT_SECRET_SA", "s".repeat(40)),
+		("PANEL_BUILD_EPOCH", "1791100000".to_owned()),
 	]
 }
 
@@ -57,7 +58,7 @@ async fn the_binary_refuses_dev_sign_in_in_production() {
 	let (code, stderr) = panel_migrate(&vars.iter().map(|(k, v)| (*k, v.as_str())).collect::<Vec<_>>());
 	assert_eq!(code, Some(0), "the production environment alone boots: {stderr}");
 
-	vars.push(("PANEL_DEV_SIGN_IN", "admin".to_owned()));
+	vars.push(("PANEL_DEV_SIGN_IN", "sa:admin".to_owned()));
 	let (code, stderr) = panel_migrate(&vars.iter().map(|(k, v)| (*k, v.as_str())).collect::<Vec<_>>());
 	assert_eq!(code, Some(78), "EX_CONFIG: {stderr}");
 	assert!(stderr.contains("PANEL_DEV_SIGN_IN must never be set outside development"), "{stderr}");
@@ -72,7 +73,7 @@ async fn the_binary_refuses_dev_sign_in_off_loopback() {
 		panel_migrate(&[
 			("PANEL_DB_PATH", path.as_str()),
 			("PANEL_DATA_KEY", key.as_str()),
-			("PANEL_DEV_SIGN_IN", "admin"),
+			("PANEL_DEV_SIGN_IN", "sa:admin"),
 			("PANEL_PUBLIC_ORIGIN", origin),
 		])
 	};
@@ -83,6 +84,31 @@ async fn the_binary_refuses_dev_sign_in_off_loopback() {
 	}
 	let (code, stderr) = with(ORIGIN);
 	assert_eq!(code, Some(0), "development on loopback boots: {stderr}");
+}
+
+/// An alias, a list of permissions or `none`; anything else is named at boot.
+#[tokio::test]
+async fn the_binary_takes_an_alias_or_a_list_of_permissions() {
+	let db = TestDb::create().await;
+	let path = db.path().display().to_string();
+	let key = "0".repeat(64);
+	let with = |who: &str| {
+		panel_migrate(&[
+			("PANEL_DB_PATH", path.as_str()),
+			("PANEL_DATA_KEY", key.as_str()),
+			("PANEL_DEV_SIGN_IN", who),
+			("PANEL_PUBLIC_ORIGIN", ORIGIN),
+		])
+	};
+	for who in ["sa:operator", "sa:work:read, sa:work:leads:edit", "none"] {
+		let (code, stderr) = with(who);
+		assert_eq!(code, Some(0), "{who}: {stderr}");
+	}
+	for (who, named) in [("operator", "`operator`"), ("sa:work:read,sa:work:everything", "`sa:work:everything`"), ("sa:*", "`sa:*`")] {
+		let (code, stderr) = with(who);
+		assert_eq!(code, Some(78), "{who}: {stderr}");
+		assert!(stderr.contains(named), "{who}: {stderr}");
+	}
 }
 
 // ── the sign-in, in process ──────────────────────────────────────────────────────────────
@@ -131,10 +157,10 @@ impl Browser {
 	}
 }
 
-async fn dev_app(db: &TestDb, role: Role) -> Router {
+async fn dev_app(db: &TestDb, permissions: PermissionSet, email: &str) -> Router {
 	let who = DevIdentity {
-		role,
-		email: format!("dev-{}@localhost", role.as_str()),
+		permissions,
+		email: email.to_owned(),
 	};
 	let config = SignInConfig {
 		panel_origin: ORIGIN.to_owned(),
@@ -144,9 +170,9 @@ async fn dev_app(db: &TestDb, role: Role) -> Router {
 }
 
 #[tokio::test]
-async fn dev_sign_in_opens_a_real_session_with_the_role() {
+async fn dev_sign_in_opens_a_real_session_with_its_permissions() {
 	let db = TestDb::create().await;
-	let app = dev_app(&db, Role::Admin).await;
+	let app = dev_app(&db, admin(), "dev-admin@localhost").await;
 	let mut b = Browser::default();
 
 	assert_eq!(b.send(&app, Method::GET, "/api/v1/me").await.0, StatusCode::UNAUTHORIZED, "no session yet");
@@ -156,9 +182,9 @@ async fn dev_sign_in_opens_a_real_session_with_the_role() {
 
 	let (status, _, me) = b.send(&app, Method::GET, "/api/v1/me").await;
 	assert_eq!(status, StatusCode::OK, "{me}");
-	assert_eq!(me["role"], "admin");
+	assert_eq!(serde_json::from_value::<PermissionSet>(me["permissions"].clone()).unwrap(), admin());
 	assert_eq!(me["email"], "dev-admin@localhost");
-	assert_eq!(me["preferred_name"], "Dev sign-in (admin)", "the UI shows that this is dev sign-in");
+	assert_eq!(me["preferred_name"], "Dev sign-in (dev-admin@localhost)", "the UI shows that this is dev sign-in");
 	assert_eq!(me["dev_sign_in"], true);
 	assert_eq!(b.send(&app, Method::GET, "/api/v1/sources").await.0, StatusCode::OK, "an admin's screen");
 
@@ -167,20 +193,28 @@ async fn dev_sign_in_opens_a_real_session_with_the_role() {
 }
 
 #[tokio::test]
-async fn dev_sign_in_as_an_operator_is_an_operator() {
+async fn dev_sign_in_holds_what_it_was_given() {
 	let db = TestDb::create().await;
-	let app = dev_app(&db, Role::Operator).await;
+	let app = dev_app(&db, operator(), "dev-operator@localhost").await;
 	let mut b = Browser::default();
 	b.sign_in(&app).await;
 	let (status, _, me) = b.send(&app, Method::GET, "/api/v1/me").await;
-	assert_eq!((status, me["role"].as_str()), (StatusCode::OK, Some("operator")), "{me}");
+	assert_eq!(status, StatusCode::OK, "{me}");
+	assert_eq!(serde_json::from_value::<PermissionSet>(me["permissions"].clone()).unwrap(), operator());
 	assert_eq!(b.send(&app, Method::GET, "/api/v1/sources").await.0, StatusCode::FORBIDDEN, "not an operator's screen");
+
+	let db = TestDb::create().await;
+	let app = dev_app(&db, ["sa:work:read"].into_iter().collect(), "dev-reader@localhost").await;
+	let mut b = Browser::default();
+	b.sign_in(&app).await;
+	assert_eq!(b.send(&app, Method::GET, "/api/v1/leads").await.0, StatusCode::OK, "work");
+	assert_eq!(b.send(&app, Method::GET, "/api/v1/experiments").await.0, StatusCode::FORBIDDEN, "no analysis");
 }
 
 #[tokio::test]
 async fn dev_sign_in_still_checks_the_callback() {
 	let db = TestDb::create().await;
-	let app = dev_app(&db, Role::Admin).await;
+	let app = dev_app(&db, admin(), "dev-admin@localhost").await;
 
 	// A callback nobody started: no pre-login cookie, so no code is exchanged.
 	let mut stranger = Browser::default();

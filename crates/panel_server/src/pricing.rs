@@ -23,12 +23,11 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use axum::{
-	Extension, Json, Router,
+	Extension, Json,
 	body::Bytes,
 	extract::{Path, State, rejection::JsonRejection},
-	http::StatusCode,
+	http::{Method, StatusCode},
 	response::{IntoResponse, Response},
-	routing::{get, post, put},
 };
 use jiff::Timestamp;
 use panel::{
@@ -36,27 +35,34 @@ use panel::{
 	place::Expected,
 	pricing::{PricingError, PricingView},
 };
-use panel_core::{ids::BrandId, pricing::Problem, role::Permission};
+use panel_core::{ids::BrandId, pricing::Problem};
+use sa_auth::Pricing;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{api::ApiError, places::editor, signin::Caller};
+use crate::{
+	api::ApiError,
+	http::{ApiRoute, Section},
+	places::editor,
+	signin::{Caller, Freshness},
+};
 
 /// How long the sites' read may take before they are answered `{}`: kitstart gives up at 3 s.
 const LIVE_WITHIN: Duration = Duration::from_millis(2500);
 
-/// The editor's reads and the preview: behind the gate, every role.
-pub fn reads() -> Router<Panel> {
-	Router::new()
-		.route("/pricing", get(list))
-		.route("/pricing/{brand}", get(item))
-		.route("/pricing/{brand}/changes", get(changes))
-		.route("/pricing/{brand}/preview", post(preview))
-}
-
-/// The editor's writes, an admin's: served behind `gate_fresh`, as a place's are.
-pub fn writes() -> Router<Panel> {
-	Router::new().route("/pricing/{brand}", put(set).delete(remove))
+/// The editor's routes; a write asks concierge afresh, as a place's does.
+pub(crate) fn routes() -> Vec<ApiRoute> {
+	use Freshness::{Cached, Fresh};
+	use Method as M;
+	let work = Some(Section::Work);
+	vec![
+		ApiRoute::new(M::GET, "/pricing", work, Cached, list),
+		ApiRoute::new(M::GET, "/pricing/{brand}", work, Cached, item),
+		ApiRoute::new(M::GET, "/pricing/{brand}/changes", work, Cached, changes),
+		ApiRoute::new(M::POST, "/pricing/{brand}/preview", work, Cached, preview),
+		ApiRoute::new(M::PUT, "/pricing/{brand}", work, Fresh, set),
+		ApiRoute::new(M::DELETE, "/pricing/{brand}", work, Fresh, remove),
+	]
 }
 
 /// Why a request about pricing failed, in the contract's shapes.
@@ -120,7 +126,7 @@ fn item_json(v: &PricingView) -> Value {
 }
 
 fn admin(caller: &Caller) -> Result<(), ApiError> {
-	if caller.role.may(Permission::EditsPricing) { Ok(()) } else { Err(ApiError::Forbidden) }
+	if caller.permissions.may(Pricing::Edit) { Ok(()) } else { Err(ApiError::Forbidden) }
 }
 
 fn json_body<T: serde::de::DeserializeOwned>(b: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {

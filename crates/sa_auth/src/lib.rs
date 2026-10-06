@@ -8,8 +8,8 @@ use base64::{
 	Engine,
 	engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-pub use concierge_iam::{Permission, PermissionSet};
 use concierge_iam::alias;
+pub use concierge_iam::{Catalog, Permission, PermissionSet};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -185,7 +185,11 @@ impl Signer {
 			assertion.permissions.iter().all(|p| p.starts_with(assertion.aud.prefix())),
 			"the panel slices the permissions before signing"
 		);
-		let header = serde_json::to_vec(&Header { alg: "EdDSA".into(), kid: self.kid.clone() }).expect("a struct of strings serializes");
+		let header = serde_json::to_vec(&Header {
+			alg: "EdDSA".into(),
+			kid: self.kid.clone(),
+		})
+		.expect("a struct of strings serializes");
 		let claims = serde_json::to_vec(assertion).expect("an assertion serializes");
 		let signed = format!("{}.{}", URL_SAFE_NO_PAD.encode(header), URL_SAFE_NO_PAD.encode(claims));
 		let signature = self.key.sign(signed.as_bytes());
@@ -198,7 +202,10 @@ impl FromStr for Signer {
 
 	fn from_str(s: &str) -> Result<Self, String> {
 		let (kid, seed) = split_key(s)?;
-		Ok(Self { kid, key: SigningKey::from_bytes(&seed) })
+		Ok(Self {
+			kid,
+			key: SigningKey::from_bytes(&seed),
+		})
 	}
 }
 
@@ -310,10 +317,7 @@ mod tests {
 		assert_eq!(verify(&keys, &impostor, Service::ReviewArchive, "POST", "/targets", now), Err(Refused::Signature));
 		let mut forever = assertion(now);
 		forever.exp = now + 3600;
-		assert_eq!(
-			verify(&keys, &panel.sign(&forever), Service::ReviewArchive, "POST", "/targets", now),
-			Err(Refused::Expiry)
-		);
+		assert_eq!(verify(&keys, &panel.sign(&forever), Service::ReviewArchive, "POST", "/targets", now), Err(Refused::Expiry));
 	}
 
 	#[test]
