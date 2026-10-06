@@ -1,16 +1,13 @@
 "use client";
 
-import { Button, type NavGroup, ShellNav } from "@evinvest/uikit";
+import { type NavGroup, ShellNav } from "@evinvest/uikit";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
-import { DevSignInBadge, useMe } from "@/entities/session";
-import { useSignOut } from "@/features/sign-out";
-import { switchAccountPath } from "@/shared/api";
+import { DevSignInBadge } from "@/entities/session";
 import { useT } from "@/shared/i18n";
-import { LiveStatusIndicator } from "@/shared/ui/live-status";
 
-/** The desktop rail: the app's name (and the dev sign-in warning), the groups, then who is signed in. */
+/** The desktop rail: the app's name (and the dev sign-in warning), then the groups; who is signed in is the top bar's. */
 export function PanelRail({ groups }: { groups: NavGroup[] }) {
   const t = useT();
   const router = useRouter();
@@ -28,30 +25,7 @@ export function PanelRail({ groups }: { groups: NavGroup[] }) {
           <DevSignInBadge />
         </div>
       }
-      footer={<AccountBlock />}
       labels={{ primary: t("nav.primary"), badge: (n) => t("nav.badge", { n }) }}
     />
-  );
-}
-
-function AccountBlock() {
-  const t = useT();
-  const me = useMe();
-  const signOut = useSignOut();
-  const pathname = usePathname();
-  return (
-    <div className="flex flex-col gap-1 border-t border-border px-3 pt-4">
-      <LiveStatusIndicator className="mb-2" />
-      <a
-        className="truncate text-sm text-ink hover:underline"
-        title={`${me.email} — ${t("nav.switchAccount")}`}
-        href={switchAccountPath(pathname)}
-      >
-        {me.preferred_name || me.email}
-      </a>
-      <Button variant="ghost" size="sm" className="mt-2 self-start px-0" onClick={signOut}>
-        {t("nav.signOut")}
-      </Button>
-    </div>
   );
 }
