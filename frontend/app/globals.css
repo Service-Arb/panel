@@ -1,3 +1,5 @@
+/* Declared first, so lowest: a remote's stylesheet is moved into it (shared/mfe) and never beats the panel's. */
+@layer mfe;
 @import "tailwindcss";
 /* The kit's Sheet, Dialog and Popover enter and leave with tw-animate's classes. */
 @import "tw-animate-css";
