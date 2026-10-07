@@ -656,7 +656,7 @@
   "placeSettings.telegram.invalid": "5–32 символа: латиница, цифры и _, первой — буква, в конце — bot; сервер может не принять.",
   "placeSettings.messengers.whatsapp": "WhatsApp в форме заявки",
   "placeSettings.messengers.telegram": "Telegram в форме заявки",
-  "placeSettings.messengers.hint": "Выключено — сайт прячет кнопку, какой бы номер или бот у него ни был.",
+  "placeSettings.messengers.hint": "Выключено — мессенджер убирается только из формы заявки: форма возвращается к телефону. Остальные кнопки WhatsApp на сайте остаются.",
   "placeSettings.messengers.off": "Выключено: {names}",
   "placeSettings.messengers.allOn": "Все включены",
   "placeSettings.preview.telegram": "Telegram",

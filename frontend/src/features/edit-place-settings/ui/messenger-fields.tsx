@@ -42,7 +42,7 @@ export function TelegramField({ value, onChange, errors }: { value: string; onCh
   );
 }
 
-/** The landing's messenger buttons, each switchable off from here whatever number or bot the site has. */
+/** Kill switches for the lead form's messenger options: off, the form falls back to the phone; other buttons on the site stay. */
 export function MessengerSwitches({ value, onChange, errors }: { value: Record<MessengerSwitch, boolean>; onChange: (v: Record<MessengerSwitch, boolean>) => void; errors: Errors }) {
   const t = useT();
   const id = useId();

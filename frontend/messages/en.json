@@ -656,7 +656,7 @@
   "placeSettings.telegram.invalid": "5–32 characters: Latin letters, digits and _, starting with a letter and ending in bot; the server may refuse it.",
   "placeSettings.messengers.whatsapp": "WhatsApp in the lead form",
   "placeSettings.messengers.telegram": "Telegram in the lead form",
-  "placeSettings.messengers.hint": "Off hides the button on the site, whatever number or bot it has.",
+  "placeSettings.messengers.hint": "Off takes it out of the lead form: the form falls back to the phone. Other WhatsApp buttons on the site stay.",
   "placeSettings.messengers.off": "{names} off",
   "placeSettings.messengers.allOn": "All on",
   "placeSettings.preview.telegram": "Telegram",

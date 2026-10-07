@@ -31,8 +31,8 @@ export function messengerOn(fields: Pick<EditedFields, "messengers">, messenger:
  * closed → the callback form and WhatsApp first, as nobody answers the phone.
  * Only what the panel knows is named; a channel the site supplies itself is
  * listed as the site's own, never filled in. A messenger switched off is left
- * out, whatever number or bot the site has; Telegram is listed only with a bot
- * named here.
+ * out: the lead form stops offering it (other buttons on the site stay).
+ * Telegram is listed only with a bot named here.
  */
 export function channelPreview(fields: EditedFields, at: LocalTime): ChannelPlan {
   const state = fields.hours && fields.hours.length > 0 ? (isOpenAt(fields.hours, at) ? "open" : "closed") : "unknown";
