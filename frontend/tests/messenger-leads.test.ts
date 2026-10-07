@@ -1,14 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import en from "../messages/en.json";
 import ru from "../messages/ru.json";
 
-import { CHANNELS, awaitingMessage, leadParser } from "@/entities/lead/model/lead";
+import { markMessaged } from "@/entities/lead/api/leads";
+import { CHANNELS, MESSENGERS, awaitingMessage, leadParser } from "@/entities/lead/model/lead";
+import { MESSENGER_SWITCHES } from "@/entities/place/model/settings";
 import { sourceKindLabel } from "@/entities/source/lib/kind";
 import { sourceParser } from "@/entities/source/model/source";
 import { leadFilterFrom, messageRefOf, narrows, paramsWith } from "@/features/lead-filters/model/params";
 import { translator } from "@/shared/i18n/translate";
-import { parse } from "@/shared/lib/parse";
+import { oneOfOr, parse } from "@/shared/lib/parse";
 
 const row = { brand: "aquafix", lead_id: "l1", stage: "created", manual: false, last_event_at: "2026-10-07T10:00:00Z" };
 
@@ -18,12 +20,18 @@ describe("a messenger lead from the API", () => {
     expect(lead).toMatchObject({ channel: "whatsapp", message_ref: "AQ-7K3F", messaged_at: "2026-10-07T10:05:00Z", messaged_channel: "telegram" });
   });
 
-  it("refuses a channel the contract does not name, saying which field", () => {
-    expect(() => parse(leadParser, { ...row, channel: "sms" })).toThrow(/^\$\.channel: /);
+  it("reads a channel newer than this build as other, not as a failed page", () => {
+    expect(parse(leadParser, { ...row, channel: "sms" }).channel).toBe("other");
   });
 
-  it("refuses a messaged channel that is not a messenger, saying which field", () => {
-    expect(() => parse(leadParser, { ...row, channel: "whatsapp", messaged_at: "2026-10-07T10:05:00Z", messaged_channel: "phone" })).toThrow(/^\$\.messaged_channel: /);
+  it("refuses a channel that is not a string, saying which field", () => {
+    expect(() => parse(leadParser, { ...row, channel: 42 })).toThrow(/^\$\.channel: /);
+  });
+
+  it("reads a messenger newer than this build as none, keeping when the customer wrote", () => {
+    const lead = parse(leadParser, { ...row, channel: "whatsapp", messaged_at: "2026-10-07T10:05:00Z", messaged_channel: "phone" });
+    expect(lead).toMatchObject({ messaged_at: "2026-10-07T10:05:00Z", messaged_channel: null });
+    expect(awaitingMessage(lead)).toBeNull();
   });
 
   it("reads a lead from before messengers, the fields absent, as none of them", () => {
@@ -41,9 +49,50 @@ describe("the messenger a lead waits on", () => {
     expect(awaitingMessage({ channel: "telegram", messaged_at: "2026-10-07T10:05:00Z" })).toBeNull();
   });
 
-  it("is none for a form lead or a lead without a channel", () => {
+  it("is none for a form lead, a lead without a channel, or a channel newer than this build", () => {
     expect(awaitingMessage({ channel: "form", messaged_at: null })).toBeNull();
     expect(awaitingMessage({ channel: null, messaged_at: null })).toBeNull();
+    expect(awaitingMessage({ channel: "other", messaged_at: null })).toBeNull();
+  });
+});
+
+describe("a word from a list the backend may grow", () => {
+  const parser = oneOfOr(["whatsapp", "telegram"], "other");
+
+  it("is itself when the list names it", () => {
+    expect(parse(parser, "telegram")).toBe("telegram");
+  });
+
+  it("is the fallback for any other string", () => {
+    expect(parse(parser, "signal")).toBe("other");
+    expect(parse(oneOfOr(["whatsapp"], null), "")).toBeNull();
+  });
+
+  it("refuses what is not a string, saying where", () => {
+    expect(() => parse(parser, 42)).toThrow(/^\$: expected a string/);
+    expect(() => parse(parser, null)).toThrow(/^\$: expected a string/);
+  });
+});
+
+describe("the landing's messenger switches", () => {
+  it("are the lead's messengers, so a new one generated from panel_core gets a switch", () => {
+    expect(MESSENGER_SWITCHES).toBe(MESSENGERS);
+  });
+});
+
+describe("marking a lead as messaged", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the messenger under the caller's Idempotency-Key", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ event_id: "e1" }), { status: 201 });
+    });
+    await markMessaged({ brand: "aquafix", lead: "l1" }, "whatsapp", "key-1");
+    expect(calls.map((c) => [c.init.method, c.url])).toEqual([["POST", "/api/v1/leads/aquafix/l1/messaged"]]);
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ channel: "whatsapp" });
+    expect(new Headers(calls[0]?.init.headers).get("Idempotency-Key")).toBe("key-1");
   });
 });
 
