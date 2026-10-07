@@ -359,7 +359,8 @@ struct LeadsQuery {
 	booking: Option<String>,
 	/// A lead channel (`form`, `whatsapp`, …); absent lists every lead.
 	channel: Option<String>,
-	/// A messenger ref as the customer quotes it (`AQ-7K3F`, any case): the leads carrying it.
+	/// A messenger ref as the customer quotes it or an operator pastes it (`Réf. aq 7k3f`; see
+	/// `MessageRef::from_typed`): the leads carrying it.
 	message_ref: Option<String>,
 	cursor: Option<String>,
 	limit: Option<u32>,
@@ -414,7 +415,7 @@ async fn leads(State(panel): State<Panel>, Extension(caller): Extension<Caller>,
 		message_ref: q
 			.message_ref
 			.as_deref()
-			.map(|r| MessageRef::parse(&r.trim().to_ascii_uppercase()).map_err(|_| ApiError::BadRequest("message_ref is not like AQ-7K3F".into())))
+			.map(|r| MessageRef::from_typed(r).map_err(|_| ApiError::BadRequest("message_ref is not like AQ-7K3F".into())))
 			.transpose()?,
 		after: q.cursor.as_deref().map(cursor_decode).transpose()?,
 		limit: q.limit.unwrap_or(50),

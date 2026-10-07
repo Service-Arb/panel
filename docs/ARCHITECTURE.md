@@ -266,7 +266,9 @@ GET    /leads?stage&brand&location&overdue&suspect&flow&channel&message_ref&crea
                                                   every lead; a lead that said no flow is under
                                                   none of the three); channel=form | phone_inbound
                                                   | callback | whatsapp | telegram; message_ref=
-                                                  a ref in any case (AQ-7k3f), the leads carrying it
+                                                  a ref as pasted (Réf. aq 7k3f: label, case,
+                                                  spaces; O→0, I/L→1 in the code), the leads
+                                                  carrying it
 GET    /leads/counts?brand&location               {stages: {created: n, …, lost: n} (every
                                                   stage, 0 included), overdue, total}
 POST   /leads                                     {brand, location, need, phone?, channel?} → 201
@@ -499,7 +501,7 @@ elsewhere tells the lead it left and the one it joined.
 A landing bakes its places into its build and lays over each, field by field, what the
 panel answers for it (kitstart's `createPlaceSource`, `PlaceLive`): `phone`, `whatsapp`
 (E.164), `telegram` (the place's bot, its username without the `@`:
-`^[A-Za-z][A-Za-z0-9_]{3,31}$`), `messengers` (`{whatsapp?: bool, telegram?: bool}`, the
+`^[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]$`, 5–32 characters ending in bot), `messengers` (`{whatsapp?: bool, telegram?: bool}`, the
 landing's messenger buttons switched off; absent is on, another key refused as
 `messengers.<key>`), `hours` (`[{days, opens, closes}]`), `serviceArea` (commune names), and for
 storefronts `address`, `geo`, `storefrontPhoto` (https), `landmark` (a text per locale),

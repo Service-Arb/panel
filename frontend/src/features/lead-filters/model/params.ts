@@ -69,12 +69,26 @@ export function channelFilterOf(v: string | null): LeadFilter["channel"] {
 /** `panel_core::fact::MessageRef`: 2–4 letters, a dash, 4–8 of Crockford base32. */
 const MESSAGE_REF = /^[A-Z]{2,4}-[0-9A-HJKMNP-TV-Z]{4,8}$/;
 
+/** A label pasted with the ref ("Réf. ", "ref ", "Ref: "): the prefilled WhatsApp line ends "Réf. AQ-7K3F". */
+const REF_LABEL = /^R[EÉ]F(?:[EÉ]RENCE)?(?:[.:#]\s*|\s+)/;
+
+/** The prefix and the code, apart: a dash, spaces, or both between them. */
+const REF_PARTS = /^([A-Z]{2,4})[\s-]*([0-9A-Z]{4,8})$/;
+
 /**
- * A ref as an operator types it ("aq-7k3f ", copied from a message) in the form
- * the API matches; null when it cannot be one, which the API would answer 400.
+ * A ref as an operator types or pastes it ("aq-7k3f ", "Réf. AQ-7K3F",
+ * "ref aq 7k3f", "AQ 7K3F") in the form the API matches, `AQ-7K3F`. In the
+ * code Crockford's look-alikes are read as it reads them: O is 0, I and L
+ * are 1. Null when it cannot be one, which the API would answer 400. The
+ * server normalises the same way (`MessageRef::from_typed`).
  */
 export function messageRefOf(raw: string | null): string | null {
-  const ref = raw?.trim().toUpperCase() ?? "";
+  const text = (raw ?? "").trim().toUpperCase().replace(REF_LABEL, "").trim();
+  const parts = REF_PARTS.exec(text);
+  const prefix = parts?.[1];
+  const code = parts?.[2];
+  if (prefix === undefined || code === undefined) return null;
+  const ref = `${prefix}-${code.replace(/O/g, "0").replace(/[IL]/g, "1")}`;
   return MESSAGE_REF.test(ref) ? ref : null;
 }
 

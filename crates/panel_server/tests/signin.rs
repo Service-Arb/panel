@@ -643,7 +643,9 @@ async fn messenger_leads_over_the_operator_api() {
 	let row = &r.body["leads"][0];
 	assert_eq!((&row["channel"], &row["message_ref"], &row["messaged_at"]), (&json!("telegram"), &json!("AQ-7K3F"), &Value::Null));
 	assert_eq!(b.get(&app, "/api/v1/leads?channel=pigeon").await.status, StatusCode::BAD_REQUEST);
-	assert_eq!(b.get(&app, "/api/v1/leads?message_ref=AQ7K3F").await.status, StatusCode::BAD_REQUEST);
+	let pasted = b.get(&app, "/api/v1/leads?message_ref=R%C3%A9f.%20aq%207k3f").await;
+	assert_eq!(ids(&pasted.body), ["L-1"], "pasted with its label: {}", pasted.body);
+	assert_eq!(b.get(&app, "/api/v1/leads?message_ref=AQ-7K3U").await.status, StatusCode::BAD_REQUEST);
 
 	let wrote = b.post(&app, "/api/v1/leads/aquafix/L-1/messaged", json!({"channel": "telegram"})).await;
 	assert_eq!(wrote.status, StatusCode::CREATED, "{}", wrote.body);

@@ -139,6 +139,36 @@ impl MessageRef {
 		}
 	}
 
+	/// A ref as a person types or pastes it — `Réf. AQ-7K3F`, `ref aq 7k3f`, `AQ 7K3F` — in the
+	/// form the landing made it: the label dropped, upper case, a dash between the prefix and the
+	/// code, and in the code Crockford's look-alikes read as Crockford reads them (O is 0, I and
+	/// L are 1). The panel's front end normalises the same way (`messageRefOf`).
+	pub fn from_typed(raw: &str) -> Result<Self, Invalid> {
+		let upper = raw.trim().to_uppercase();
+		let text = ["RÉFÉRENCE", "REFERENCE", "RÉF", "REF"]
+			.iter()
+			.find_map(|label| {
+				let rest = upper.strip_prefix(label)?;
+				let after = rest.strip_prefix(['.', ':', '#']).unwrap_or(rest);
+				// A label is followed by punctuation or a space, else it is the ref's own prefix.
+				(after.len() < rest.len() || rest.starts_with(char::is_whitespace)).then_some(after)
+			})
+			.unwrap_or(&upper)
+			.trim();
+		let prefix_len = text.bytes().take_while(u8::is_ascii_uppercase).count().min(4);
+		let (prefix, code) = text.split_at(prefix_len);
+		let code: String = code
+			.trim_start_matches(|c: char| c == '-' || c.is_whitespace())
+			.chars()
+			.map(|c| match c {
+				'O' => '0',
+				'I' | 'L' => '1',
+				c => c,
+			})
+			.collect();
+		Self::parse(&format!("{prefix}-{code}"))
+	}
+
 	pub fn as_str(&self) -> &str {
 		&self.0
 	}
@@ -744,6 +774,22 @@ mod tests {
 			"", "AQ7K3F", "A-7K3F", "ABCDE-7K3F", "aq-7K3F", "AQ-7k3f", "AQ-7K3", "AQ-7K3F7K3F7", "AQ-7K3I", "AQ-LOUX", "AQ-7K3F-1", "AQ_7K3F",
 		] {
 			assert!(MessageRef::parse(bad).is_err(), "{bad:?}");
+		}
+		for (typed, want) in [
+			("Réf. AQ-7K3F", "AQ-7K3F"),
+			("ref aq 7k3f", "AQ-7K3F"),
+			("AQ 7K3F", "AQ-7K3F"),
+			("Ref: AQ7K3F", "AQ-7K3F"),
+			(" aq-7k3f ", "AQ-7K3F"),
+			("AQ-7K3I", "AQ-7K31"),
+			("aq-o1il", "AQ-0111"),
+			("OQ-7K3F", "OQ-7K3F"),
+			("REFX-7K3F", "REFX-7K3F"),
+		] {
+			assert_eq!(MessageRef::from_typed(typed).map(|r| r.0), Ok(want.to_owned()), "{typed:?}");
+		}
+		for bad in ["AQ-7K3U", "A-7K3F", "Réf.", "", "AQ-7K3", "ABCDE-7K3F"] {
+			assert!(MessageRef::from_typed(bad).is_err(), "{bad:?}");
 		}
 	}
 

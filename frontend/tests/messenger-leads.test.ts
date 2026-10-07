@@ -52,9 +52,20 @@ describe("the message ref an operator types", () => {
     expect(messageRefOf(" aq-7k3f ")).toBe("AQ-7K3F");
   });
 
-  it("is none for a letter outside Crockford base32, a one-letter prefix, or nothing", () => {
-    expect(messageRefOf("AQ-7K3I")).toBeNull();
+  it("is found in what is pasted with it: the label, spaces instead of the dash", () => {
+    expect(["Réf. AQ-7K3F", "ref aq 7k3f", "AQ 7K3F", "Ref: AQ7K3F", "  réf.AQ-7K3F "].map(messageRefOf)).toEqual(["AQ-7K3F", "AQ-7K3F", "AQ-7K3F", "AQ-7K3F", "AQ-7K3F"]);
+  });
+
+  it("reads Crockford's look-alikes in the code as Crockford does, not in the prefix", () => {
+    expect(["AQ-7K3I", "AQ-7K3L", "AQ-7KO3", "aq-o1il"].map(messageRefOf)).toEqual(["AQ-7K31", "AQ-7K31", "AQ-7K03", "AQ-0111"]);
+    expect(messageRefOf("OQ-7K3F")).toBe("OQ-7K3F");
+  });
+
+  it("is none for a U, a one-letter prefix, a code too short, or nothing", () => {
+    expect(messageRefOf("AQ-7K3U")).toBeNull();
     expect(messageRefOf("A-7K3F")).toBeNull();
+    expect(messageRefOf("AQ-7K3")).toBeNull();
+    expect(messageRefOf("Réf.")).toBeNull();
     expect(messageRefOf("")).toBeNull();
     expect(messageRefOf(null)).toBeNull();
   });
