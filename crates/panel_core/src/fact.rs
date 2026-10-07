@@ -54,24 +54,99 @@ pub enum LeadChannel {
 	PhoneInbound,
 	/// The landing's "call me back" request: the customer left a number to be called on.
 	Callback,
+	/// The customer chose to write on WhatsApp (MESSENGER-CHANNELS-SPEC §1): the landing's
+	/// prefilled message, or a conversation a bot or an operator saw start there.
+	Whatsapp,
+	/// The customer chose the brand's Telegram bot (`t.me/<bot>?start=<ref>`).
+	Telegram,
 }
 
 impl LeadChannel {
+	pub const ALL: [Self; 5] = [Self::Form, Self::PhoneInbound, Self::Callback, Self::Whatsapp, Self::Telegram];
+	/// The channels an operator takes a lead in by hand: a call, or a conversation a customer
+	/// started on a messenger without the landing. A form and a callback are the landing's.
+	pub const MANUAL: [Self; 3] = [Self::PhoneInbound, Self::Whatsapp, Self::Telegram];
+
 	pub fn as_str(self) -> &'static str {
 		match self {
 			Self::Form => "form",
 			Self::PhoneInbound => "phone_inbound",
 			Self::Callback => "callback",
+			Self::Whatsapp => "whatsapp",
+			Self::Telegram => "telegram",
 		}
 	}
 
 	pub fn parse(raw: &str) -> Result<Self, Invalid> {
-		match raw {
-			"form" => Ok(Self::Form),
-			"phone_inbound" => Ok(Self::PhoneInbound),
-			"callback" => Ok(Self::Callback),
-			_ => Err(Invalid::new("properties.channel is not one of form, phone_inbound, callback")),
+		Self::ALL
+			.into_iter()
+			.find(|c| c.as_str() == raw)
+			.ok_or_else(|| Invalid::new("properties.channel is not one of form, phone_inbound, callback, whatsapp, telegram"))
+	}
+
+	/// The messenger it came through, for the two that are one.
+	pub fn messenger(self) -> Option<Messenger> {
+		match self {
+			Self::Whatsapp => Some(Messenger::Whatsapp),
+			Self::Telegram => Some(Messenger::Telegram),
+			Self::Form | Self::PhoneInbound | Self::Callback => None,
 		}
+	}
+}
+
+/// A messenger the customer writes the brand on.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Messenger {
+	Whatsapp,
+	Telegram,
+}
+
+impl Messenger {
+	pub const ALL: [Self; 2] = [Self::Whatsapp, Self::Telegram];
+
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Whatsapp => "whatsapp",
+			Self::Telegram => "telegram",
+		}
+	}
+
+	pub fn parse(raw: &str) -> Result<Self, Invalid> {
+		Self::ALL
+			.into_iter()
+			.find(|m| m.as_str() == raw)
+			.ok_or_else(|| Invalid::new("properties.channel is not one of whatsapp, telegram"))
+	}
+}
+
+/// The reference a customer carries into a messenger (MESSENGER-CHANNELS-SPEC §1):
+/// `<PREFIX>-<code>`, a brand's 2–4 capital letters and 4–8 of Crockford's base32 without
+/// I, L, O, U (`AQ-7K3F`). Made by the landing's form, so not unique: a brand's newest lead
+/// carrying it is the one it names. Not PII.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct MessageRef(String);
+
+impl MessageRef {
+	pub fn parse(raw: &str) -> Result<Self, Invalid> {
+		let crockford = |b: u8| b.is_ascii_digit() || (b.is_ascii_uppercase() && !matches!(b, b'I' | b'L' | b'O' | b'U'));
+		let ok = raw
+			.split_once('-')
+			.is_some_and(|(prefix, code)| (2..=4).contains(&prefix.len()) && prefix.bytes().all(|b| b.is_ascii_uppercase()) && (4..=8).contains(&code.len()) && code.bytes().all(crockford));
+		if ok {
+			Ok(Self(raw.to_owned()))
+		} else {
+			Err(Invalid::new("properties.message_ref is not like \"AQ-7K3F\": 2–4 of A-Z, a dash, 4–8 of Crockford base32"))
+		}
+	}
+
+	pub fn as_str(&self) -> &str {
+		&self.0
+	}
+}
+
+impl fmt::Display for MessageRef {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.write_str(&self.0)
 	}
 }
 
@@ -312,6 +387,14 @@ pub enum Fact {
 		offer: LeadOffer,
 		/// The landing's analytics `distinct_id` when the form was sent ([`AnalyticsId`]).
 		analytics_id: Option<AnalyticsId>,
+		/// The reference the customer carries into a messenger ([`MessageRef`]).
+		message_ref: Option<MessageRef>,
+	},
+	/// The customer actually wrote the brand on a messenger (`lead.messaged`). Its subject
+	/// names the lead, or the ref does and the panel finds the lead as it journals the event.
+	LeadMessaged {
+		channel: Messenger,
+		message_ref: Option<MessageRef>,
 	},
 	LeadContacted {
 		channel: Option<ContactChannel>,
@@ -486,6 +569,8 @@ impl Fact {
 		/// What a type needs of its subject.
 		enum Needs {
 			Lead,
+			/// A lead, or a ref the panel finds it by.
+			LeadOrRef,
 			LeadAndJob,
 			NoLeadNoJob,
 			BrandOnly,
@@ -515,6 +600,8 @@ impl Fact {
 			| Self::BookingStatusChanged(_)
 			| Self::BookingCleared
 			| Self::BookingAttached { .. } => Needs::Lead,
+			Self::LeadMessaged { message_ref, .. } if message_ref.is_some() => Needs::LeadOrRef,
+			Self::LeadMessaged { .. } => Needs::Lead,
 			Self::BookingCreated { .. } | Self::BookingCanceled { .. } => Needs::Anything,
 			Self::RetiredCount => Needs::NoLeadNoJob,
 			Self::ExperimentsDeclared(_) | Self::ExperimentConfigured { .. } => Needs::BrandOnly,
@@ -523,9 +610,11 @@ impl Fact {
 			Needs::NoLeadNoJob if subject.lead_id.is_some() || subject.job_id.is_some() => Err(Invalid::new("a count names no lead and no job")),
 			Needs::BrandOnly if subject.location_id.is_some() || subject.lead_id.is_some() || subject.job_id.is_some() =>
 				Err(Invalid::new("an experiment is the brand's: subject names no location, lead or job")),
+			Needs::Lead if matches!(self, Self::LeadMessaged { .. }) && subject.lead_id.is_none() =>
+				Err(Invalid::new("subject.lead_id or properties.message_ref is required for lead.messaged")),
 			Needs::Lead | Needs::LeadAndJob if subject.lead_id.is_none() => Err(Invalid::new("subject.lead_id is required for this type")),
 			Needs::LeadAndJob if subject.job_id.is_none() => Err(Invalid::new("subject.job_id is required for this type")),
-			Needs::Lead | Needs::LeadAndJob | Needs::NoLeadNoJob | Needs::BrandOnly | Needs::Anything => Ok(()),
+			Needs::Lead | Needs::LeadOrRef | Needs::LeadAndJob | Needs::NoLeadNoJob | Needs::BrandOnly | Needs::Anything => Ok(()),
 		}
 	}
 }
@@ -644,6 +733,48 @@ mod tests {
 		assert!(created(None).check_subject(&subject).is_err());
 		assert!(created(Some(BookingMatch::Manual)).check_subject(&subject).is_err());
 		assert!(Fact::BookingCleared.check_subject(&subject).is_ok());
+	}
+
+	#[test]
+	fn message_refs() {
+		for good in ["AQ-7K3F", "VF-0000", "ABCD-7K3F9ZZZ", "AQ-ABCDEFGH"] {
+			assert_eq!(MessageRef::parse(good).unwrap().as_str(), good);
+		}
+		for bad in [
+			"", "AQ7K3F", "A-7K3F", "ABCDE-7K3F", "aq-7K3F", "AQ-7k3f", "AQ-7K3", "AQ-7K3F7K3F7", "AQ-7K3I", "AQ-LOUX", "AQ-7K3F-1", "AQ_7K3F",
+		] {
+			assert!(MessageRef::parse(bad).is_err(), "{bad:?}");
+		}
+	}
+
+	#[test]
+	fn a_message_names_its_lead_or_its_ref() {
+		let subject = Subject {
+			brand_id: BrandId::parse("aquafix").unwrap(),
+			location_id: None,
+			lead_id: None,
+			job_id: None,
+		};
+		let messaged = |r: Option<&str>| Fact::LeadMessaged {
+			channel: Messenger::Telegram,
+			message_ref: r.map(|r| MessageRef::parse(r).unwrap()),
+		};
+		assert!(messaged(Some("AQ-7K3F")).check_subject(&subject).is_ok(), "the panel finds the lead by the ref");
+		assert_eq!(
+			messaged(None).check_subject(&subject).unwrap_err().0,
+			"subject.lead_id or properties.message_ref is required for lead.messaged"
+		);
+		let named = Subject {
+			lead_id: Some(LeadId::parse("tg-1").unwrap()),
+			..subject
+		};
+		assert!(messaged(None).check_subject(&named).is_ok());
+		assert_eq!(LeadChannel::parse("whatsapp").unwrap().messenger(), Some(Messenger::Whatsapp));
+		assert_eq!(LeadChannel::parse("callback").unwrap().messenger(), None);
+		assert_eq!(
+			LeadChannel::parse("sms").unwrap_err().0,
+			"properties.channel is not one of form, phone_inbound, callback, whatsapp, telegram"
+		);
 	}
 
 	#[test]

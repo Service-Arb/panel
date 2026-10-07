@@ -37,6 +37,7 @@ async fn actions_are_events_and_move_the_projection() {
 				location: LocationId::parse("paris-11").unwrap(),
 				need: "  a leaking tap ".into(),
 				phone: Some("+33 6 00 00 00 00".into()),
+				channel: panel_core::fact::LeadChannel::PhoneInbound,
 			},
 			t(0),
 		)
@@ -235,6 +236,7 @@ async fn slices_places_payments_and_counts() {
 		location: LocationId::parse("apex").unwrap(),
 		need: "a boiler".into(),
 		phone: None,
+		channel: panel_core::fact::LeadChannel::PhoneInbound,
 	};
 	panel.create_lead(by, new, at(4)).await.unwrap();
 	let lead = |id: &str| LeadId::parse(id).unwrap();
@@ -306,4 +308,69 @@ async fn slices_places_payments_and_counts() {
 	};
 	let ids: Vec<String> = panel.leads(&window, Pii::Withhold, at(45)).await.unwrap().leads.into_iter().map(|l| l.row.lead_id).collect();
 	assert_eq!(ids, ["L-3", "L-2"], "from included, before excluded");
+}
+
+/// A customer who wrote on a messenger without the landing is taken in by hand under that
+/// messenger's channel; an operator says a customer wrote; the list is filtered on both.
+#[tokio::test]
+async fn messenger_leads_by_hand() {
+	use panel::testing::messenger_lead;
+	use panel_core::fact::{LeadChannel, MessageRef, Messenger};
+
+	let db = TestDb::create().await;
+	let panel = panel(&db).await;
+	let by = Actor(Uuid::now_v7());
+	let t = |mins| now() + SignedDuration::from_mins(mins);
+	let new = |channel| NewLead {
+		brand: brand(),
+		location: LocationId::parse("royat").unwrap(),
+		need: "a leak".into(),
+		phone: None,
+		channel,
+	};
+	let (wrote, _) = panel.create_lead(by, new(LeadChannel::Whatsapp), t(0)).await.unwrap();
+	for not_by_hand in [LeadChannel::Form, LeadChannel::Callback] {
+		let refused = panel.create_lead(by, new(not_by_hand), t(0)).await;
+		assert!(
+			matches!(&refused, Err(ActionError::Invalid(e)) if e.0 == "channel is one of phone_inbound, whatsapp, telegram"),
+			"{not_by_hand:?}: {refused:?}"
+		);
+	}
+	let site = panel.add_source("aquafix-site", SourceKind::Site, [brand()].into()).await.unwrap().unwrap();
+	let landing = [messenger_lead(t(1), "aquafix", "L-1", "telegram", "AQ-7K3F")];
+	panel.ingest(sign("aquafix-site", &site.secret, &landing, t(2)).batch(), t(2)).await.unwrap();
+
+	let l1 = LeadId::parse("L-1").unwrap();
+	let first = panel.mark_messaged_once(by, &brand(), &l1, Messenger::Telegram, t(3), Some("k1")).await.unwrap();
+	let again = panel.mark_messaged_once(by, &brand(), &l1, Messenger::Telegram, t(4), Some("k1")).await.unwrap();
+	assert!(!first.replayed && again.replayed && again.value == first.value, "a retry is the first");
+	let nobody = panel.mark_messaged_once(by, &brand(), &LeadId::parse("L-404").unwrap(), Messenger::Whatsapp, t(3), None).await;
+	assert!(matches!(nobody, Err(ActionError::NotFound)));
+
+	let listed = |channel, message_ref| {
+		let panel = panel.clone();
+		async move {
+			let q = LeadQuery {
+				channel,
+				message_ref,
+				limit: 50,
+				..LeadQuery::default()
+			};
+			panel.leads(&q, Pii::Withhold, t(5)).await.unwrap().leads
+		}
+	};
+	let whatsapp = listed(Some(LeadChannel::Whatsapp), None).await;
+	assert_eq!(whatsapp.iter().map(|l| l.row.lead_id.as_str()).collect::<Vec<_>>(), [wrote.as_str()]);
+	assert!(whatsapp[0].row.manual && whatsapp[0].row.messaged.is_none(), "taken by hand, not yet said to have written");
+	let by_ref = listed(None, Some(MessageRef::parse("AQ-7K3F").unwrap())).await;
+	assert_eq!(by_ref.len(), 1);
+	let row = &by_ref[0].row;
+	assert_eq!(
+		(row.lead_id.as_str(), row.channel.as_deref(), row.message_ref.as_deref()),
+		("L-1", Some("telegram"), Some("AQ-7K3F"))
+	);
+	assert_eq!(row.messaged, Some((t(3), Messenger::Telegram)));
+	assert_eq!(row.stage, Stage::Created, "writing is not being contacted");
+	assert!(listed(None, Some(MessageRef::parse("AQ-0000").unwrap())).await.is_empty());
+	assert!(listed(Some(LeadChannel::Form), None).await.is_empty());
 }

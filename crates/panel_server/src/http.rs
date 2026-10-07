@@ -15,6 +15,11 @@
 //! only. The route sheds load past a number of requests at once, and bounds how long a body
 //! may take to arrive and a request in all ([`Limits`]).
 //!
+//! `GET /api/ingest/v1/leads/by-ref/{brand}/{ref}` is a bot's lookup of the lead a messenger
+//! ref names, signed the same way over an empty body (docs/BOT-API.md): `200` with the lead,
+//! `404` when no lead of the brand carries the ref, `403` for a key that is not a bot's of that
+//! brand, `400` for a brand or ref that cannot be one, `401` as for ingest.
+//!
 //! Answers: `207` with a verdict per event (protojson `sa.v1.IngestResponse`); `409` with
 //! `Retry-After` and the same verdicts when an event names what has not arrived yet (a
 //! `booking.requested` before its `lead.created`: `deferred`) — kitstart's outbox retries a
@@ -30,7 +35,7 @@ use axum::{
 	Json, Router,
 	body::{Body, to_bytes},
 	error_handling::HandleErrorLayer,
-	extract::State,
+	extract::{Path, State},
 	handler::Handler,
 	http::{HeaderMap, HeaderValue, Method, StatusCode, header},
 	middleware,
@@ -41,7 +46,7 @@ use panel::{IngestError, Outcome, Panel, SignedBatch, booking::PushSources};
 use panel_contracts::v1::{EventResult, IngestResponse};
 use panel_core::signature::{self, SignatureError};
 use sa_auth::{Analysis, PermissionSet, Sources, Work};
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
 
@@ -231,7 +236,8 @@ pub fn router_with_hooks(panel: Panel, limits: Limits, hooks: PushSources) -> Ro
 		.layer(RequestBodyTimeoutLayer::new(limits.body_timeout));
 	Router::new()
 		.route("/health", get(|| async { "ok" }))
-		.route("/api/ingest/v1/events", post(ingest).layer(layers))
+		.route("/api/ingest/v1/events", post(ingest).layer(layers.clone()))
+		.route("/api/ingest/v1/leads/by-ref/{brand}/{message_ref}", get(lead_by_ref).layer(layers))
 		.merge(places::internal())
 		.with_state(panel.clone())
 		.merge(booking::hooks(panel, hooks))
@@ -324,13 +330,62 @@ async fn ingest(State(panel): State<Panel>, headers: HeaderMap, body: Body) -> R
 			}
 			(StatusCode::MULTI_STATUS, Json(IngestResponse { results })).into_response()
 		}
-		// An unknown key and a bad signature read the same, so key ids cannot be probed for;
-		// only a timestamp outside the window is told apart, and it says nothing about keys.
-		Err(IngestError::Unauthorized(why)) => error(StatusCode::UNAUTHORIZED, if why == panel::STALE { STALE_MESSAGE } else { REFUSED_MESSAGE }),
-		Err(IngestError::BadRequest(e)) => error(StatusCode::BAD_REQUEST, e.0),
-		Err(IngestError::Internal(e)) => {
-			crate::report(&e, "ingest failed");
+		Err(e) => ingest_error(e, "ingest failed"),
+	}
+}
+
+/// A refusal of the whole request, ingest's or a lookup's. An unknown key and a bad signature
+/// read the same, so key ids cannot be probed for; only a timestamp outside the window is told
+/// apart, and it says nothing about keys.
+fn ingest_error(e: IngestError, what: &'static str) -> Response {
+	match e {
+		IngestError::Unauthorized(why) => error(StatusCode::UNAUTHORIZED, if why == panel::STALE { STALE_MESSAGE } else { REFUSED_MESSAGE }),
+		IngestError::Forbidden(why) => error(StatusCode::FORBIDDEN, why),
+		IngestError::BadRequest(e) => error(StatusCode::BAD_REQUEST, e.0),
+		IngestError::Internal(e) => {
+			crate::report(&e, what);
 			error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 		}
+	}
+}
+
+/// A bot's lookup of the lead a ref names: the same headers as ingest, the signature over an
+/// empty body. Never the customer's name or phone.
+async fn lead_by_ref(State(panel): State<Panel>, Path((brand, message_ref)): Path<(String, String)>, headers: HeaderMap) -> Response {
+	let (Some(key_id), Some(timestamp), Some(signature)) = (header(&headers, "x-sa-key-id"), header(&headers, "x-sa-timestamp"), header(&headers, "x-sa-signature")) else {
+		return error(StatusCode::UNAUTHORIZED, "x-sa-key-id, x-sa-timestamp and x-sa-signature are required");
+	};
+	let request = SignedBatch {
+		key_id,
+		timestamp,
+		signature,
+		body: b"",
+	};
+	match panel.lead_by_ref(request, &brand, &message_ref, jiff::Timestamp::now()).await {
+		Ok(Some(lead)) => {
+			let mut body = json!({
+				"lead_id": lead.lead_id,
+				"channel": lead.channel,
+				"stage": lead.stage,
+				"created_at": lead.created_at.map(|t| t.to_string()),
+				"message_ref": lead.message_ref,
+			});
+			let optional = [
+				("need", lead.need.map(Value::from)),
+				("locality", lead.locality.map(Value::from)),
+				("quoted_cents", lead.quoted_cents.map(Value::from)),
+				("flow", lead.flow.map(Value::from)),
+				("messaged_at", lead.messaged_at.map(|t| Value::from(t.to_string()))),
+				("messaged_channel", lead.messaged_channel.map(Value::from)),
+			];
+			for (k, v) in optional {
+				if let Some(v) = v {
+					body[k] = v;
+				}
+			}
+			(StatusCode::OK, Json(body)).into_response()
+		}
+		Ok(None) => error(StatusCode::NOT_FOUND, "no lead of the brand carries that ref"),
+		Err(e) => ingest_error(e, "lookup by ref failed"),
 	}
 }

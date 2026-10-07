@@ -51,6 +51,7 @@ pub async fn insert_event_row(conn: &mut SqliteConnection, e: &Recorded) -> eyre
 		Fact::BookingCleared => ("cleared", None, None, None, None),
 		Fact::BookingAttached { provider, external_ref } => ("attached", Some(*provider), Some(external_ref), None, None),
 		Fact::LeadCreated { .. }
+		| Fact::LeadMessaged { .. }
 		| Fact::LeadContacted { .. }
 		| Fact::LeadQuoted { .. }
 		| Fact::JobWon

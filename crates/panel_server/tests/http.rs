@@ -5,7 +5,7 @@ use axum::{
 	http::{Request, StatusCode},
 };
 use jiff::Timestamp;
-use panel::testing::{Signed, TestDb, event, panel, sign};
+use panel::testing::{Signed, TestDb, event, messenger_lead, panel, sign, sign_empty};
 use panel_core::{event::SourceKind, ids::BrandId};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -144,4 +144,83 @@ async fn costly_requests_are_refused_before_the_body_is_read() {
 	assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
 	tx.send(()).unwrap();
 	assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::UNAUTHORIZED, "the held one goes on to be judged");
+}
+
+async fn look_up(app: &axum::Router, uri: &str, signed: &Signed) -> (StatusCode, Value) {
+	let req = Request::get(uri)
+		.header("x-sa-key-id", &signed.key_id)
+		.header("x-sa-timestamp", &signed.timestamp)
+		.header("x-sa-signature", &signed.signature)
+		.body(Body::empty())
+		.unwrap();
+	let res = app.clone().oneshot(req).await.unwrap();
+	let status = res.status();
+	let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+	(status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+/// A bot looks a lead up by the ref the customer brought: signed as ingest is, over an empty
+/// body; only its own brand's, only a bot's key; what the customer asked for, never who they are.
+#[tokio::test]
+async fn a_bot_looks_a_lead_up_by_its_ref() {
+	let db = TestDb::create().await;
+	let panel = panel(&db).await;
+	let aquafix = || [BrandId::parse("aquafix").unwrap()].into();
+	let site = panel.add_source("aquafix-site", SourceKind::Site, aquafix()).await.unwrap().unwrap().secret.to_string();
+	let bot = panel.add_source("aquafix-tg", SourceKind::Bot, aquafix()).await.unwrap().unwrap().secret.to_string();
+	let now = Timestamp::now();
+	let earlier = now - jiff::SignedDuration::from_mins(5);
+	let mut priced = messenger_lead(now, "aquafix", "L-2", "telegram", "AQ-7K3F");
+	priced["properties"]["flow"] = json!("fixed");
+	priced["properties"]["quotedCents"] = json!(9900);
+	priced["properties"]["pricingValidFrom"] = json!("2026-10-01");
+	let leads = [messenger_lead(earlier, "aquafix", "L-1", "whatsapp", "AQ-7K3F"), priced];
+	let got = panel.ingest(sign("aquafix-site", &site, &leads, now).batch(), now).await.unwrap();
+	assert!(got.iter().all(|v| v.outcome == panel::Outcome::Accepted { unregistered: false }), "{got:?}");
+	let app = panel_server::http::router(panel);
+	let uri = "/api/ingest/v1/leads/by-ref/aquafix/AQ-7K3F";
+
+	let (status, body) = look_up(&app, uri, &sign_empty("aquafix-tg", &bot, now)).await;
+	assert_eq!(status, StatusCode::OK, "{body}");
+	let created = body["created_at"].as_str().unwrap().to_owned();
+	assert_eq!(
+		body,
+		json!({
+			"lead_id": "L-2", "channel": "telegram", "stage": "created", "created_at": created, "message_ref": "AQ-7K3F",
+			"need": "fuite sous l'évier", "locality": "Royat", "quoted_cents": 9900, "flow": "fixed",
+		}),
+		"the newest lead with the ref; no phone, no name"
+	);
+	let dump = body.to_string();
+	assert!(!dump.contains("+336") && !dump.contains("Dupont"), "{dump}");
+
+	let (status, body) = look_up(&app, "/api/ingest/v1/leads/by-ref/aquafix/AQ-0000", &sign_empty("aquafix-tg", &bot, now)).await;
+	assert_eq!((status, body["error"].as_str()), (StatusCode::NOT_FOUND, Some("no lead of the brand carries that ref")));
+	let (status, _) = look_up(&app, "/api/ingest/v1/leads/by-ref/aquafix/aq-7k3f", &sign_empty("aquafix-tg", &bot, now)).await;
+	assert_eq!(status, StatusCode::BAD_REQUEST, "a ref is as the landing made it");
+	let (status, body) = look_up(&app, "/api/ingest/v1/leads/by-ref/vifnet/AQ-7K3F", &sign_empty("aquafix-tg", &bot, now)).await;
+	assert_eq!((status, body["error"].as_str()), (StatusCode::FORBIDDEN, Some("this key is not for that brand")));
+	let (status, body) = look_up(&app, uri, &sign_empty("aquafix-site", &site, now)).await;
+	assert_eq!((status, body["error"].as_str()), (StatusCode::FORBIDDEN, Some("only a bot's key looks a lead up by its ref")));
+	let (status, body) = look_up(&app, uri, &sign_empty("aquafix-tg", &"0".repeat(64), now)).await;
+	assert_eq!((status, body["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("invalid key or signature")));
+	let (status, _) = look_up(&app, uri, &sign_empty("aquafix-tg", &bot, now - jiff::SignedDuration::from_mins(10))).await;
+	assert_eq!(status, StatusCode::UNAUTHORIZED, "the replay window holds");
+	let unsigned = Request::get(uri).body(Body::empty()).unwrap();
+	assert_eq!(app.clone().oneshot(unsigned).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+
+	// What it said, once the customer wrote.
+	let wrote = event(
+		"lead.messaged",
+		now,
+		"bot",
+		json!({"brandId": "aquafix"}),
+		json!({"channel": "telegram", "messageRef": "AQ-7K3F"}),
+	);
+	let batch = sign("aquafix-tg", &bot, &[wrote], now);
+	let (status, body) = send(app.clone(), &batch, &ALL).await;
+	assert_eq!((status, body["results"][0]["status"].as_str()), (StatusCode::MULTI_STATUS, Some("accepted")), "{body}");
+	let (_, body) = look_up(&app, uri, &sign_empty("aquafix-tg", &bot, now)).await;
+	assert_eq!(body["messaged_channel"], "telegram");
+	assert!(body["messaged_at"].is_string());
 }

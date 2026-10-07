@@ -8,7 +8,7 @@ use jiff::Timestamp;
 
 use crate::{
 	event::{SourceKind, Subject},
-	fact::{AnalyticsId, Fact, LeadChannel, LeadOffer, LeadSuspect},
+	fact::{AnalyticsId, Fact, LeadChannel, LeadOffer, LeadSuspect, MessageRef, Messenger},
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 };
 
@@ -53,8 +53,10 @@ impl Stage {
 			Fact::LeadLost { .. } => Some(Self::Lost),
 			// A booking is beside the stages, not one of them: a lead booked and never
 			// contacted is still waiting for its call.
+			// Writing on a messenger is the customer's move, not the operator's contact.
 			Fact::CallAttempted
 			| Fact::CallLogged { .. }
+			| Fact::LeadMessaged { .. }
 			| Fact::RetiredCount
 			| Fact::ExperimentsDeclared(_)
 			| Fact::ExperimentConfigured { .. }
@@ -142,6 +144,10 @@ pub struct LeadState {
 	pub offer: LeadOffer,
 	/// The landing's analytics id from its `lead.created`: who the lead is in PostHog.
 	pub analytics_id: Option<AnalyticsId>,
+	/// The ref the customer carries into a messenger, from its `lead.created`.
+	pub message_ref: Option<MessageRef>,
+	/// When the customer first wrote on a messenger (`lead.messaged`), and on which.
+	pub messaged: Option<(Timestamp, Messenger)>,
 	/// Its `lead.created` was typed in by a person (spec §10a).
 	pub manual: bool,
 	pub last_event_id: EventId,
@@ -184,6 +190,8 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 		suspect: None,
 		offer: LeadOffer::default(),
 		analytics_id: None,
+		message_ref: None,
+		messaged: None,
 		manual: false,
 		last_event_id: first.id,
 		last_event_at: first.occurred_at,
@@ -202,6 +210,7 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 			suspect,
 			offer,
 			analytics_id,
+			message_ref,
 			..
 		} = &e.fact
 		{
@@ -209,7 +218,12 @@ pub fn fold(events: &[Recorded]) -> Option<LeadState> {
 			state.suspect = *suspect;
 			state.offer = offer.clone();
 			state.analytics_id = analytics_id.clone();
+			state.message_ref = message_ref.clone();
 			state.manual = e.source_kind.is_manual();
+		}
+		// The first message: the events are in time order, so a later one leaves it.
+		if let Fact::LeadMessaged { channel, .. } = &e.fact {
+			state.messaged.get_or_insert((e.occurred_at, *channel));
 		}
 		if let Some(reached) = Stage::of(&e.fact) {
 			state.times.reach(reached, e.occurred_at);
@@ -265,6 +279,7 @@ mod tests {
 			suspect: None,
 			offer: LeadOffer::default(),
 			analytics_id: None,
+			message_ref: None,
 		}
 	}
 
@@ -312,6 +327,7 @@ mod tests {
 					suspect: None,
 					offer: LeadOffer::default(),
 					analytics_id: None,
+					message_ref: None,
 				},
 			),
 			ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None }),
@@ -350,6 +366,7 @@ mod tests {
 				suspect: None,
 				offer: LeadOffer::default(),
 				analytics_id: None,
+				message_ref: None,
 			},
 		);
 		let mut back_dated = ev(0, SourceKind::Site, created());
@@ -373,6 +390,7 @@ mod tests {
 				suspect: Some(LeadSuspect::TooFast),
 				offer: LeadOffer::default(),
 				analytics_id: None,
+				message_ref: None,
 			},
 		);
 		let s = fold(&[doubted.clone(), ev(5, SourceKind::Panel, Fact::LeadContacted { channel: None })]).unwrap();
@@ -394,6 +412,7 @@ mod tests {
 				suspect: None,
 				offer: estimate.clone(),
 				analytics_id: None,
+				message_ref: None,
 			},
 		);
 		let mut again = ev(1, SourceKind::Site, created());
@@ -414,6 +433,7 @@ mod tests {
 					suspect: None,
 					offer: LeadOffer::default(),
 					analytics_id: Some(AnalyticsId::parse(id).unwrap()),
+					message_ref: None,
 				},
 			);
 			e.received_at = at(received);
@@ -421,6 +441,36 @@ mod tests {
 		};
 		let s = fold(&[with_id(1, 30, "later"), with_id(0, 0, "first"), ev(5, SourceKind::Panel, Fact::JobWon)]).unwrap();
 		assert_eq!(s.analytics_id.unwrap().as_str(), "first", "a later creation cannot take the lead over in PostHog");
+	}
+
+	#[test]
+	fn the_first_message_is_kept_beside_the_stages() {
+		let messaged = |channel| Fact::LeadMessaged {
+			channel,
+			message_ref: Some(MessageRef::parse("AQ-7K3F").unwrap()),
+		};
+		let created = ev(
+			0,
+			SourceKind::Site,
+			Fact::LeadCreated {
+				channel: LeadChannel::Whatsapp,
+				entered_by: None,
+				suspect: None,
+				offer: LeadOffer::default(),
+				analytics_id: None,
+				message_ref: Some(MessageRef::parse("AQ-7K3F").unwrap()),
+			},
+		);
+		let events = [
+			ev(9, SourceKind::Panel, messaged(Messenger::Whatsapp)),
+			created,
+			ev(4, SourceKind::Bot, messaged(Messenger::Telegram)),
+		];
+		let s = fold(&events).unwrap();
+		assert_eq!(s.stage, Stage::Created, "a message is not a contact");
+		assert_eq!(s.channel, Some(LeadChannel::Whatsapp));
+		assert_eq!(s.message_ref.unwrap().as_str(), "AQ-7K3F");
+		assert_eq!(s.messaged, Some((at(4), Messenger::Telegram)), "the first, whatever the order they arrived in");
 	}
 
 	#[test]

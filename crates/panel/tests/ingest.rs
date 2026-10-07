@@ -4,7 +4,7 @@
 use jiff::{SignedDuration, Timestamp};
 use panel::{
 	IngestError, Outcome, Panel,
-	testing::{TestDb, event, panel, sign, sign_verbatim},
+	testing::{TestDb, event, messenger_lead, panel, sign, sign_verbatim},
 };
 use panel_core::{event::SourceKind, ids::BrandId};
 use serde_json::{Value, json};
@@ -128,7 +128,7 @@ async fn a_callback_request_is_a_lead_channel() {
 		outcomes(&got),
 		[
 			ACCEPTED,
-			Outcome::Rejected(panel_core::Invalid::new("properties.channel is not one of form, phone_inbound, callback"))
+			Outcome::Rejected(panel_core::Invalid::new("properties.channel is not one of form, phone_inbound, callback, whatsapp, telegram"))
 		]
 	);
 	let pool = db.pool().await;
@@ -629,4 +629,284 @@ fn a_new_sources_secret_does_not_print() {
 	};
 	let shown = format!("{s:?}");
 	assert!(!shown.contains("xyzzy") && shown.contains("<redacted>"), "{shown}");
+}
+
+/// A panel with [`setup`]'s keys and a bot's key for aquafix; the site's and the bot's secrets.
+async fn with_bot(db: &TestDb) -> (Panel, String, String) {
+	let (panel, site, _) = setup(db).await;
+	let bot = panel.add_source("aquafix-wa", SourceKind::Bot, brands(&["aquafix"])).await.unwrap().unwrap();
+	(panel, site, bot.secret.to_string())
+}
+
+/// `(lead_id, messaged_channel, messaged_at)` of every lead, by id.
+async fn messaged(pool: &sqlx::SqlitePool) -> Vec<(String, Option<String>, Option<i64>)> {
+	sqlx::query_as("SELECT lead_id, messaged_channel, messaged_at FROM reporting_leads ORDER BY lead_id")
+		.fetch_all(pool)
+		.await
+		.unwrap()
+}
+
+/// A bot starts a lead from a conversation (a messenger's channel only), and tells when a
+/// customer wrote — naming the lead, or the ref the landing gave them, which the panel resolves
+/// to the brand's newest lead carrying it and journals under that lead.
+#[tokio::test]
+async fn a_bot_starts_messenger_leads_and_says_when_a_customer_wrote() {
+	let db = TestDb::create().await;
+	let (panel, site, bot) = with_bot(&db).await;
+	let pool = db.pool().await;
+
+	let landing = [
+		messenger_lead(at(0), "aquafix", "L-1", "whatsapp", "AQ-7K3F"),
+		messenger_lead(at(1), "aquafix", "L-9", "telegram", "AQ-0000"),
+	];
+	let got = panel.ingest(sign("aquafix-site", &site, &landing, now()).batch(), now()).await.unwrap();
+	assert_eq!(outcomes(&got), [ACCEPTED, ACCEPTED]);
+	let refs: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as("SELECT lead_id, channel, message_ref FROM reporting_leads ORDER BY lead_id")
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+	assert_eq!(refs[0], ("L-1".to_owned(), Some("whatsapp".to_owned()), Some("AQ-7K3F".to_owned())));
+
+	let by_ref = |minutes, channel: &str, r: &str| event("lead.messaged", at(minutes), "bot", json!({"brandId": "aquafix"}), json!({"channel": channel, "messageRef": r}));
+	let first = by_ref(5, "whatsapp", "AQ-7K3F");
+	let early = by_ref(6, "telegram", "AQ-ZZZZ");
+	let batch = [
+		event(
+			"lead.created",
+			at(2),
+			"bot",
+			json!({"brandId": "aquafix", "leadId": "wa-01j9zk3f"}),
+			json!({"channel": "whatsapp"}),
+		),
+		event("lead.created", at(2), "bot", json!({"brandId": "aquafix", "leadId": "wa-2"}), json!({"channel": "form"})),
+		first.clone(),
+		early.clone(),
+		event("lead.messaged", at(7), "bot", lead("L-9"), json!({"channel": "telegram"})),
+		event("lead.messaged", at(7), "bot", json!({"brandId": "aquafix"}), json!({"channel": "telegram"})),
+	];
+	let got = panel.ingest(sign("aquafix-wa", &bot, &batch, now()).batch(), now()).await.unwrap();
+	assert_eq!(
+		outcomes(&got),
+		[
+			ACCEPTED,
+			Outcome::Rejected(panel_core::Invalid::new("a bot source writes lead.created only with channel whatsapp or telegram")),
+			ACCEPTED,
+			Outcome::Deferred(panel_core::Invalid::new(panel::UNKNOWN_REF)),
+			ACCEPTED,
+			Outcome::Rejected(panel_core::Invalid::new("subject.lead_id or properties.message_ref is required for lead.messaged")),
+		]
+	);
+	assert!(panel::UNKNOWN_REF.starts_with("unknown_ref"), "what a bot matches on");
+	let journaled: String = sqlx::query_scalar("SELECT lead_id FROM events WHERE id = $1")
+		.bind(uuid::Uuid::parse_str(first["id"].as_str().unwrap()).unwrap())
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+	assert_eq!(journaled, "L-1", "journaled under the lead the ref names");
+	let want = [
+		("L-1".to_owned(), Some("whatsapp".to_owned()), Some(at(5).as_microsecond())),
+		("L-9".to_owned(), Some("telegram".to_owned()), Some(at(7).as_microsecond())),
+		("wa-01j9zk3f".to_owned(), None, None),
+	];
+	assert_eq!(messaged(&pool).await, want);
+	let stage: String = sqlx::query_scalar("SELECT stage FROM leads WHERE lead_id = 'L-1'").fetch_one(&pool).await.unwrap();
+	assert_eq!(stage, "created", "a message is the customer's, not the operator's contact");
+	assert_eq!(count(&pool, "SELECT sum(messaged) FROM reporting_funnel_daily").await, 2);
+
+	// A newer lead with the same ref: the next message is its, the first stays where it was —
+	// a resend of it too, and so does the rebuild.
+	let newer = [messenger_lead(at(10), "aquafix", "L-2", "telegram", "AQ-7K3F")];
+	panel.ingest(sign("aquafix-site", &site, &newer, now()).batch(), now()).await.unwrap();
+	let got = panel
+		.ingest(sign("aquafix-wa", &bot, &[first, by_ref(11, "telegram", "AQ-7K3F")], now()).batch(), now())
+		.await
+		.unwrap();
+	assert_eq!(outcomes(&got), [Outcome::Duplicate, ACCEPTED]);
+	let after = messaged(&pool).await;
+	assert_eq!((&after[0], &after[1].1), (&want[0], &Some("telegram".to_owned())), "{after:?}");
+	let before = projections(&pool).await;
+	let rebuilt_from = messaged(&pool).await;
+	panel.rebuild_projections().await.unwrap();
+	assert_eq!(projections(&pool).await, before);
+	assert_eq!(messaged(&pool).await, rebuilt_from, "the rebuild does not look the ref up again");
+
+	// The message that came before its lead was deferred, not journaled: sent again once the
+	// landing's lead.created is in, it is taken under that lead.
+	let deferred_id = uuid::Uuid::parse_str(early["id"].as_str().unwrap()).unwrap();
+	let n: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE id = $1").bind(deferred_id).fetch_one(&pool).await.unwrap();
+	assert_eq!(n, 0, "a deferred event is not journaled");
+	let late = [messenger_lead(at(12), "aquafix", "L-3", "telegram", "AQ-ZZZZ")];
+	panel.ingest(sign("aquafix-site", &site, &late, now()).batch(), now()).await.unwrap();
+	let got = panel.ingest(sign("aquafix-wa", &bot, &[early], now()).batch(), now()).await.unwrap();
+	assert_eq!(outcomes(&got), [ACCEPTED]);
+	let journaled: String = sqlx::query_scalar("SELECT lead_id FROM events WHERE id = $1").bind(deferred_id).fetch_one(&pool).await.unwrap();
+	assert_eq!(journaled, "L-3");
+}
+
+/// A landing knows a messenger link was opened, never that a message was sent; a bot writes no
+/// operator's events.
+#[tokio::test]
+async fn who_may_say_a_customer_wrote() {
+	let db = TestDb::create().await;
+	let (panel, site, bot) = with_bot(&db).await;
+	let ops = panel.add_source("aquafix-ops2", SourceKind::Panel, brands(&["aquafix"])).await.unwrap().unwrap();
+	panel
+		.ingest(
+			sign("aquafix-site", &site, &[messenger_lead(at(0), "aquafix", "L-1", "whatsapp", "AQ-7K3F")], now()).batch(),
+			now(),
+		)
+		.await
+		.unwrap();
+	let messaged = event("lead.messaged", at(1), "site", lead("L-1"), json!({"channel": "whatsapp"}));
+	let got = panel.ingest(sign("aquafix-site", &site, &[messaged], now()).batch(), now()).await.unwrap();
+	assert!(matches!(&got[0].outcome, Outcome::Rejected(e) if e.0 == "a site source may not write lead.messaged"), "{got:?}");
+	let contacted = event("lead.contacted", at(1), "bot", lead("L-1"), json!({"channel": "whatsapp"}));
+	let got = panel.ingest(sign("aquafix-wa", &bot, &[contacted], now()).batch(), now()).await.unwrap();
+	assert!(matches!(&got[0].outcome, Outcome::Rejected(e) if e.0 == "a bot source may not write lead.contacted"), "{got:?}");
+	let by_hand = event(
+		"lead.messaged",
+		at(2),
+		"panel",
+		json!({"brandId": "aquafix"}),
+		json!({"channel": "telegram", "messageRef": "AQ-7K3F"}),
+	);
+	let got = panel.ingest(sign("aquafix-ops2", &ops.secret, &[by_hand], now()).batch(), now()).await.unwrap();
+	assert_eq!(outcomes(&got), [ACCEPTED], "the panel may name the lead by its ref too");
+	let foreign = event(
+		"lead.messaged",
+		at(3),
+		"bot",
+		json!({"brandId": "vifnet"}),
+		json!({"channel": "telegram", "messageRef": "VF-7K3F"}),
+	);
+	let got = panel.ingest(sign("aquafix-wa", &bot, &[foreign], now()).batch(), now()).await.unwrap();
+	assert_eq!(outcomes(&got), [Outcome::Rejected(panel_core::Invalid::new("this key may not write for brand vifnet"))]);
+}
+
+/// The messenger migration rebuilt `leads`: undone, the words whatsapp and telegram have no
+/// place and the new columns are gone, the rows are not; applied again, the rebuild brings the
+/// channel, the ref and the message back from the journal.
+#[tokio::test]
+async fn the_messenger_migration_keeps_the_leads_both_ways() {
+	const MESSENGER: i64 = 20261007090100;
+	let db = TestDb::create().await;
+	let (panel, site, bot) = with_bot(&db).await;
+	let events = [
+		event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"})),
+		messenger_lead(at(1), "aquafix", "L-2", "whatsapp", "AQ-7K3F"),
+	];
+	panel.ingest(sign("aquafix-site", &site, &events, now()).batch(), now()).await.unwrap();
+	let wrote = event(
+		"lead.messaged",
+		at(2),
+		"bot",
+		json!({"brandId": "aquafix"}),
+		json!({"channel": "whatsapp", "messageRef": "AQ-7K3F"}),
+	);
+	assert_eq!(outcomes(&panel.ingest(sign("aquafix-wa", &bot, &[wrote], now()).batch(), now()).await.unwrap()), [ACCEPTED]);
+	let pool = db.pool().await;
+	let rows = || async {
+		sqlx::query_as::<_, (String, Option<String>)>("SELECT lead_id, channel FROM reporting_leads ORDER BY lead_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap()
+	};
+	let funnel = "SELECT sum(leads) FROM reporting_funnel_daily";
+	let index: i64 = count(&pool, "SELECT count(*) FROM sqlite_schema WHERE name = 'leads_by_message_ref'").await;
+	assert_eq!(index, 1);
+
+	let migrator = sqlx::migrate!("./migrations");
+	migrator.undo(&pool, MESSENGER - 1).await.unwrap();
+	assert_eq!(
+		rows().await,
+		[("L-1".to_owned(), Some("form".to_owned())), ("L-2".to_owned(), None)],
+		"whatsapp has no word before it"
+	);
+	assert!(sqlx::query("SELECT message_ref FROM leads").execute(&pool).await.is_err());
+	assert!(sqlx::query("SELECT messaged_at FROM reporting_leads").execute(&pool).await.is_err());
+	assert_eq!(count(&pool, funnel).await, 2);
+	assert_eq!(
+		count(&pool, "SELECT count(*) FROM sqlite_schema WHERE name = 'leads_by_booking'").await,
+		1,
+		"the old index is back"
+	);
+	let refused = sqlx::query("UPDATE leads SET channel = 'whatsapp' WHERE lead_id = 'L-2'").execute(&pool).await;
+	assert!(refused.is_err(), "the old CHECK is back");
+
+	migrator.run(&pool).await.unwrap();
+	assert_eq!(rows().await, [("L-1".to_owned(), Some("form".to_owned())), ("L-2".to_owned(), None)]);
+	assert_eq!(count(&pool, funnel).await, 2);
+	let refused = sqlx::query("UPDATE leads SET messaged_channel = 'sms', messaged_at = 1 WHERE lead_id = 'L-2'")
+		.execute(&pool)
+		.await;
+	assert!(refused.is_err(), "the CHECK holds the messengers");
+	let refused = sqlx::query("UPDATE leads SET messaged_at = 1 WHERE lead_id = 'L-2'").execute(&pool).await;
+	assert!(refused.is_err(), "a time and a messenger together");
+	panel.rebuild_projections().await.unwrap();
+	let back: (Option<String>, Option<String>, Option<String>, Option<i64>) =
+		sqlx::query_as("SELECT channel, message_ref, messaged_channel, messaged_at FROM reporting_leads WHERE lead_id = 'L-2'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(
+		back,
+		(Some("whatsapp".to_owned()), Some("AQ-7K3F".to_owned()), Some("whatsapp".to_owned()), Some(at(2).as_microsecond())),
+		"the journal still has it"
+	);
+	assert_eq!(count(&pool, "SELECT sum(messaged) FROM reporting_funnel_daily").await, 1);
+}
+
+/// The bot kind migration made `sources` and `events` again: every row and reference kept, the
+/// guards back; undone while no bot exists, and refused once one does.
+#[tokio::test]
+async fn the_bot_kind_migration_keeps_the_journal_and_its_keys() {
+	const BOT_KIND: i64 = 20261007090000;
+	const MESSENGER: i64 = 20261007090100;
+	let db = TestDb::create().await;
+	let (panel, site, _) = setup(&db).await;
+	panel
+		.ingest(
+			sign("aquafix-site", &site, &[event("lead.created", at(0), "site", lead("L-1"), json!({"channel": "form"}))], now()).batch(),
+			now(),
+		)
+		.await
+		.unwrap();
+	let pool = db.pool().await;
+	let dump = || async {
+		sqlx::query_as::<_, (String, String)>(
+			"SELECT 'source', key_id || kind || brand_ids || hex(secret_sealed) || created_at FROM sources \
+			 UNION ALL SELECT 'event', hex(id) || source_kind || coalesce(key_id, '') || coalesce(lead_id, '') || properties || hex(content_mac) FROM events \
+			 ORDER BY 1, 2",
+		)
+		.fetch_all(&pool)
+		.await
+		.unwrap()
+	};
+	let before = dump().await;
+	assert_eq!(before.len(), 3, "two keys and an event");
+
+	let migrator = sqlx::migrate!("./migrations");
+	migrator.undo(&pool, MESSENGER - 1).await.unwrap();
+	migrator.undo(&pool, BOT_KIND - 1).await.unwrap();
+	assert_eq!(dump().await, before, "every row, every byte, down");
+	let refused = sqlx::query("INSERT INTO sources (key_id, kind, brand_ids, secret_sealed, data_key_fp) VALUES ('b', 'bot', '[\"aquafix\"]', x'00', zeroblob(32))")
+		.execute(&pool)
+		.await;
+	assert!(refused.is_err(), "no bot before it");
+	migrator.run(&pool).await.unwrap();
+	assert_eq!(dump().await, before, "and up");
+	let dangling: Vec<(String,)> = sqlx::query_as("SELECT \"table\" FROM pragma_foreign_key_check").fetch_all(&pool).await.unwrap();
+	assert!(dangling.is_empty(), "{dangling:?}");
+	let fks: i64 = sqlx::query_scalar("PRAGMA foreign_keys").fetch_one(&pool).await.unwrap();
+	assert_eq!(fks, 1, "foreign keys are back on");
+	assert!(sqlx::query("DELETE FROM events").execute(&pool).await.is_err(), "still append-only");
+	assert!(sqlx::query("DELETE FROM sources").execute(&pool).await.is_err(), "sources are never deleted");
+	assert!(sqlx::query("UPDATE sources SET kind = 'bot'").execute(&pool).await.is_err(), "only ever revoked");
+	assert_eq!(count(&pool, "SELECT sum(events) FROM reporting_ingest_daily").await, 1, "the view is back");
+	assert_eq!(count(&pool, "SELECT count(*) FROM sqlite_schema WHERE name = 'events_of_experiments'").await, 1);
+
+	panel.add_source("aquafix-tg", SourceKind::Bot, brands(&["aquafix"])).await.unwrap().unwrap();
+	migrator.undo(&pool, MESSENGER - 1).await.unwrap();
+	assert!(migrator.undo(&pool, BOT_KIND - 1).await.is_err(), "a database with a bot's key does not go back");
+	assert_eq!(count(&pool, "SELECT count(*) FROM sources").await, 3, "and loses nothing trying");
 }

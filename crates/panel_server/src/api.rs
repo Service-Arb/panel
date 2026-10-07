@@ -22,7 +22,7 @@ use panel::{
 use panel_core::{
 	Invalid,
 	event::SourceKind,
-	fact::LeadFlow,
+	fact::{LeadChannel, LeadFlow, MessageRef, Messenger},
 	funnel::{MIN_SAMPLE, Share},
 	ids::{BrandId, JobId, LeadId, LocationId},
 	lead::Stage,
@@ -91,6 +91,7 @@ pub(crate) fn routes() -> Vec<ApiRoute> {
 		ApiRoute::new(M::GET, "/leads/counts", work, Cached, lead_counts),
 		ApiRoute::new(M::GET, "/leads/{brand}/{lead}", work, Cached, lead),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/stage", work, Cached, stage),
+		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/messaged", work, Cached, messaged),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/calls/attempt", work, Cached, attempt_call),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/calls/{attempt}/outcome", work, Cached, call_outcome),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/payments", work, Cached, payment),
@@ -231,7 +232,15 @@ struct LeadDto {
 	location: Option<String>,
 	job_id: Option<String>,
 	stage: &'static str,
+	/// form | phone_inbound | callback | whatsapp | telegram; null for a lead seen before its
+	/// creation.
 	channel: Option<String>,
+	/// The ref the customer carries into a messenger (`AQ-7K3F`), when the landing made one.
+	message_ref: Option<String>,
+	/// When the customer first wrote on a messenger, and on which (whatsapp | telegram); null
+	/// while they have not.
+	messaged_at: Option<String>,
+	messaged_channel: Option<&'static str>,
 	/// `rate_limited` | `too_fast` when the landing's antispam doubted it; null otherwise.
 	suspect: Option<String>,
 	manual: bool,
@@ -301,6 +310,9 @@ fn lead_dto(v: LeadView, now: Timestamp) -> LeadDto {
 		job_id: r.job_id,
 		stage: r.stage.as_str(),
 		channel: r.channel,
+		message_ref: r.message_ref,
+		messaged_at: ts(r.messaged.map(|(at, _)| at)),
+		messaged_channel: r.messaged.map(|(_, m)| m.as_str()),
 		suspect: r.suspect,
 		manual: r.manual,
 		created_at: ts(r.created_at),
@@ -345,6 +357,10 @@ struct LeadsQuery {
 	flow: Option<String>,
 	/// A booking status (`none`, `requested`, `booked`, …); absent lists every lead.
 	booking: Option<String>,
+	/// A lead channel (`form`, `whatsapp`, …); absent lists every lead.
+	channel: Option<String>,
+	/// A messenger ref as the customer quotes it (`AQ-7K3F`, any case): the leads carrying it.
+	message_ref: Option<String>,
 	cursor: Option<String>,
 	limit: Option<u32>,
 }
@@ -389,6 +405,16 @@ async fn leads(State(panel): State<Panel>, Extension(caller): Extension<Caller>,
 			.booking
 			.as_deref()
 			.map(|b| panel_core::booking::BookingStatus::parse(b).map_err(|e| ApiError::BadRequest(e.0)))
+			.transpose()?,
+		channel: q
+			.channel
+			.as_deref()
+			.map(|c| LeadChannel::parse(c).map_err(|_| ApiError::BadRequest("channel is not one of form, phone_inbound, callback, whatsapp, telegram".into())))
+			.transpose()?,
+		message_ref: q
+			.message_ref
+			.as_deref()
+			.map(|r| MessageRef::parse(&r.trim().to_ascii_uppercase()).map_err(|_| ApiError::BadRequest("message_ref is not like AQ-7K3F".into())))
 			.transpose()?,
 		after: q.cursor.as_deref().map(cursor_decode).transpose()?,
 		limit: q.limit.unwrap_or(50),
@@ -452,6 +478,9 @@ struct CreateLead {
 	location: String,
 	need: String,
 	phone: Option<String>,
+	/// phone_inbound (the default) | whatsapp | telegram: a customer who wrote on a messenger
+	/// without the landing.
+	channel: Option<String>,
 }
 
 async fn create_lead(State(panel): State<Panel>, Extension(caller): Extension<Caller>, headers: HeaderMap, b: Result<Json<CreateLead>, JsonRejection>) -> ApiResult<Response> {
@@ -463,6 +492,13 @@ async fn create_lead(State(panel): State<Panel>, Extension(caller): Extension<Ca
 		location: LocationId::parse(&b.location)?,
 		need: b.need,
 		phone: b.phone,
+		channel: match b.channel.as_deref() {
+			None => LeadChannel::PhoneInbound,
+			Some(c) => LeadChannel::parse(c)
+				.ok()
+				.filter(|c| LeadChannel::MANUAL.contains(c))
+				.ok_or_else(|| ApiError::BadRequest("channel is one of phone_inbound, whatsapp, telegram".into()))?,
+		},
 	};
 	let brand = new.brand.clone();
 	let done = panel.create_lead_once(Actor(caller.user_id), new, Timestamp::now(), key.as_deref()).await?;
@@ -510,6 +546,29 @@ async fn stage(
 		StageBody::Completed => StageMove::Completed,
 	};
 	let done = panel.move_lead_once(Actor(caller.user_id), &brand, &lead, to, Timestamp::now(), key.as_deref()).await?;
+	Ok(recorded(done.replayed, json!({ "event_id": done.value.raw().to_string() })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessagedBody {
+	/// whatsapp | telegram
+	channel: String,
+}
+
+/// The customer wrote on a messenger, as the operator saw it (`lead.messaged` from the panel).
+async fn messaged(
+	State(panel): State<Panel>,
+	Extension(caller): Extension<Caller>,
+	Path((brand, lead)): Path<(String, String)>,
+	headers: HeaderMap,
+	b: Result<Json<MessagedBody>, JsonRejection>,
+) -> ApiResult<Response> {
+	allow(caller.permissions.may(Leads::Edit))?;
+	let key = idempotency_key(&headers)?;
+	let (brand, lead) = ids(&brand, &lead)?;
+	let channel = Messenger::parse(&body(b)?.channel).map_err(|_| ApiError::BadRequest("channel is one of whatsapp, telegram".into()))?;
+	let done = panel.mark_messaged_once(Actor(caller.user_id), &brand, &lead, channel, Timestamp::now(), key.as_deref()).await?;
 	Ok(recorded(done.replayed, json!({ "event_id": done.value.raw().to_string() })))
 }
 

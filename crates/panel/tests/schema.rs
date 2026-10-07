@@ -123,6 +123,7 @@ async fn the_runtime_does_its_work_on_a_fresh_database() {
 			location: LocationId::parse("paris-11").unwrap(),
 			need: "a boiler".into(),
 			phone: None,
+			channel: panel_core::fact::LeadChannel::PhoneInbound,
 		};
 		let (lead, _) = panel.create_lead(by, new_lead(), now).await.unwrap();
 		let brand = BrandId::parse("aquafix").unwrap();

@@ -11,7 +11,7 @@ use panel_core::{
 	booking::{self, BookingMatch, Closed},
 	event::{Envelope, Source, SourceKind, Subject, TypeKey, may_write},
 	experiment::{Declaration, Patch, check_declared, label},
-	fact::{AnalyticsId, CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, bounded, day, instant},
+	fact::{AnalyticsId, CallOutcome, ContactChannel, Fact, LeadChannel, LeadOffer, LeadSuspect, MessageRef, Messenger, bounded, day, instant},
 	ids::{BrandId, JobId, LeadId, LocationId, parse_event_id},
 };
 use serde::de::DeserializeOwned;
@@ -230,6 +230,7 @@ pub enum Checked {
 /// Every `type@version` the panel projects, with the message its properties must match.
 pub const REGISTERED: &[(&str, u32, &str)] = &[
 	("lead.created", 1, "sa.v1.LeadCreatedV1"),
+	("lead.messaged", 1, "sa.v1.LeadMessagedV1"),
 	("lead.contacted", 1, "sa.v1.LeadContactedV1"),
 	("lead.quoted", 1, "sa.v1.LeadQuotedV1"),
 	("job.won", 1, "sa.v1.JobWonV1"),
@@ -266,12 +267,24 @@ pub fn check(key: &TypeKey, kind: SourceKind, properties: &Value, subject: &Subj
 	}
 	let fact = match (key.name.as_str(), key.version) {
 		("lead.created", 1) => props::<v1::LeadCreatedV1>(key, properties).and_then(|p| {
+			let channel = LeadChannel::parse(&p.channel)?;
+			// A bot sees a conversation, never a form or a call: what it starts is a messenger's.
+			if kind == SourceKind::Bot && channel.messenger().is_none() {
+				return Err(Invalid::new("a bot source writes lead.created only with channel whatsapp or telegram"));
+			}
 			Ok(Fact::LeadCreated {
-				channel: LeadChannel::parse(&p.channel)?,
+				channel,
 				entered_by: bounded("properties.entered_by", p.entered_by)?,
 				suspect: p.suspect.as_deref().map(LeadSuspect::parse).transpose()?,
 				offer: LeadOffer::parse(p.flow.as_deref(), p.quoted_cents, p.pricing_valid_from.as_deref(), p.estimate_inputs)?,
 				analytics_id: p.analytics_id.as_deref().map(AnalyticsId::parse).transpose()?,
+				message_ref: p.message_ref.as_deref().map(MessageRef::parse).transpose()?,
+			})
+		}),
+		("lead.messaged", 1) => props::<v1::LeadMessagedV1>(key, properties).and_then(|p| {
+			Ok(Fact::LeadMessaged {
+				channel: Messenger::parse(&p.channel)?,
+				message_ref: p.message_ref.as_deref().map(MessageRef::parse).transpose()?,
 			})
 		}),
 		("lead.contacted", 1) => props::<v1::LeadContactedV1>(key, properties).and_then(|p| {
@@ -421,6 +434,7 @@ mod tests {
 				suspect: None,
 				offer: LeadOffer::default(),
 				analytics_id: None,
+				message_ref: None,
 			})
 		);
 	}
@@ -442,6 +456,7 @@ mod tests {
 					suspect: Some(mark),
 					offer: LeadOffer::default(),
 					analytics_id: None,
+					message_ref: None,
 				})
 			);
 		}
@@ -496,6 +511,59 @@ mod tests {
 		assert!(
 			matches!(judge(json!({"channel": "form", "estimateInputs": {"zone": 1}})), Checked::Invalid(_)),
 			"values are strings"
+		);
+	}
+
+	#[test]
+	fn messenger_leads_and_messages() {
+		let judge = |r#type: &str, kind: SourceKind, props: Value, lead: Option<&str>| {
+			let mut e = event();
+			e["type"] = json!(r#type);
+			e["properties"] = props;
+			match lead {
+				Some(l) => e["subject"]["leadId"] = json!(l),
+				None => _ = e["subject"].as_object_mut().unwrap().remove("leadId"),
+			}
+			let got = decode(e, now()).unwrap();
+			check(&got.envelope.type_key, kind, &got.properties, &got.envelope.subject)
+		};
+		let Checked::Registered(Fact::LeadCreated { channel, message_ref, .. }) =
+			judge("lead.created", SourceKind::Site, json!({"channel": "whatsapp", "messageRef": "AQ-7K3F"}), Some("L-1"))
+		else {
+			panic!("a messenger lead refused")
+		};
+		assert_eq!((channel, message_ref.unwrap().as_str()), (LeadChannel::Whatsapp, "AQ-7K3F"));
+		assert_eq!(
+			judge("lead.created", SourceKind::Site, json!({"channel": "form", "message_ref": "aq-7k3f"}), Some("L-1")),
+			Checked::Invalid(Invalid::new("properties.message_ref is not like \"AQ-7K3F\": 2–4 of A-Z, a dash, 4–8 of Crockford base32"))
+		);
+		assert!(matches!(
+			judge("lead.created", SourceKind::Bot, json!({"channel": "telegram"}), Some("tg-1")),
+			Checked::Registered(_)
+		));
+		assert_eq!(
+			judge("lead.created", SourceKind::Bot, json!({"channel": "form"}), Some("tg-1")),
+			Checked::Invalid(Invalid::new("a bot source writes lead.created only with channel whatsapp or telegram"))
+		);
+		assert_eq!(
+			judge("lead.messaged", SourceKind::Bot, json!({"channel": "telegram", "messageRef": "AQ-7K3F"}), None),
+			Checked::Registered(Fact::LeadMessaged {
+				channel: Messenger::Telegram,
+				message_ref: Some(MessageRef::parse("AQ-7K3F").unwrap()),
+			})
+		);
+		assert_eq!(
+			judge("lead.messaged", SourceKind::Bot, json!({"channel": "telegram"}), None),
+			Checked::Invalid(Invalid::new("subject.lead_id or properties.message_ref is required for lead.messaged"))
+		);
+		assert_eq!(
+			judge("lead.messaged", SourceKind::Panel, json!({"channel": "phone"}), Some("L-1")),
+			Checked::Invalid(Invalid::new("properties.channel is not one of whatsapp, telegram"))
+		);
+		assert_eq!(
+			judge("lead.messaged", SourceKind::Site, json!({"channel": "whatsapp"}), Some("L-1")),
+			Checked::Invalid(Invalid::new("a site source may not write lead.messaged")),
+			"a landing knows a link was opened, not that a message was sent"
 		);
 	}
 
