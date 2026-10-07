@@ -259,19 +259,35 @@ pub async fn lead(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId) -
 		.transpose()
 }
 
-/// The lead a messenger ref names: the brand's newest carrying it (a ref is the landing's, so
-/// two leads may share one), by creation, then by id for two created in the same microsecond.
-pub async fn lead_by_ref(conn: &mut SqliteConnection, brand: &BrandId, message_ref: &MessageRef) -> eyre::Result<Option<LeadId>> {
-	let found: Option<String> = sqlx::query_scalar(
-		"SELECT lead_id FROM leads WHERE brand_id = $1 AND message_ref = $2 \
-		 ORDER BY created_at DESC NULLS LAST, lead_id DESC LIMIT 1",
-	)
+/// The lead a messenger ref names, in one query: the brand's newest carrying it (a ref is the
+/// landing's, so two leads may share one), by creation, then by id for two created in the same
+/// microsecond.
+pub async fn lead_by_ref(conn: &mut SqliteConnection, brand: &BrandId, message_ref: &MessageRef) -> eyre::Result<Option<LeadRow>> {
+	sqlx::query_as::<_, Row>(concat!(
+		lead_select!(),
+		"WHERE l.brand_id = $1 AND l.message_ref = $2 ORDER BY l.created_at DESC NULLS LAST, l.lead_id DESC LIMIT 1"
+	))
 	.bind(brand.as_str())
 	.bind(message_ref.as_str())
 	.fetch_optional(&mut *conn)
 	.await
-	.wrap_err_with(|| format!("finding the lead of ref {message_ref} of {brand}"))?;
-	found.map(|l| LeadId::parse(&l).wrap_err("a stored lead id")).transpose()
+	.wrap_err_with(|| format!("finding the lead of ref {message_ref} of {brand}"))?
+	.map(LeadRow::try_from)
+	.transpose()
+}
+
+/// The lead's first `lead.messaged` the panel journaled: the one PostHog is told of, and what an
+/// operator saying it again is answered with.
+pub async fn first_message(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId) -> eyre::Result<Option<Uuid>> {
+	sqlx::query_scalar(
+		"SELECT id FROM events WHERE brand_id = $1 AND lead_id = $2 AND type = 'lead.messaged' AND status = 'registered' \
+		 ORDER BY received_at, id LIMIT 1",
+	)
+	.bind(brand.as_str())
+	.bind(lead.as_str())
+	.fetch_optional(&mut *conn)
+	.await
+	.wrap_err_with(|| format!("finding the first message of lead {brand}/{lead}"))
 }
 
 /// One event of a lead, as its card shows it.

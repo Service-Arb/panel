@@ -15,6 +15,8 @@ use jiff::Timestamp;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use crate::fact::Messenger;
+
 /// Why each field was refused, by its wire name — or its path inside a list, `hours[0].opens`,
 /// `hours[1].days`, `serviceArea[2]`: what the editor shows beside the field.
 pub type FieldErrors = BTreeMap<String, String>;
@@ -23,9 +25,6 @@ pub type FieldErrors = BTreeMap<String, String>;
 pub const FIELDS: [&str; 12] = [
 	"phone", "whatsapp", "telegram", "messengers", "hours", "serviceArea", "address", "geo", "storefrontPhoto", "landmark", "rating", "booking",
 ];
-
-/// The messengers a place may switch off (`messengers`), by their wire names.
-pub const MESSENGERS: [&str; 2] = ["whatsapp", "telegram"];
 
 /// kitstart's `DayOfWeek`, in week order.
 pub const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -175,14 +174,19 @@ fn telegram_bot(v: &Value) -> Result<Value, String> {
 /// `{whatsapp?: bool, telegram?: bool}`: the panel's kill switches for the landing's messenger
 /// buttons; a messenger left out is on. Each key is checked on its own, so the editor shows the
 /// one that is wrong.
+/// The messengers a place may switch off, by their wire names: [`Messenger`]'s, for an error.
+fn messenger_names() -> String {
+	Messenger::ALL.map(Messenger::as_str).join(", ")
+}
+
 fn messengers(v: &Value) -> Result<Value, Bad> {
 	let Value::Object(m) = v else {
 		return Err(vec![(String::new(), "must be an object like {\"whatsapp\": true, \"telegram\": false}".into())]);
 	};
 	let mut bad = Bad::new();
 	for (k, on) in m {
-		if !MESSENGERS.contains(&k.as_str()) {
-			bad.push((format!(".{k}"), format!("is not a messenger; one of {}", MESSENGERS.join(", "))));
+		if Messenger::parse(k).is_err() {
+			bad.push((format!(".{k}"), format!("is not a messenger; one of {}", messenger_names())));
 		} else if !on.is_boolean() {
 			bad.push((format!(".{k}"), "must be true or false".into()));
 		}
@@ -198,8 +202,8 @@ pub fn messengers_from_spec(spec: &str) -> Result<Value, String> {
 		let bad = || format!("{part:?} is not like whatsapp=on or telegram=off");
 		let (name, state) = part.split_once('=').ok_or_else(bad)?;
 		let (name, state) = (name.trim(), state.trim());
-		if !MESSENGERS.contains(&name) {
-			return Err(format!("{name:?} is not a messenger; one of {}", MESSENGERS.join(", ")));
+		if Messenger::parse(name).is_err() {
+			return Err(format!("{name:?} is not a messenger; one of {}", messenger_names()));
 		}
 		let on = match state {
 			"on" => true,

@@ -322,13 +322,25 @@ impl Panel {
 	}
 
 	/// The customer wrote on a messenger (`lead.messaged`), as the operator saw it: a WhatsApp
-	/// message read by hand. At most once per idempotency `key` of the user and lead.
+	/// message read by hand. At most once per lead: when it has a message already, that one is
+	/// the answer (`replayed`); and at most once per idempotency `key` of the user and lead.
 	pub async fn mark_messaged_once(&self, by: Actor, brand: &BrandId, lead: &LeadId, channel: Messenger, now: Timestamp, key: Option<&str>) -> Result<Done<EventId>, ActionError> {
 		let id = key.map(|k| idempotent_id(by, &format!("messaged/{brand}/{lead}"), k));
 		if let Some(done) = self.replayed(by, id).await? {
 			return Ok(done.map(|(_, e)| e));
 		}
 		let current = self.lead_row(brand, lead).await?.ok_or(ActionError::NotFound)?;
+		// Said once is enough: the lead keeps its first message, so a second click (or a bot that
+		// said it first) is answered with that one, and nothing is journaled.
+		if current.messaged.is_some() {
+			let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+			if let Some(first) = reads::first_message(&mut conn, brand, lead).await? {
+				return Ok(Done {
+					value: EventId::from_raw(first),
+					replayed: true,
+				});
+			}
+		}
 		let properties = json!({"channel": channel.as_str()});
 		Ok(self.act(by, id, "lead.messaged", subject_of(&current), properties, None, now).await?.map(|(_, e)| e))
 	}

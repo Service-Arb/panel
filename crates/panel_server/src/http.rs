@@ -16,7 +16,7 @@
 //! may take to arrive and a request in all ([`Limits`]).
 //!
 //! `GET /api/ingest/v1/leads/by-ref/{brand}/{ref}` is a bot's lookup of the lead a messenger
-//! ref names, signed the same way over an empty body (docs/BOT-API.md): `200` with the lead,
+//! ref names, signed the same way over `GET <path>` in place of a body (docs/BOT-API.md): `200` with the lead,
 //! `404` when no lead of the brand carries the ref, `403` for a key that is not a bot's of that
 //! brand, `400` for a brand or ref that cannot be one, `401` as for ingest.
 //!
@@ -35,7 +35,7 @@ use axum::{
 	Json, Router,
 	body::{Body, to_bytes},
 	error_handling::HandleErrorLayer,
-	extract::{Path, State},
+	extract::{OriginalUri, Path, State},
 	handler::Handler,
 	http::{HeaderMap, HeaderValue, Method, StatusCode, header},
 	middleware,
@@ -248,6 +248,11 @@ fn error(status: StatusCode, msg: impl Into<String>) -> Response {
 	(status, Json(json!({ "error": msg.into() }))).into_response()
 }
 
+/// What a `GET` is signed over in place of a body: `GET <path?query>`, the path as it arrived.
+pub fn signed_get(uri: &axum::http::Uri) -> String {
+	format!("GET {}", uri.path_and_query().map_or_else(|| uri.path(), |pq| pq.as_str()))
+}
+
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 	headers.get(name).and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty())
 }
@@ -349,17 +354,19 @@ fn ingest_error(e: IngestError, what: &'static str) -> Response {
 	}
 }
 
-/// A bot's lookup of the lead a ref names: the same headers as ingest, the signature over an
-/// empty body. Never the customer's name or phone.
-async fn lead_by_ref(State(panel): State<Panel>, Path((brand, message_ref)): Path<(String, String)>, headers: HeaderMap) -> Response {
+/// A bot's lookup of the lead a ref names: the same headers as ingest, the signature over the
+/// method and the path as sent (with its query, if any) in place of a body, so a signature opens
+/// that one lookup and no other. Never the customer's name or phone.
+async fn lead_by_ref(State(panel): State<Panel>, Path((brand, message_ref)): Path<(String, String)>, OriginalUri(uri): OriginalUri, headers: HeaderMap) -> Response {
 	let (Some(key_id), Some(timestamp), Some(signature)) = (header(&headers, "x-sa-key-id"), header(&headers, "x-sa-timestamp"), header(&headers, "x-sa-signature")) else {
 		return error(StatusCode::UNAUTHORIZED, "x-sa-key-id, x-sa-timestamp and x-sa-signature are required");
 	};
+	let signed = signed_get(&uri);
 	let request = SignedBatch {
 		key_id,
 		timestamp,
 		signature,
-		body: b"",
+		body: signed.as_bytes(),
 	};
 	match panel.lead_by_ref(request, &brand, &message_ref, jiff::Timestamp::now()).await {
 		Ok(Some(lead)) => {

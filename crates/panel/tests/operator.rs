@@ -344,6 +344,11 @@ async fn messenger_leads_by_hand() {
 	let first = panel.mark_messaged_once(by, &brand(), &l1, Messenger::Telegram, t(3), Some("k1")).await.unwrap();
 	let again = panel.mark_messaged_once(by, &brand(), &l1, Messenger::Telegram, t(4), Some("k1")).await.unwrap();
 	assert!(!first.replayed && again.replayed && again.value == first.value, "a retry is the first");
+	let twice = panel.mark_messaged_once(by, &brand(), &l1, Messenger::Whatsapp, t(4), None).await.unwrap();
+	assert!(twice.replayed && twice.value == first.value, "said once is enough: the first message is the answer");
+	let pool = db.pool().await;
+	let messages: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE type = 'lead.messaged'").fetch_one(&pool).await.unwrap();
+	assert_eq!(messages, 1);
 	let nobody = panel.mark_messaged_once(by, &brand(), &LeadId::parse("L-404").unwrap(), Messenger::Whatsapp, t(3), None).await;
 	assert!(matches!(nobody, Err(ActionError::NotFound)));
 

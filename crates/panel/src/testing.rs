@@ -120,13 +120,13 @@ pub fn sign_verbatim(key_id: &str, secret: &str, events: &[Value], at: Timestamp
 	}
 }
 
-/// A bodiless request signed as a source signs a batch: what a bot sends to look a lead up by
-/// its ref (`GET /api/ingest/v1/leads/by-ref/…`), the MAC over an empty body.
-pub fn sign_empty(key_id: &str, secret: &str, at: Timestamp) -> Signed {
+/// A `GET` signed as a source signs a batch: what a bot sends to look a lead up by its ref
+/// (`GET /api/ingest/v1/leads/by-ref/…`), the MAC over `GET <path>` in place of a body.
+pub fn sign_get(key_id: &str, secret: &str, path: &str, at: Timestamp) -> Signed {
 	let timestamp = at.as_second().to_string();
 	Signed {
 		key_id: key_id.to_owned(),
-		signature: signature::sign(secret.as_bytes(), &timestamp, b""),
+		signature: signature::sign(secret.as_bytes(), &timestamp, format!("GET {path}").as_bytes()),
 		timestamp,
 		body: Vec::new(),
 	}

@@ -41,7 +41,7 @@ use panel_core::{
 	Invalid,
 	event::{Envelope, KeyGrant, SourceKind},
 	fact::{Fact, MessageRef},
-	ids::{BrandId, LeadId},
+	ids::{BrandId, LeadId, LocationId},
 	lead::Recorded,
 	signature::{self, SignatureError},
 };
@@ -69,6 +69,9 @@ pub const STALE: &str = "stale or malformed timestamp";
 /// come first. Like a `booking.requested` before its lead, the batch is answered 409 with
 /// `Retry-After`, nothing of that event journaled, and the bot sends the same event again.
 pub const UNKNOWN_REF: &str = "unknown_ref: no lead of the brand carries properties.message_ref";
+
+/// Why a `lead.messaged` naming a lead the panel has not seen is deferred, as [`UNKNOWN_REF`] is.
+pub const UNKNOWN_LEAD: &str = "unknown_lead: subject.lead_id names no lead yet: send again after its lead.created";
 
 /// Why a whole batch was refused. Per-event verdicts are [`Outcome`]s instead.
 #[derive(Debug, thiserror::Error)]
@@ -208,6 +211,10 @@ async fn queue_capture(conn: &mut sqlx::SqliteConnection, recorded: &Recorded, l
 	if matches!(recorded.fact, Fact::LeadCreated { .. }) && lead.creation != Some(recorded.id) {
 		return Ok(());
 	}
+	// A conversation is told once: its first message, as the panel journaled them.
+	if matches!(recorded.fact, Fact::LeadMessaged { .. }) && store::reads::first_message(conn, &lead.brand_id, &lead.lead_id).await? != Some(recorded.id.raw()) {
+		return Ok(());
+	}
 	let properties = serde_json::to_value(&capture.properties).wrap_err("PostHog properties")?;
 	store::posthog::enqueue(
 		conn,
@@ -327,7 +334,8 @@ impl Panel {
 	}
 
 	/// The brand's newest lead carrying `message_ref`, for a bot's key of that brand (`GET
-	/// /api/ingest/v1/leads/by-ref/{brand}/{ref}`): signed as a batch is, over an empty body.
+	/// /api/ingest/v1/leads/by-ref/{brand}/{ref}`): signed as a batch is, `request.body` being
+	/// what the server signs in place of one — `GET <path>`.
 	/// `Ok(None)` when no lead of the brand carries it.
 	pub async fn lead_by_ref(&self, request: SignedBatch<'_>, brand: &str, message_ref: &str, now: Timestamp) -> Result<Option<RefLead>, IngestError> {
 		let grant = self.authenticate(&request, now).await?;
@@ -343,10 +351,7 @@ impl Panel {
 			return Err(IngestError::Forbidden("this key is not for that brand"));
 		}
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
-		let Some(lead) = store::reads::lead_by_ref(&mut conn, &brand, &message_ref).await? else {
-			return Ok(None);
-		};
-		let Some(row) = store::reads::lead(&mut conn, &brand, &lead).await? else {
+		let Some(row) = store::reads::lead_by_ref(&mut conn, &brand, &message_ref).await? else {
 			return Ok(None);
 		};
 		drop(conn);
@@ -477,7 +482,9 @@ impl Panel {
 		// A message naming its lead by ref alone is journaled under the lead the ref names now,
 		// found under the write lock so no newer lead slips in between: the journal keeps that
 		// lead id, so a rebuild — when newer leads may carry the same ref — does not look again.
-		// The content MAC is of the event as sent, so a resend is still a duplicate.
+		// The content MAC is of the event as sent, so a resend is still a duplicate. The lead's
+		// location goes with it when the bot named none, so the event and its PostHog capture sit
+		// where the lead does.
 		let named;
 		let incoming = match &fact {
 			Some(Fact::LeadMessaged { message_ref: Some(r), .. }) if incoming.envelope.subject.lead_id.is_none() => {
@@ -485,9 +492,24 @@ impl Panel {
 					return Ok(Outcome::Deferred(Invalid::new(UNKNOWN_REF)));
 				};
 				let mut resolved = incoming.clone();
-				resolved.envelope.subject.lead_id = Some(lead);
+				let subject = &mut resolved.envelope.subject;
+				subject.lead_id = Some(LeadId::parse(&lead.lead_id).wrap_err("a stored lead id")?);
+				if subject.location_id.is_none() {
+					subject.location_id = lead.location_id.as_deref().map(LocationId::parse).transpose().wrap_err("a stored location id")?;
+				}
 				named = resolved;
 				&named
+			}
+			// A message names a lead that is there: a bot's leadId the panel has no lead for is
+			// waited for like a booking.requested before its lead, never a phantom lead.
+			Some(Fact::LeadMessaged { .. }) => {
+				let env = &incoming.envelope;
+				if let Some(lead) = &env.subject.lead_id
+					&& !store::bookings::lead_exists(&mut tx, &env.subject.brand_id, lead).await?
+				{
+					return Ok(Outcome::Deferred(Invalid::new(UNKNOWN_LEAD)));
+				}
+				incoming
 			}
 			_ => incoming,
 		};

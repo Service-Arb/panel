@@ -108,7 +108,7 @@ journaled already), or `rejected` with a reason. A type the panel does not know 
 
 A messenger bot (a key of kind `bot`) sends its leads and the fact that a customer wrote the
 same way, and looks a lead up by the ref the customer brought:
-`GET /api/ingest/v1/leads/by-ref/<brand>/<ref>`, signed over an empty body. See
+`GET /api/ingest/v1/leads/by-ref/<brand>/<ref>`, signed over `GET <path>` in place of a body. See
 [docs/BOT-API.md](docs/BOT-API.md).
 
 ## Place settings

@@ -128,7 +128,8 @@ registry: type@version known?
 ```
 
 A bot (source kind `bot`) signs the same way, and also looks a lead up by its messenger ref:
-`GET /api/ingest/v1/leads/by-ref/{brand}/{ref}`, the MAC over an empty body — see
+`GET /api/ingest/v1/leads/by-ref/{brand}/{ref}`, the MAC over `GET <path?query>` in place of a
+body, so a signature opens that one lookup — see
 [BOT-API.md](BOT-API.md) and [Messenger leads](#messenger-leads).
 
 ## Signing in (§4)
@@ -416,7 +417,9 @@ lead.messaged@1  {channel: whatsapp|telegram, message_ref?}: the customer actual
                  journal's write lock and journaled as the event's lead_id (so a rebuild, when a
                  newer lead may carry the ref, does not look again; the content MAC is of the
                  event as sent, so a resend is a duplicate); no such lead yet → deferred
-                 "unknown_ref: …" (409 + Retry-After, not journaled; the bot sends it again)
+                 "unknown_ref: …" (409 + Retry-After, not journaled; the bot sends it again);
+                 resolved by ref, it takes the lead's location when it named none. A leadId
+                 with no lead yet: deferred "unknown_lead: …" the same way, never a phantom lead
 source kind bot  a key per bot (`panel source add … --kind bot`): lead.created with a messenger's
                  channel only, lead.messaged, and the lookup by ref (the only kind that may)
 ```
@@ -427,7 +430,9 @@ stage. `/api/v1` `Lead` carries `channel`, `message_ref`, `messaged_at`, `messag
 `GET /leads` filters on `channel=` and `message_ref=`; an operator takes a messenger lead in by
 hand (`POST /leads {channel}`) and says a customer wrote (`POST …/messaged`).
 `reporting_leads` carries the three columns, `reporting_funnel_daily` counts `messaged`.
-PostHog is told `sa_lead_messaged {channel}`, never the ref.
+PostHog is told `sa_lead_messaged {channel}` once per lead, for the first message the panel
+journaled, never the ref. An operator's `POST …/messaged` on a lead that has a message already
+journals nothing and answers `200` with that message's id.
 
 The place's `telegram` (its bot's username) and `messengers` (kill switches) are place
 settings, below.

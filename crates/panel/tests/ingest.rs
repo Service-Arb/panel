@@ -697,12 +697,12 @@ async fn a_bot_starts_messenger_leads_and_says_when_a_customer_wrote() {
 		]
 	);
 	assert!(panel::UNKNOWN_REF.starts_with("unknown_ref"), "what a bot matches on");
-	let journaled: String = sqlx::query_scalar("SELECT lead_id FROM events WHERE id = $1")
+	let journaled: (String, Option<String>) = sqlx::query_as("SELECT lead_id, location_id FROM events WHERE id = $1")
 		.bind(uuid::Uuid::parse_str(first["id"].as_str().unwrap()).unwrap())
 		.fetch_one(&pool)
 		.await
 		.unwrap();
-	assert_eq!(journaled, "L-1", "journaled under the lead the ref names");
+	assert_eq!(journaled, ("L-1".to_owned(), Some("royat".to_owned())), "journaled under the lead the ref names, at its place");
 	let want = [
 		("L-1".to_owned(), Some("whatsapp".to_owned()), Some(at(5).as_microsecond())),
 		("L-9".to_owned(), Some("telegram".to_owned()), Some(at(7).as_microsecond())),
@@ -772,6 +772,14 @@ async fn who_may_say_a_customer_wrote() {
 	);
 	let got = panel.ingest(sign("aquafix-ops2", &ops.secret, &[by_hand], now()).batch(), now()).await.unwrap();
 	assert_eq!(outcomes(&got), [ACCEPTED], "the panel may name the lead by its ref too");
+	// A lead id the panel has no lead for is waited for, not taken as a phantom lead.
+	let ahead = event("lead.messaged", at(3), "bot", lead("tg-404"), json!({"channel": "telegram"}));
+	let got = panel.ingest(sign("aquafix-wa", &bot, std::slice::from_ref(&ahead), now()).batch(), now()).await.unwrap();
+	assert_eq!(outcomes(&got), [Outcome::Deferred(panel_core::Invalid::new(panel::UNKNOWN_LEAD))]);
+	assert_eq!(count(&db.pool().await, "SELECT count(*) FROM leads WHERE lead_id = 'tg-404'").await, 0);
+	let started = event("lead.created", at(2), "bot", lead("tg-404"), json!({"channel": "telegram"}));
+	let got = panel.ingest(sign("aquafix-wa", &bot, &[started, ahead], now()).batch(), now()).await.unwrap();
+	assert_eq!(outcomes(&got), [ACCEPTED, ACCEPTED], "sent again after its lead.created");
 	let foreign = event(
 		"lead.messaged",
 		at(3),

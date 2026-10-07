@@ -30,8 +30,10 @@ x-sa-timestamp: 1791370800                     unix seconds; ±5 minutes of the 
 x-sa-signature: hex(HMAC-SHA256(secret, "sa-ingest/v1." + <x-sa-timestamp> + "." + <raw body>))
 ```
 
-The body is the bytes sent, exactly; for the lookup (a `GET`) it is empty, so the MAC is over
-`sa-ingest/v1.<timestamp>.`. A bad key or signature is `401 {"error": "invalid key or
+The body is the bytes sent, exactly. A `GET` (the lookup) has none: its MAC is over the method
+and the path as sent, with its query if any — `sa-ingest/v1.<timestamp>.GET
+/api/ingest/v1/leads/by-ref/aquafix/AQ-7K3F` — so a signature opens that one lookup, for its
+five minutes, and no other. A bad key or signature is `401 {"error": "invalid key or
 signature"}`, a timestamp outside the window `401 {"error": "timestamp outside the replay
 window"}`.
 
@@ -100,17 +102,19 @@ with the same ref does not take the message over. A ref no lead of the brand car
 `deferred` with a reason starting `unknown_ref`, and the batch is answered `409` with
 `Retry-After`: the landing's `lead.created` may still be on its way (the site posts it in the
 background as the customer taps). Send the **same** event again after `Retry-After`; nothing of
-it was journaled. Give up after a few tries — a ref nobody's lead carries stays deferred. Neither `leadId` nor `messageRef`:
-`rejected`.
+it was journaled. Give up after a few tries — a ref nobody's lead carries stays deferred. A
+message resolved by its ref is journaled at the lead's location too, when it named none. Neither
+`leadId` nor `messageRef`: `rejected`. A `leadId` the panel has no lead for is `deferred` the
+same way (reason starting `unknown_lead`): send the bot's own `lead.created` first, or again.
 
 The panel keeps the first message's time and messenger on the lead (`messaged_at`,
-`messaged_channel`); it does not move the lead's stage — that is the operator's
-`lead.contacted`.
+`messaged_channel`), and tells PostHog of that first one only (`sa_lead_messaged`); it does not
+move the lead's stage — that is the operator's `lead.contacted`.
 
 ## Looking a lead up by its ref
 
 ```text
-GET /api/ingest/v1/leads/by-ref/{brand}/{ref}          signed, empty body; a bot's key of {brand}
+GET /api/ingest/v1/leads/by-ref/{brand}/{ref}          signed over "GET <path>"; a bot's key of {brand}
 
 200 {"lead_id": "L-2", "channel": "telegram", "stage": "created",
      "created_at": "2026-10-07T09:12:00Z", "message_ref": "AQ-7K3F",
@@ -134,8 +138,9 @@ sign() { printf 'sa-ingest/v1.%s.%s' "$1" "$2" | openssl dgst -sha256 -hmac "$SE
 
 # lookup
 TS=$(date +%s)
-curl -sS "$PANEL/api/ingest/v1/leads/by-ref/aquafix/AQ-7K3F" \
-  -H "x-sa-key-id: $KEY" -H "x-sa-timestamp: $TS" -H "x-sa-signature: $(sign "$TS" "")"
+LOOKUP=/api/ingest/v1/leads/by-ref/aquafix/AQ-7K3F
+curl -sS "$PANEL$LOOKUP" \
+  -H "x-sa-key-id: $KEY" -H "x-sa-timestamp: $TS" -H "x-sa-signature: $(sign "$TS" "GET $LOOKUP")"
 
 # the customer wrote
 BODY=$(jq -cn --arg id "$(uuidgen-v7)" --arg at "$(date -u +%FT%TZ)" '{events: [{id: $id,
@@ -161,7 +166,9 @@ const { PANEL, KEY, SECRET } = process.env;
 
 async function call(method, path, body = "") {
   const ts = String(Math.floor(Date.now() / 1000));
-  const sig = createHmac("sha256", SECRET).update(`sa-ingest/v1.${ts}.${body}`).digest("hex");
+  // A GET has no body: the method and the path (with its query) are signed in its place.
+  const signed = method === "GET" ? `GET ${path}` : body;
+  const sig = createHmac("sha256", SECRET).update(`sa-ingest/v1.${ts}.${signed}`).digest("hex");
   const res = await fetch(PANEL + path, {
     method,
     headers: { "content-type": "application/json", "x-sa-key-id": KEY, "x-sa-timestamp": ts, "x-sa-signature": sig },
@@ -181,5 +188,5 @@ const event = {
 };
 const sent = await call("POST", "/api/ingest/v1/events", JSON.stringify({ events: [event] }));
 // sent.status 207: results[0].status accepted | duplicate | rejected
-// sent.status 409: results[0].status deferred (reason "unknown_ref…"): the same event again after Retry-After
+// sent.status 409: results[0].status deferred (reason "unknown_ref…" / "unknown_lead…"): the same event again after Retry-After
 ```

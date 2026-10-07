@@ -155,10 +155,17 @@ impl MessageRef {
 			})
 			.unwrap_or(&upper)
 			.trim();
-		let prefix_len = text.bytes().take_while(u8::is_ascii_uppercase).count().min(4);
-		let (prefix, code) = text.split_at(prefix_len);
+		// As `^([A-Z]{2,4})[\s-]*([0-9A-Z]{4,8})$` matches, the front end's: the longest prefix
+		// that leaves a code, so "AQKXYZ" is AQ-KXYZ.
+		let split = (2..=4).rev().find_map(|n| {
+			let prefix = text.get(..n).filter(|p| p.bytes().all(|b| b.is_ascii_uppercase()))?;
+			let code = text.get(n..)?.trim_start_matches(|c: char| c == '-' || c.is_whitespace());
+			((4..=8).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())).then_some((prefix, code))
+		});
+		let Some((prefix, code)) = split else {
+			return Self::parse(text);
+		};
 		let code: String = code
-			.trim_start_matches(|c: char| c == '-' || c.is_whitespace())
 			.chars()
 			.map(|c| match c {
 				'O' => '0',
@@ -785,10 +792,12 @@ mod tests {
 			("aq-o1il", "AQ-0111"),
 			("OQ-7K3F", "OQ-7K3F"),
 			("REFX-7K3F", "REFX-7K3F"),
+			("aqkxyz", "AQ-KXYZ"),
+			("ABCD7K3F", "ABCD-7K3F"),
 		] {
 			assert_eq!(MessageRef::from_typed(typed).map(|r| r.0), Ok(want.to_owned()), "{typed:?}");
 		}
-		for bad in ["AQ-7K3U", "A-7K3F", "Réf.", "", "AQ-7K3", "ABCDE-7K3F"] {
+		for bad in ["AQ-7K3U", "A-7K3F", "Réf.", "", "AQ-7K3", "ABCDE-7K3F", "ab c-def", "AQKXY"] {
 			assert!(MessageRef::from_typed(bad).is_err(), "{bad:?}");
 		}
 	}
