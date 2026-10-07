@@ -161,13 +161,14 @@ fn phone(v: &Value) -> Result<Value, String> {
 	if ok { Ok(Value::String(s)) } else { Err(MSG.into()) }
 }
 
-/// A Telegram bot's username without the `@`, as `t.me/<bot>` takes it: a letter, then 4 to 32
-/// characters in all of letters, digits and `_` (MESSENGER-CHANNELS-SPEC §2.1).
+/// A Telegram bot's username without the `@`, as `t.me/<bot>` takes it and as Telegram issues it:
+/// 5 to 32 of letters, digits and `_`, a letter first, ending in `bot` in any case
+/// (`^[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]$`).
 fn telegram_bot(v: &Value) -> Result<Value, String> {
-	const MSG: &str = "must be a bot's username without the @: a letter, then 3 to 31 of letters, digits and _";
+	const MSG: &str = "must be a bot's username without the @: 5 to 32 of letters, digits and _, a letter first, ending in bot";
 	let s = text(v, 32).map_err(|_| MSG.to_owned())?;
 	let b = s.as_bytes();
-	let ok = (4..=32).contains(&b.len()) && b[0].is_ascii_alphabetic() && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_');
+	let ok = (5..=32).contains(&b.len()) && b[0].is_ascii_alphabetic() && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_') && b[b.len() - 3..].eq_ignore_ascii_case(b"bot");
 	if ok { Ok(Value::String(s)) } else { Err(MSG.into()) }
 }
 
@@ -619,13 +620,23 @@ mod tests {
 			Some(&json!({})),
 			"every messenger on"
 		);
-		for good in ["abcd", "A_1_", &format!("a{}", "b".repeat(31)) as &str] {
+		for good in ["a_bot", "AquafixBOT", "x1Bot", &format!("a{}bot", "b".repeat(28)) as &str] {
 			assert!(PlaceSettings::parse(&json!({ "telegram": good })).is_ok(), "{good}");
 		}
-		for bad in ["abc", "@aquafix_bot", "1aquafix_bot", "aqua-fix_bot", "aqua fix", &format!("a{}", "b".repeat(32)) as &str] {
+		for bad in [
+			"abot",
+			"_xbot",
+			"aquafix",
+			"aquafix_bo",
+			"@aquafix_bot",
+			"1aquafix_bot",
+			"aqua-fix_bot",
+			"aqua fix bot",
+			&format!("a{}bot", "b".repeat(29)) as &str,
+		] {
 			assert_eq!(
 				err(json!({ "telegram": bad }))["telegram"],
-				"must be a bot's username without the @: a letter, then 3 to 31 of letters, digits and _",
+				"must be a bot's username without the @: 5 to 32 of letters, digits and _, a letter first, ending in bot",
 				"{bad}"
 			);
 		}

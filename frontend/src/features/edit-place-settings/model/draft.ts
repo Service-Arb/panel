@@ -50,7 +50,7 @@ export function normaliseBot(raw: string): string {
 }
 
 /** `panel_core::place`'s rule for a Telegram username. */
-const BOT = /^[A-Za-z][A-Za-z0-9_]{3,31}$/;
+const BOT = /^[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]$/;
 
 /** Like `looksLikeE164`: a hint while typing, the server's 422 decides. Empty is fine — no bot. */
 export function looksLikeBot(raw: string): boolean {

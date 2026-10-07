@@ -12,8 +12,8 @@ const settings = (o: unknown): PlaceSettings => parse(settingsParser, o);
 
 describe("the bot and the messenger switches as stored", () => {
   it("are both fields the form edits", () => {
-    const s = settings({ telegram: "bot_x", messengers: { telegram: false } });
-    expect(s.edited).toEqual({ telegram: "bot_x", messengers: { telegram: false } });
+    const s = settings({ telegram: "x_bot", messengers: { telegram: false } });
+    expect(s.edited).toEqual({ telegram: "x_bot", messengers: { telegram: false } });
     expect(s.rest).toEqual({});
   });
 
@@ -46,8 +46,8 @@ describe("the form draft with messengers", () => {
   });
 
   it("stores the bot without the @ or the spaces around it", () => {
-    expect(normaliseBot("@bot_name ")).toBe("bot_name");
-    expect(editedOf({ ...draftOf({}), telegram: "@bot_name " })).toEqual({ telegram: "bot_name" });
+    expect(normaliseBot("@name_bot ")).toBe("name_bot");
+    expect(editedOf({ ...draftOf({}), telegram: "@name_bot " })).toEqual({ telegram: "name_bot" });
   });
 
   it("is unchanged for a place that stored a switch as on", () => {
@@ -63,16 +63,20 @@ describe("the form draft with messengers", () => {
 
 describe("the bot username hint", () => {
   it("takes a username with or without the @, and an empty field", () => {
-    expect(["@bot_name ", "bot_name", "Aquafix_devis_bot", ""].map(looksLikeBot)).toEqual([true, true, true, true]);
+    expect(["@name_bot ", "name_bot", "Aquafix_devis_bot", "AquafixBOT", ""].map(looksLikeBot)).toEqual([true, true, true, true, true]);
   });
 
-  it("takes 4 to 32 characters and nothing outside", () => {
-    expect(["abcd", "abcdefghijklmnopqrstuvwxyz_12345"].map(looksLikeBot)).toEqual([true, true]);
-    expect(["abc", "abcdefghijklmnopqrstuvwxyz_123456"].map(looksLikeBot)).toEqual([false, false]);
+  it("takes 5 to 32 characters and nothing outside", () => {
+    expect(["a_bot", "abcdefghijklmnopqrstuvwxyz12_bot"].map(looksLikeBot)).toEqual([true, true]);
+    expect(["abcd", "abot", "abcdefghijklmnopqrstuvwxyz123_bot"].map(looksLikeBot)).toEqual([false, false, false]);
+  });
+
+  it("refuses a username without the bot suffix", () => {
+    expect(["bot_name", "aquafix", "aquafix_bo"].map(looksLikeBot)).toEqual([false, false, false]);
   });
 
   it("refuses a username starting with a digit or holding a dash or a space", () => {
-    expect(["1bot_name", "bot-name", "bot name"].map(looksLikeBot)).toEqual([false, false, false]);
+    expect(["1name_bot", "name-bot", "name bot"].map(looksLikeBot)).toEqual([false, false, false]);
   });
 });
 
