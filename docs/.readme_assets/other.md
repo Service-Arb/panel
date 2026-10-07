@@ -15,11 +15,17 @@ journaled already), or `rejected` with a reason. A type the panel does not know 
 (key, signature or timestamp), `400` a body that is not a batch. The contract is
 [`contracts/proto/sa/v1/events.proto`](contracts/proto/sa/v1/events.proto).
 
+A messenger bot (a key of kind `bot`) sends its leads and the fact that a customer wrote the
+same way, and looks a lead up by the ref the customer brought:
+`GET /api/ingest/v1/leads/by-ref/<brand>/<ref>`, signed over an empty body. See
+[docs/BOT-API.md](docs/BOT-API.md).
+
 ## Place settings
 
 A landing (kitstart) bakes its places into its build, and lays over them what the panel
-answers for each one: phones, WhatsApp, opening hours, service area, and for storefronts an
-address, a pin, a photo, a landmark, a rating (kitstart's `PlaceLive`). Changing a number is
+answers for each one: phones, WhatsApp, the Telegram bot and the messenger switches, opening
+hours, service area, and for storefronts an address, a pin, a photo, a landmark, a rating
+(kitstart's `PlaceLive`). Changing a number is
 an edit in the panel or a `panel place set`, not a release. A site fetches at most every
 10 minutes; the panel being down or slow only delays a change, the site serves what it baked.
 

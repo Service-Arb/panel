@@ -60,6 +60,7 @@ panel migrate
 
 # A source: its key may write events of one kind, for the brands named. The secret is printed once.
 panel source add aquafix-site --kind site --brand aquafix
+panel source add aquafix-tg --kind bot --brand aquafix      # a messenger bot: docs/BOT-API.md
 panel source list
 panel source revoke aquafix-site
 
@@ -79,6 +80,8 @@ panel place register aquafix royat             # known to the panel, nothing set
 panel place set aquafix royat --phone +33423500640 --whatsapp +33612345678 \
   --hours 'Mo-Fr 08:00-19:00,Sa 09:00-12:00' --service-area 'Royat,Chamalières'
 panel place set aquafix royat --clear whatsapp
+panel place set aquafix royat --telegram aquafix_devis_bot --messengers whatsapp=on,telegram=off
+panel place set aquafix royat --clear telegram --clear messengers
 panel place show aquafix royat
 panel place history aquafix royat              # every change, newest first, with its id
 panel place revert aquafix royat <change id>   # the settings that change found, back
@@ -103,11 +106,17 @@ journaled already), or `rejected` with a reason. A type the panel does not know 
 (key, signature or timestamp), `400` a body that is not a batch. The contract is
 [`contracts/proto/sa/v1/events.proto`](contracts/proto/sa/v1/events.proto).
 
+A messenger bot (a key of kind `bot`) sends its leads and the fact that a customer wrote the
+same way, and looks a lead up by the ref the customer brought:
+`GET /api/ingest/v1/leads/by-ref/<brand>/<ref>`, signed over an empty body. See
+[docs/BOT-API.md](docs/BOT-API.md).
+
 ## Place settings
 
 A landing (kitstart) bakes its places into its build, and lays over them what the panel
-answers for each one: phones, WhatsApp, opening hours, service area, and for storefronts an
-address, a pin, a photo, a landmark, a rating (kitstart's `PlaceLive`). Changing a number is
+answers for each one: phones, WhatsApp, the Telegram bot and the messenger switches, opening
+hours, service area, and for storefronts an address, a pin, a photo, a landmark, a rating
+(kitstart's `PlaceLive`). Changing a number is
 an edit in the panel or a `panel place set`, not a release. A site fetches at most every
 10 minutes; the panel being down or slow only delays a change, the site serves what it baked.
 
