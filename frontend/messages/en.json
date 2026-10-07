@@ -660,5 +660,7 @@
   "placeSettings.messengers.off": "{names} off",
   "placeSettings.messengers.allOn": "All on",
   "placeSettings.preview.telegram": "Telegram",
-  "sources.kind.bot": "Bot (WhatsApp/Telegram)"
+  "sources.kind.bot": "Bot (WhatsApp/Telegram)",
+  "channel.other": "Another channel",
+  "messenger.doneOther": "Messaged · {at}"
 }

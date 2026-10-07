@@ -1,34 +1,28 @@
 "use client";
 
 import { Button, toast } from "@evinvest/uikit";
-import { useState } from "react";
 
 import { type Lead, type Messenger, markMessaged, refOf } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
+import { useKeyedWrite } from "@/shared/lib/use-keyed-write";
 import { notifyFailure } from "@/shared/ui/notify";
 import { useButtonSize } from "@/shared/ui/touch";
 
 /**
  * The operator saw the customer's message (matched by its ref) in WhatsApp
- * Business or the bot's chat: `lead.messaged` from the panel. A repeat is a
- * no-op on the server, so a double tap or a retry does no harm.
+ * Business or the bot's chat: `lead.messaged` from the panel. A retry after a
+ * lost answer goes under the same Idempotency-Key, so the server acts once.
  */
 export function MarkMessagedButton({ lead, channel, onMarked }: { lead: Lead; channel: Messenger; onMarked: () => void }) {
   const t = useT();
   const button = useButtonSize();
-  const [busy, setBusy] = useState(false);
+  const { busy, run } = useKeyedWrite();
 
   const mark = async () => {
-    setBusy(true);
-    try {
-      await markMessaged(refOf(lead), channel);
-      toast.positive(t("move.saved"));
-      onMarked();
-    } catch (e) {
-      notifyFailure(e, t);
-    } finally {
-      setBusy(false);
-    }
+    const outcome = await run({ brand: lead.brand, lead: lead.lead_id, channel }, (key) => markMessaged(refOf(lead), channel, key));
+    if (!outcome.ok) return notifyFailure(outcome.error, t);
+    toast.positive(t("move.saved"));
+    onMarked();
   };
 
   return (

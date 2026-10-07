@@ -1,10 +1,13 @@
-import { type Infer, arrayOf, bool, cents, dictOf, isoDay, nullable, num, object, oneOf, record, recordOf, str } from "@/shared/lib/parse";
+import { type Infer, arrayOf, bool, cents, dictOf, isoDay, nullable, num, object, oneOf, oneOfOr, record, recordOf, str } from "@/shared/lib/parse";
 
 import { leadBookingParser } from "./booking";
-import { CHANNELS, CONTACT_SLA_SECONDS, FLOWS, MESSENGERS, type Messenger, STAGES, SUSPECTS, type Stage } from "./generated";
+import { CHANNELS, CONTACT_SLA_SECONDS, FLOWS, MESSENGERS, type Channel, type Messenger, STAGES, SUSPECTS, type Stage } from "./generated";
 
 export { CHANNELS, CONTACT_SLA_SECONDS, MANUAL_CHANNELS, MESSENGERS, STAGES, SUSPECTS } from "./generated";
 export type { Channel, ManualChannel, Messenger, Stage, Suspect } from "./generated";
+
+/** A lead's channel as read: one the panel knows, or `other` for one a newer backend added. */
+export type LeadChannel = Channel | "other";
 
 const slaParser = object({ waiting_since: str, waiting_seconds: num, overdue: bool });
 
@@ -14,13 +17,13 @@ export const leadParser = object({
   location: nullable(str),
   job_id: nullable(str),
   stage: oneOf(STAGES),
-  /** How the customer reached the brand; null for a lead seen before its creation. */
-  channel: nullable(oneOf(CHANNELS)),
+  /** How the customer reached the brand; null for a lead seen before its creation, `other` for a channel newer than this build. */
+  channel: nullable(oneOfOr(CHANNELS, "other")),
   /** The ref the landing gave the customer to quote in a messenger (`AQ-7K3F`). */
   message_ref: nullable(str),
-  /** When the customer first wrote on a messenger, and on which: both or neither. */
+  /** When the customer first wrote on a messenger, and on which (null too for a messenger newer than this build). */
   messaged_at: nullable(str),
-  messaged_channel: nullable(oneOf(MESSENGERS)),
+  messaged_channel: nullable(oneOfOr(MESSENGERS, null)),
   manual: bool,
   created_at: nullable(str),
   contacted_at: nullable(str),

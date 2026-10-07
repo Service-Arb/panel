@@ -31,7 +31,7 @@ export function LeadList({ leads, flash, selected, onOpen }: { leads: Lead[]; fl
               <ItemActions className="flex-col items-end gap-1">
                 {lead.sla ? <SlaBadge sla={lead.sla} /> : <StageBadge stage={lead.stage} />}
                 <SuspectBadge suspect={lead.suspect} short />
-                <ChannelBadge channel={lead.channel} />
+                <ChannelBadge channel={lead.channel} short />
               </ItemActions>
             </button>
           </Item>

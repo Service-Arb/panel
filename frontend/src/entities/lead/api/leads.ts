@@ -1,4 +1,4 @@
-import { http, ignoreBody } from "@/shared/api";
+import { IDEMPOTENCY_HEADER, http, ignoreBody } from "@/shared/api";
 import { object, str } from "@/shared/lib/parse";
 
 import type { BookingStatus } from "../model/booking";
@@ -80,9 +80,12 @@ export async function moveLead(ref: LeadRef, move: StageMove): Promise<void> {
   await http.send("POST", `${leadPath(ref)}/stage`, move, ignoreBody);
 }
 
-/** The customer wrote on a messenger (`lead.messaged`); the server takes a repeat as done. */
-export async function markMessaged(ref: LeadRef, channel: Messenger): Promise<void> {
-  await http.send("POST", `${leadPath(ref)}/messaged`, { channel }, ignoreBody);
+/**
+ * The customer wrote on a messenger (`lead.messaged`). 201; a retry under the
+ * same key replays the first answer, and a lead already marked answers ok too.
+ */
+export async function markMessaged(ref: LeadRef, channel: Messenger, idempotencyKey: string): Promise<void> {
+  await http.send("POST", `${leadPath(ref)}/messaged`, { channel }, ignoreBody, { [IDEMPOTENCY_HEADER]: idempotencyKey });
 }
 
 export interface PaymentInput {

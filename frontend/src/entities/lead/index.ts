@@ -5,7 +5,7 @@ export type { CloseBody, SlotBody } from "./api/booking";
 export { BOOKING_MATCHES, BOOKING_STATUSES, DAY_PARTS, NO_BOOKING, bookingActions } from "./model/booking";
 export type { BookingAction, BookingMatch, BookingStatus, DayPart, LeadBooking } from "./model/booking";
 export { CHANNELS, CONTACT_SLA_SECONDS, LABELLED_PII, MANUAL_CHANNELS, MESSENGERS, STAGES, SUSPECTS, awaitingMessage, contactOf, extrasOf, dialable, slaAt, decodeRef, encodeRef, leadPath, reached, refOf } from "./model/lead";
-export type { Channel, Contact, LabelledPii, Lead, ManualChannel, Messenger, Suspect, LeadCard, LeadCounts, LeadEvent, LeadPage, LeadRef, Stage } from "./model/lead";
+export type { Channel, Contact, LabelledPii, Lead, LeadChannel, ManualChannel, Messenger, Suspect, LeadCard, LeadCounts, LeadEvent, LeadPage, LeadRef, Stage } from "./model/lead";
 export { FLOWS, quotedPrice } from "./model/pricing";
 export type { Flow } from "./model/pricing";
 export { ChannelBadge, ChannelIcon, SlaBadge, StageBadge, SuspectBadge } from "./ui/badges";

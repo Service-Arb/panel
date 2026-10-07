@@ -660,5 +660,7 @@
   "placeSettings.messengers.off": "Выключено: {names}",
   "placeSettings.messengers.allOn": "Все включены",
   "placeSettings.preview.telegram": "Telegram",
-  "sources.kind.bot": "Бот (WhatsApp/Telegram)"
+  "sources.kind.bot": "Бот (WhatsApp/Telegram)",
+  "channel.other": "Другой канал",
+  "messenger.doneOther": "Написал · {at}"
 }

@@ -1,3 +1,4 @@
+import { MESSENGERS, type Messenger } from "@/entities/lead";
 import { type Infer, type Parser, arrayOf, bool, nullable, object, oneOf, record, str } from "@/shared/lib/parse";
 
 import { type BookingConfig, bookingConfigOf } from "./booking";
@@ -9,8 +10,9 @@ export type Day = (typeof DAYS)[number];
 const hoursRowParser = object({ days: arrayOf(oneOf(DAYS)), opens: str, closes: str });
 export type HoursRow = Infer<typeof hoursRowParser>;
 
-export const MESSENGER_SWITCHES = ["whatsapp", "telegram"] as const;
-export type MessengerSwitch = (typeof MESSENGER_SWITCHES)[number];
+/** The landing's messengers the panel can switch off: the lead's own list, as generated from `panel_core`. */
+export const MESSENGER_SWITCHES = MESSENGERS;
+export type MessengerSwitch = Messenger;
 
 /** The landing's messenger buttons, switched off where `false`; a key absent is on. */
 export type Messengers = Partial<Record<MessengerSwitch, boolean>>;

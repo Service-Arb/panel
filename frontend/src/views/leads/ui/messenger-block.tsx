@@ -18,7 +18,7 @@ export function MessengerBlock({ lead, onChanged }: { lead: Lead; onChanged: () 
   const t = useT();
   const locale = useLocale();
   const awaiting = awaitingMessage(lead);
-  const messaged = lead.messaged_at !== null && lead.messaged_channel !== null ? { at: lead.messaged_at, channel: lead.messaged_channel } : null;
+  const messaged = lead.messaged_at !== null ? { at: formatDateTime(lead.messaged_at, locale), channel: lead.messaged_channel } : null;
   if (lead.message_ref === null && awaiting === null && messaged === null) return null;
 
   return (
@@ -26,8 +26,8 @@ export function MessengerBlock({ lead, onChanged }: { lead: Lead; onChanged: () 
       {lead.message_ref !== null && <RefLine messageRef={lead.message_ref} />}
       {messaged && (
         <p className="flex items-center gap-1.5 text-sm text-ink-mid">
-          <ChannelIcon channel={messaged.channel} className="size-4 shrink-0" />
-          {t("messenger.done", { channel: t(`channel.${messaged.channel}`), at: formatDateTime(messaged.at, locale) })}
+          <ChannelIcon channel={messaged.channel ?? "other"} className="size-4 shrink-0" />
+          {messaged.channel ? t("messenger.done", { channel: t(`channel.${messaged.channel}`), at: messaged.at }) : t("messenger.doneOther", { at: messaged.at })}
         </p>
       )}
       {awaiting && (
