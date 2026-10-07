@@ -12,7 +12,7 @@ use jiff::{Timestamp, civil::Date};
 use panel_contracts::SCHEMA;
 use panel_core::{
 	Invalid,
-	fact::{LeadFlow, bounded},
+	fact::{LeadChannel, LeadFlow, MessageRef, Messenger, bounded},
 	funnel::{self, Totals},
 	ids::{BrandId, EventId, JobId, LeadId, LocationId},
 	lead::Stage,
@@ -64,7 +64,8 @@ pub fn idempotent_id(by: Actor, action: &str, key: &str) -> Uuid {
 	crate::derived_id(b"sa-panel/idempotency/v1/", &[by.0.as_bytes(), action.as_bytes(), key.as_bytes()])
 }
 
-/// A lead taken over the phone, bypassing the form (§10a "+ Call").
+/// A lead taken by hand, bypassing the form (§10a "+ Call"): over the phone, or from a customer
+/// who wrote on a messenger without going through the landing.
 #[derive(Clone, Debug)]
 pub struct NewLead {
 	pub brand: BrandId,
@@ -72,6 +73,8 @@ pub struct NewLead {
 	/// What the customer needs, in their words: PII.
 	pub need: String,
 	pub phone: Option<String>,
+	/// How it came in: one of [`LeadChannel::MANUAL`].
+	pub channel: LeadChannel,
 }
 
 /// A move of a lead through the funnel (stages 6–9).
@@ -158,6 +161,10 @@ pub struct LeadQuery {
 	pub flow: Option<LeadFlow>,
 	/// Only those whose booking stands here.
 	pub booking: Option<panel_core::booking::BookingStatus>,
+	/// Only those that came in through this channel.
+	pub channel: Option<LeadChannel>,
+	/// Only those carrying this messenger ref: what the customer quotes in their message.
+	pub message_ref: Option<MessageRef>,
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: u32,
 }
@@ -234,8 +241,8 @@ fn new_uuid(now: Timestamp) -> Uuid {
 }
 
 impl Panel {
-	/// Records a lead that came in by phone: `lead.created{channel: phone_inbound}`, what it
-	/// needs and the number in its PII. Its id is made here.
+	/// Records a lead taken by hand: `lead.created{channel}` (phone_inbound, whatsapp or
+	/// telegram), what it needs and the number in its PII. Its id is made here.
 	pub async fn create_lead(&self, by: Actor, lead: NewLead, now: Timestamp) -> Result<(LeadId, EventId), ActionError> {
 		Ok(self.create_lead_once(by, lead, now, None).await?.value)
 	}
@@ -250,6 +257,9 @@ impl Panel {
 			.map_err(ActionError::Invalid)?
 			.ok_or_else(|| ActionError::Invalid(Invalid::new("need is required")))?;
 		let phone = bounded("phone", lead.phone).map_err(ActionError::Invalid)?;
+		if !LeadChannel::MANUAL.contains(&lead.channel) {
+			return Err(ActionError::Invalid(Invalid::new("channel is one of phone_inbound, whatsapp, telegram")));
+		}
 		let lead_id = match key {
 			Some(k) => format!("p-{}", idempotent_id(by, "lead.created/lead_id", k).simple()),
 			None => opaque_new("p", now),
@@ -267,7 +277,7 @@ impl Panel {
 				id,
 				"lead.created",
 				subject,
-				json!({"channel": "phone_inbound", "enteredBy": by.0.to_string()}),
+				json!({"channel": lead.channel.as_str(), "enteredBy": by.0.to_string()}),
 				Some(Value::Object(pii)),
 				now,
 			)
@@ -309,6 +319,30 @@ impl Panel {
 			}
 		};
 		Ok(self.act(by, id, r#type, subject, properties, None, now).await?.map(|(_, e)| e))
+	}
+
+	/// The customer wrote on a messenger (`lead.messaged`), as the operator saw it: a WhatsApp
+	/// message read by hand. At most once per lead: when it has a message already, that one is
+	/// the answer (`replayed`); and at most once per idempotency `key` of the user and lead.
+	pub async fn mark_messaged_once(&self, by: Actor, brand: &BrandId, lead: &LeadId, channel: Messenger, now: Timestamp, key: Option<&str>) -> Result<Done<EventId>, ActionError> {
+		let id = key.map(|k| idempotent_id(by, &format!("messaged/{brand}/{lead}"), k));
+		if let Some(done) = self.replayed(by, id).await? {
+			return Ok(done.map(|(_, e)| e));
+		}
+		let current = self.lead_row(brand, lead).await?.ok_or(ActionError::NotFound)?;
+		// Said once is enough: the lead keeps its first message, so a second click (or a bot that
+		// said it first) is answered with that one, and nothing is journaled.
+		if current.messaged.is_some() {
+			let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+			if let Some(first) = reads::first_message(&mut conn, brand, lead).await? {
+				return Ok(Done {
+					value: EventId::from_raw(first),
+					replayed: true,
+				});
+			}
+		}
+		let properties = json!({"channel": channel.as_str()});
+		Ok(self.act(by, id, "lead.messaged", subject_of(&current), properties, None, now).await?.map(|(_, e)| e))
 	}
 
 	/// An outgoing call started from the panel (`call.attempted`); its event id is the attempt
@@ -451,6 +485,8 @@ impl Panel {
 			},
 			flow: q.flow,
 			booking: q.booking,
+			channel: q.channel,
+			message_ref: q.message_ref.clone(),
 			after: q.after.clone(),
 			limit: i64::from(limit) + 1,
 		};

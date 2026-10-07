@@ -45,6 +45,7 @@ const places = new Map<string, StubPlace>([
       settings: {
         phone: "+33478000003",
         whatsapp: "+33600000003",
+        telegram: "aquafix_devis_bot",
         hours: [
           { days: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], opens: "08:00", closes: "19:00" },
           { days: ["Saturday"], opens: "09:00", closes: "12:00" },
@@ -99,6 +100,18 @@ function invalid(s: Json): Record<string, string> {
       if (!TIME.test(String(r.opens))) out[`hours[${i}].opens`] = "must be HH:MM";
       if (!TIME.test(String(r.closes))) out[`hours[${i}].closes`] = "must be HH:MM";
     });
+  }
+  if (s.telegram !== undefined && !(typeof s.telegram === "string" && /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(s.telegram))) {
+    out.telegram = "must be a bot's username without the @: a letter, then 3 to 31 of letters, digits and _";
+  }
+  if (s.messengers !== undefined) {
+    const m = s.messengers;
+    if (typeof m !== "object" || m === null || Array.isArray(m)) out.messengers = 'must be an object like {"whatsapp": true, "telegram": false}';
+    else
+      for (const [k, on] of Object.entries(m)) {
+        if (k !== "whatsapp" && k !== "telegram") out[`messengers.${k}`] = "is not a messenger; one of whatsapp, telegram";
+        else if (typeof on !== "boolean") out[`messengers.${k}`] = "must be true or false";
+      }
   }
   Object.assign(out, invalidBooking(s.booking));
   if (s.serviceArea !== undefined && !(Array.isArray(s.serviceArea) && s.serviceArea.length > 0 && s.serviceArea.every((n) => typeof n === "string" && n.trim()))) {

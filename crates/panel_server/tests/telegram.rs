@@ -224,6 +224,7 @@ impl Setup {
 					location: LocationId::parse("paris-11").unwrap(),
 					need: "a leaking tap".into(),
 					phone: Some("+33 6 00 00 00 00".into()),
+					channel: panel_core::fact::LeadChannel::PhoneInbound,
 				},
 				now,
 			)
@@ -440,6 +441,7 @@ async fn a_lead_typed_in_is_not_told_to_whoever_typed_it() {
 		location: LocationId::parse("paris-11").unwrap(),
 		need: "a boiler".into(),
 		phone: None,
+		channel: panel_core::fact::LeadChannel::PhoneInbound,
 	};
 	s.panel.create_lead(Actor(typist), new, t0()).await.unwrap();
 	assert_eq!(s.panel.telegram_fan_out(t0(), Locale::Ru).await.unwrap(), 1);

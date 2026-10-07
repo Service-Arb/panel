@@ -2,14 +2,15 @@
 
 import { Badge } from "@evinvest/uikit";
 
-import { type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf, extrasOf } from "@/entities/lead";
+import { ChannelBadge, type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf, extrasOf } from "@/entities/lead";
 import { lostReasonLabel } from "@/features/move-stage";
 import { useT } from "@/shared/i18n";
 
 import { FactList } from "./card-section";
+import { MessengerBlock } from "./messenger-block";
 
-/** Who and what: the customer as they left it, where, and how long they have waited. */
-export function LeadDetails({ lead }: { lead: Lead }) {
+/** Who and what: the customer as they left it, where, how they reached us, and how long they have waited. */
+export function LeadDetails({ lead, onChanged }: { lead: Lead; onChanged: () => void }) {
   const t = useT();
   const c = contactOf(lead.pii);
   const rows = [
@@ -32,11 +33,13 @@ export function LeadDetails({ lead }: { lead: Lead }) {
         <StageBadge stage={lead.stage} />
         <SlaBadge sla={lead.sla} />
         <SuspectBadge suspect={lead.suspect} />
+        <ChannelBadge channel={lead.channel} />
         {lead.manual && <Badge variant="outline">{t("leads.manual")}</Badge>}
         <span className="text-sm text-ink-soft">
           {lead.brand} · {lead.location ?? t("places.unknown")}
         </span>
       </div>
+      <MessengerBlock lead={lead} onChanged={onChanged} />
       {lead.lost_reason && <p className="text-sm text-ink-mid">{t("card.lostReason", { reason: lostReasonLabel(lead.lost_reason, t) })}</p>}
       {shown.length === 0 ? (
         <p className="text-sm text-ink-soft">{t("card.noPii")}</p>

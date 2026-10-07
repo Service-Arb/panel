@@ -15,12 +15,16 @@ use jiff::Timestamp;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use crate::fact::Messenger;
+
 /// Why each field was refused, by its wire name — or its path inside a list, `hours[0].opens`,
 /// `hours[1].days`, `serviceArea[2]`: what the editor shows beside the field.
 pub type FieldErrors = BTreeMap<String, String>;
 
 /// Every field a place's settings may set, by its wire name.
-pub const FIELDS: [&str; 10] = ["phone", "whatsapp", "hours", "serviceArea", "address", "geo", "storefrontPhoto", "landmark", "rating", "booking"];
+pub const FIELDS: [&str; 12] = [
+	"phone", "whatsapp", "telegram", "messengers", "hours", "serviceArea", "address", "geo", "storefrontPhoto", "landmark", "rating", "booking",
+];
 
 /// kitstart's `DayOfWeek`, in week order.
 pub const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -57,6 +61,8 @@ impl PlaceSettings {
 			let whole = |r: Result<Value, String>| r.map_err(|e| vec![(String::new(), e)]);
 			let checked = match name.as_str() {
 				"phone" | "whatsapp" => whole(phone(value)),
+				"telegram" => whole(telegram_bot(value)),
+				"messengers" => messengers(value),
 				"hours" => hours(value),
 				"serviceArea" => service_area(value),
 				"address" => whole(address(value)),
@@ -152,6 +158,63 @@ fn phone(v: &Value) -> Result<Value, String> {
 	let digits = s.strip_prefix('+').ok_or(MSG)?;
 	let ok = (7..=15).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()) && !digits.starts_with('0');
 	if ok { Ok(Value::String(s)) } else { Err(MSG.into()) }
+}
+
+/// A Telegram bot's username without the `@`, as `t.me/<bot>` takes it and as Telegram issues it:
+/// 5 to 32 of letters, digits and `_`, a letter first, ending in `bot` in any case
+/// (`^[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]$`).
+fn telegram_bot(v: &Value) -> Result<Value, String> {
+	const MSG: &str = "must be a bot's username without the @: 5 to 32 of letters, digits and _, a letter first, ending in bot";
+	let s = text(v, 32).map_err(|_| MSG.to_owned())?;
+	let b = s.as_bytes();
+	let ok = (5..=32).contains(&b.len()) && b[0].is_ascii_alphabetic() && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_') && b[b.len() - 3..].eq_ignore_ascii_case(b"bot");
+	if ok { Ok(Value::String(s)) } else { Err(MSG.into()) }
+}
+
+/// `{whatsapp?: bool, telegram?: bool}`: the panel's kill switches for the landing's messenger
+/// buttons; a messenger left out is on. Each key is checked on its own, so the editor shows the
+/// one that is wrong.
+/// The messengers a place may switch off, by their wire names: [`Messenger`]'s, for an error.
+fn messenger_names() -> String {
+	Messenger::ALL.map(Messenger::as_str).join(", ")
+}
+
+fn messengers(v: &Value) -> Result<Value, Bad> {
+	let Value::Object(m) = v else {
+		return Err(vec![(String::new(), "must be an object like {\"whatsapp\": true, \"telegram\": false}".into())]);
+	};
+	let mut bad = Bad::new();
+	for (k, on) in m {
+		if Messenger::parse(k).is_err() {
+			bad.push((format!(".{k}"), format!("is not a messenger; one of {}", messenger_names())));
+		} else if !on.is_boolean() {
+			bad.push((format!(".{k}"), "must be true or false".into()));
+		}
+	}
+	if bad.is_empty() { Ok(v.clone()) } else { Err(bad) }
+}
+
+/// `whatsapp=on,telegram=off` → the `messengers` object (`panel place set --messengers`): each
+/// messenger once, `on` or `off`. Checked again by [`PlaceSettings::parse`].
+pub fn messengers_from_spec(spec: &str) -> Result<Value, String> {
+	let mut out = Map::new();
+	for part in spec.split(',').map(str::trim) {
+		let bad = || format!("{part:?} is not like whatsapp=on or telegram=off");
+		let (name, state) = part.split_once('=').ok_or_else(bad)?;
+		let (name, state) = (name.trim(), state.trim());
+		if Messenger::parse(name).is_err() {
+			return Err(format!("{name:?} is not a messenger; one of {}", messenger_names()));
+		}
+		let on = match state {
+			"on" => true,
+			"off" => false,
+			_ => return Err(bad()),
+		};
+		if out.insert(name.to_owned(), Value::Bool(on)).is_some() {
+			return Err(format!("{name} is named twice"));
+		}
+	}
+	Ok(Value::Object(out))
 }
 
 /// An object with exactly `keys`, each checked by `check`; the first problem, named.
@@ -549,6 +612,50 @@ mod tests {
 			assert!(hours_from_spec(bad).is_err(), "{bad}");
 		}
 		assert!(current.patched(Map::from_iter([("hours".to_owned(), hours_from_spec("Mo 19:00-08:00").unwrap())]), &[]).is_err());
+	}
+
+	#[test]
+	fn the_messengers_a_place_offers() {
+		let s = PlaceSettings::parse(&json!({"telegram": " aquafix_devis_bot ", "messengers": {"whatsapp": true, "telegram": false}})).unwrap();
+		assert_eq!(s.get("telegram"), Some(&json!("aquafix_devis_bot")), "trimmed");
+		assert_eq!(s.get("messengers"), Some(&json!({"whatsapp": true, "telegram": false})));
+		assert_eq!(
+			PlaceSettings::parse(&json!({"messengers": {}})).unwrap().get("messengers"),
+			Some(&json!({})),
+			"every messenger on"
+		);
+		for good in ["a_bot", "AquafixBOT", "x1Bot", &format!("a{}bot", "b".repeat(28)) as &str] {
+			assert!(PlaceSettings::parse(&json!({ "telegram": good })).is_ok(), "{good}");
+		}
+		for bad in [
+			"abot",
+			"_xbot",
+			"aquafix",
+			"aquafix_bo",
+			"@aquafix_bot",
+			"1aquafix_bot",
+			"aqua-fix_bot",
+			"aqua fix bot",
+			&format!("a{}bot", "b".repeat(29)) as &str,
+		] {
+			assert_eq!(
+				err(json!({ "telegram": bad }))["telegram"],
+				"must be a bot's username without the @: 5 to 32 of letters, digits and _, a letter first, ending in bot",
+				"{bad}"
+			);
+		}
+		let e = err(json!({"messengers": {"whatsapp": "on", "signal": true, "telegram": false}}));
+		assert_eq!(e.keys().collect::<Vec<_>>(), ["messengers.signal", "messengers.whatsapp"]);
+		assert_eq!(e["messengers.signal"], "is not a messenger; one of whatsapp, telegram");
+		assert_eq!(err(json!({"messengers": [true]})).keys().collect::<Vec<_>>(), ["messengers"]);
+
+		assert_eq!(messengers_from_spec("whatsapp=on, telegram=off").unwrap(), json!({"whatsapp": true, "telegram": false}));
+		for bad in ["whatsapp", "whatsapp=yes", "sms=on", "whatsapp=on,whatsapp=off", ""] {
+			assert!(messengers_from_spec(bad).is_err(), "{bad:?}");
+		}
+		let current = PlaceSettings::parse(&json!({"telegram": "aquafix_devis_bot", "messengers": {"telegram": false}})).unwrap();
+		let next = current.patched(Map::new(), &["telegram".to_owned(), "messengers".to_owned()]).unwrap();
+		assert!(next.is_empty(), "both are fields the CLI clears");
 	}
 
 	#[test]

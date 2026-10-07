@@ -5,7 +5,7 @@ use eyre::WrapErr;
 use jiff::{Timestamp, civil::Date};
 use panel_core::{
 	booking::{BookingMatch, BookingState, BookingStatus, DayPart, Provider},
-	fact::LeadFlow,
+	fact::{LeadChannel, LeadFlow, MessageRef, Messenger},
 	funnel::Totals,
 	ids::{BrandId, LeadId, LocationId},
 	lead::Stage,
@@ -45,6 +45,10 @@ pub struct LeadRow {
 	pub pricing_valid_from: Option<String>,
 	/// An estimate's inputs, input id → value id.
 	pub estimate_inputs: Option<Value>,
+	/// The ref the customer carries into a messenger (`AQ-7K3F`), from its `lead.created`.
+	pub message_ref: Option<String>,
+	/// When the customer first wrote on a messenger (`lead.messaged`), and on which.
+	pub messaged: Option<(Timestamp, Messenger)>,
 	/// Its booking: none, asked for, booked, …
 	pub booking: BookingState,
 	pub last_event_at: Timestamp,
@@ -91,6 +95,9 @@ struct Row {
 	booking_match: Option<String>,
 	booking_preferred_date: Option<String>,
 	booking_preferred_part: Option<String>,
+	message_ref: Option<String>,
+	messaged_at: Option<i64>,
+	messaged_channel: Option<String>,
 	last_event_at: i64,
 	sort_at: i64,
 	creation_id: Option<Uuid>,
@@ -114,8 +121,17 @@ impl TryFrom<Row> for LeadRow {
 			preferred_date: r.booking_preferred_date.as_deref().map(super::day_from_db).transpose()?,
 			preferred_part: r.booking_preferred_part.as_deref().map(DayPart::parse).transpose().wrap_err_with(at)?,
 		};
+		let messaged = match (r.messaged_at, r.messaged_channel.as_deref()) {
+			(Some(at), Some(channel)) => Some((
+				from_db(at)?,
+				Messenger::parse(channel).wrap_err_with(|| format!("stored messenger of lead {}/{}", r.brand_id, r.lead_id))?,
+			)),
+			_ => None,
+		};
 		Ok(Self {
 			booking,
+			messaged,
+			message_ref: r.message_ref,
 			flow: r.flow,
 			quoted_cents: r.quoted_cents,
 			pricing_valid_from: r.pricing_valid_from,
@@ -153,7 +169,7 @@ macro_rules! lead_select {
 		 l.created_at, l.contacted_at, l.quoted_at, l.won_at, l.completed_at, l.paid_at, l.lost_at, l.lost_reason, l.last_event_at, \
 		 l.flow, l.quoted_cents, l.pricing_valid_from, l.estimate_inputs, \
 		 l.booking_status, l.booking_provider, l.booking_start_at, l.booking_end_at, l.booking_external_ref, l.booking_match, \
-		 l.booking_preferred_date, l.booking_preferred_part, \
+		 l.booking_preferred_date, l.booking_preferred_part, l.message_ref, l.messaged_at, l.messaged_channel, \
 		 COALESCE(l.created_at, l.last_event_at) AS sort_at, \
 		 c.id AS creation_id, c.pii_sealed, c.data_key_fp \
 		 FROM leads l \
@@ -183,6 +199,10 @@ pub struct LeadFilter {
 	pub flow: Option<LeadFlow>,
 	/// Only the leads whose booking stands here (`none`: no booking at all).
 	pub booking: Option<BookingStatus>,
+	/// Only the leads that came in through this channel.
+	pub channel: Option<LeadChannel>,
+	/// Only the leads carrying this messenger ref.
+	pub message_ref: Option<MessageRef>,
 	/// The last lead of the page before: `(sort_at, brand, lead)`.
 	pub after: Option<(Timestamp, String, String)>,
 	pub limit: i64,
@@ -202,6 +222,7 @@ pub async fn leads(conn: &mut SqliteConnection, f: &LeadFilter) -> eyre::Result<
 		 AND ($9 IS NULL OR l.created_at >= $9) AND ($10 IS NULL OR l.created_at < $10) \
 		 AND ($11 IS NULL OR (l.suspect IS NOT NULL) = $11) AND ($12 IS NULL OR l.flow = $12) \
 		 AND ($13 IS NULL OR COALESCE(l.booking_status, 'none') = $13) \
+		 AND ($14 IS NULL OR l.channel = $14) AND ($15 IS NULL OR l.message_ref = $15) \
 		 ORDER BY sort_at DESC, l.brand_id DESC, l.lead_id DESC LIMIT $8"
 	))
 	.bind(f.stage.map(Stage::as_str))
@@ -217,6 +238,8 @@ pub async fn leads(conn: &mut SqliteConnection, f: &LeadFilter) -> eyre::Result<
 	.bind(f.suspect)
 	.bind(f.flow.map(LeadFlow::as_str))
 	.bind(f.booking.map(BookingStatus::as_str))
+	.bind(f.channel.map(LeadChannel::as_str))
+	.bind(f.message_ref.as_ref().map(MessageRef::as_str))
 	.fetch_all(&mut *conn)
 	.await
 	.wrap_err("listing leads")?
@@ -234,6 +257,37 @@ pub async fn lead(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId) -
 		.wrap_err_with(|| format!("reading lead {brand}/{lead}"))?
 		.map(LeadRow::try_from)
 		.transpose()
+}
+
+/// The lead a messenger ref names, in one query: the brand's newest carrying it (a ref is the
+/// landing's, so two leads may share one), by creation, then by id for two created in the same
+/// microsecond.
+pub async fn lead_by_ref(conn: &mut SqliteConnection, brand: &BrandId, message_ref: &MessageRef) -> eyre::Result<Option<LeadRow>> {
+	sqlx::query_as::<_, Row>(concat!(
+		lead_select!(),
+		"WHERE l.brand_id = $1 AND l.message_ref = $2 ORDER BY l.created_at DESC NULLS LAST, l.lead_id DESC LIMIT 1"
+	))
+	.bind(brand.as_str())
+	.bind(message_ref.as_str())
+	.fetch_optional(&mut *conn)
+	.await
+	.wrap_err_with(|| format!("finding the lead of ref {message_ref} of {brand}"))?
+	.map(LeadRow::try_from)
+	.transpose()
+}
+
+/// The lead's first `lead.messaged` the panel journaled: the one PostHog is told of, and what an
+/// operator saying it again is answered with.
+pub async fn first_message(conn: &mut SqliteConnection, brand: &BrandId, lead: &LeadId) -> eyre::Result<Option<Uuid>> {
+	sqlx::query_scalar(
+		"SELECT id FROM events WHERE brand_id = $1 AND lead_id = $2 AND type = 'lead.messaged' AND status = 'registered' \
+		 ORDER BY received_at, id LIMIT 1",
+	)
+	.bind(brand.as_str())
+	.bind(lead.as_str())
+	.fetch_optional(&mut *conn)
+	.await
+	.wrap_err_with(|| format!("finding the first message of lead {brand}/{lead}"))
 }
 
 /// One event of a lead, as its card shows it.

@@ -4,19 +4,20 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger, Label, Switch, but
 import { ChevronDown } from "lucide-react";
 import { useId } from "react";
 
-import { BOOKING_STATUSES, FLOWS, type LeadCounts, type LeadFilter, STAGES } from "@/entities/lead";
+import { BOOKING_STATUSES, CHANNELS, FLOWS, type LeadCounts, type LeadFilter, STAGES } from "@/entities/lead";
 import { useT } from "@/shared/i18n";
 import { DESKTOP_QUERY, useMediaQuery } from "@/shared/lib/use-media-query";
 import { FilterSelect } from "@/shared/ui/filter-select";
 import { useButtonSize } from "@/shared/ui/touch";
 
-import { bookingFilterOf, flowFilterOf, narrows, stageOrNull, suspectFilterOf } from "../model/params";
+import { bookingFilterOf, channelFilterOf, flowFilterOf, narrows, stageOrNull, suspectFilterOf } from "../model/params";
+import { RefSearch } from "./ref-search";
 import { StageSegments } from "./stage-segments";
 
 type Props = { filter: LeadFilter; brands: string[]; locations: string[]; counts: LeadCounts | null; onChange: (patch: Partial<LeadFilter>) => void };
 
 /**
- * Stage, brand, location and "overdue only" — the questions the queue is sorted
+ * Stage, brand, location, channel, a messenger ref and "overdue only" — the questions the queue is sorted
  * by. On a phone the stages an operator works through are segments under the
  * thumb, and the rest folds under "More filters" (the mockup's hybrid).
  */
@@ -41,7 +42,7 @@ export function LeadFilters(props: Props) {
     );
   }
 
-  const more = narrows(filter, ["brand", "location", "overdue", "suspect", "flow", "booking"]);
+  const more = narrows(filter, ["brand", "location", "overdue", "suspect", "flow", "booking", "channel", "messageRef"]);
   return (
     <div className="flex flex-col gap-2">
       <StageSegments stage={filter.stage} counts={props.counts} onChange={(stage) => onChange({ stage })} />
@@ -65,6 +66,14 @@ function SecondaryFilters({ filter, brands, locations, onChange }: Props) {
     <>
       <FilterSelect label={t("filter.brand")} allLabel={t("filter.brand.all")} value={filter.brand} options={brands.map((b) => ({ value: b, label: b }))} onChange={(brand) => onChange({ brand, location: null })} />
       <FilterSelect label={t("filter.location")} allLabel={t("filter.location.all")} value={filter.location} options={locations.map((l) => ({ value: l, label: l }))} onChange={(location) => onChange({ location })} />
+      <FilterSelect
+        label={t("filter.channel")}
+        allLabel={t("filter.channel.all")}
+        value={filter.channel}
+        options={CHANNELS.map((c) => ({ value: c, label: t(`channel.${c}`) }))}
+        onChange={(v) => onChange({ channel: channelFilterOf(v) })}
+      />
+      <RefSearch value={filter.messageRef} onChange={(messageRef) => onChange({ messageRef })} />
       <FilterSelect
         label={t("filter.suspect")}
         allLabel={t("filter.suspect.all")}

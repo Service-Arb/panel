@@ -213,3 +213,39 @@ fn events_time(events: &[Value], i: usize) -> Timestamp {
 		.round(jiff::TimestampRound::new().smallest(jiff::Unit::Microsecond).mode(jiff::RoundMode::Trunc))
 		.unwrap()
 }
+
+/// A conversation is told to PostHog once, at its first message, where its lead is: a later
+/// message, or one the operator marks, is not told again.
+#[tokio::test]
+async fn a_conversation_is_told_once() {
+	let db = TestDb::create().await;
+	let panel = panel(&db).await.with_capture(true);
+	let secret = site(&panel).await;
+	let bot = panel
+		.add_source("aquafix-tg", SourceKind::Bot, [BrandId::parse("aquafix").unwrap()].into())
+		.await
+		.unwrap()
+		.unwrap()
+		.secret
+		.to_string();
+	let now = Timestamp::now();
+	let at = |m| now - SignedDuration::from_mins(m);
+	let landing = [panel::testing::messenger_lead(at(10), "aquafix", "L-1", "telegram", "AQ-7K3F")];
+	panel.ingest(sign("aquafix-site", &secret, &landing, now).batch(), now).await.unwrap();
+	let wrote = |m| {
+		event(
+			"lead.messaged",
+			at(m),
+			"bot",
+			json!({"brandId": "aquafix"}),
+			json!({"channel": "telegram", "messageRef": "AQ-7K3F"}),
+		)
+	};
+	let got = panel.ingest(sign("aquafix-tg", &bot, &[wrote(5), wrote(4)], now).batch(), now).await.unwrap();
+	assert!(got.iter().all(|v| v.outcome == panel::Outcome::Accepted { unregistered: false }), "{got:?}");
+	let messaged: Vec<(String, Value)> = outbox(&panel).await.into_iter().filter(|(e, ..)| e == "sa_lead_messaged").map(|(e, _, p)| (e, p)).collect();
+	assert_eq!(messaged.len(), 1, "{messaged:?}");
+	assert_eq!(messaged[0].1["location_id"], "royat", "the lead's place, found with it by its ref");
+	assert_eq!(messaged[0].1["channel"], "telegram");
+	assert!(!messaged[0].1.to_string().contains("AQ-7K3F"), "never the ref");
+}

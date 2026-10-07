@@ -65,6 +65,18 @@ export function oneOf<const L extends readonly string[]>(values: L): Parser<L[nu
       : fail(path, `one of ${values.join(", ")}`, v);
 }
 
+/**
+ * A string from `values`, or `fallback` for any other string: for a list the
+ * backend may grow before the front ships the new word, so one row does not
+ * fail the whole answer. A non-string still fails.
+ */
+export function oneOfOr<const L extends readonly string[], const F>(values: L, fallback: F): Parser<L[number] | F> {
+  return (v, path) => {
+    const s = str(v, path);
+    return (values as readonly string[]).includes(s) ? (s as L[number]) : fallback;
+  };
+}
+
 export const record: Parser<Record<string, unknown>> = (v, path) =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : fail(path, "an object", v);
 

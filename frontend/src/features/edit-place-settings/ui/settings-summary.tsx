@@ -1,6 +1,6 @@
 "use client";
 
-import { ChannelPreview, type PlaceSettingsView, bookingText, formatHours } from "@/entities/place";
+import { ChannelPreview, type PlaceSettingsView, bookingText, formatHours, messengersText } from "@/entities/place";
 import { useT } from "@/shared/i18n";
 
 import { KeptFields } from "./kept-fields";
@@ -13,6 +13,8 @@ export function SettingsSummary({ place }: { place: PlaceSettingsView }) {
   const rows = [
     { label: t("placeSettings.field.phone"), value: e.phone },
     { label: t("placeSettings.field.whatsapp"), value: e.whatsapp },
+    { label: t("placeSettings.field.telegram"), value: e.telegram && `@${e.telegram}` },
+    { label: t("placeSettings.field.messengers"), value: messengersText(e, t) ?? t("placeSettings.messengers.allOn") },
     { label: t("placeSettings.field.hours"), value: e.hours && formatHours(e.hours, t) },
     { label: t("placeSettings.field.serviceArea"), value: e.serviceArea?.join(", ") },
     { label: t("placeSettings.field.booking"), value: e.booking && bookingText(e.booking, t) },

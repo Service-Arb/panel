@@ -122,7 +122,15 @@ async fn a_signed_in_call_reaches_the_service_with_an_assertion_and_without_the_
 	assert!(seen.lock().unwrap().is_empty(), "nothing reached the service");
 
 	b.sign_in(&app).await;
-	let (status, headers) = b.send(&app, Method::GET, "/api/review_archive/me/overview?x=1", &[("x-sa-assertion", "forged"), ("x-member", "3")], false).await;
+	let (status, headers) = b
+		.send(
+			&app,
+			Method::GET,
+			"/api/review_archive/me/overview?x=1",
+			&[("x-sa-assertion", "forged"), ("x-member", "3")],
+			false,
+		)
+		.await;
 	assert_eq!(status, StatusCode::OK);
 	assert_eq!(headers["x-upstream"], "yes");
 	assert!(headers.get(header::SET_COOKIE).is_none(), "a service sets no cookie on the panel's origin");
@@ -137,7 +145,11 @@ async fn a_signed_in_call_reaches_the_service_with_an_assertion_and_without_the_
 	let now = jiff::Timestamp::now().as_second();
 	let a = sa_auth::verify(&keys, token, Service::ReviewArchive, "GET", "/me/overview", now).expect("the panel's assertion, not the forged one");
 	assert_eq!(a.email, "dev-admin@localhost");
-	assert!(a.permissions.iter().all(|p| p.starts_with("sa:review_archive:")) && a.permissions.iter().count() == 3, "{:?}", a.permissions);
+	assert!(
+		a.permissions.iter().all(|p| p.starts_with("sa:review_archive:")) && a.permissions.iter().count() == 3,
+		"{:?}",
+		a.permissions
+	);
 }
 
 #[tokio::test]
@@ -152,7 +164,11 @@ async fn a_forwarded_write_needs_the_panels_csrf_header_but_playbooks_consent_fo
 	assert!(seen.lock().unwrap().is_empty());
 	assert_eq!(b.send(&app, Method::POST, "/api/review_archive/me/gmails", &[], true).await.0, StatusCode::OK);
 
-	assert_eq!(b.send(&app, Method::POST, "/playbook_mcp/authorize", &[], false).await.0, StatusCode::OK, "its own nonce guards it");
+	assert_eq!(
+		b.send(&app, Method::POST, "/playbook_mcp/authorize", &[], false).await.0,
+		StatusCode::OK,
+		"its own nonce guards it"
+	);
 	let got = seen.lock().unwrap().pop().unwrap();
 	assert_eq!((got.method, got.path_and_query.as_str()), (Method::POST, "/playbook_mcp/authorize"));
 	assert!(got.headers.contains_key("x-sa-assertion"));

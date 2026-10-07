@@ -32,7 +32,9 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Gate {
 	/// Signed in, and the assertion added.
-	Session { csrf: bool },
+	Session {
+		csrf: bool,
+	},
 	Open,
 }
 
@@ -198,7 +200,9 @@ async fn forward(State(f): State<Forward>, req: Request) -> Response {
 	parts.headers.remove(header::HOST);
 	if let Some(a) = assertion {
 		let token = f.upstreams.signer.sign(&a);
-		parts.headers.insert(HeaderName::from_static(sa_auth::HEADER), HeaderValue::from_str(&token).expect("a JWS is base64url and dots"));
+		parts
+			.headers
+			.insert(HeaderName::from_static(sa_auth::HEADER), HeaderValue::from_str(&token).expect("a JWS is base64url and dots"));
 	}
 	match f.client.request(Request::from_parts(parts, body)).await {
 		Ok(res) => {

@@ -348,13 +348,22 @@ impl Settings {
 		let uri = |name: &str, v: &Option<String>| -> eyre::Result<axum::http::Uri> {
 			let raw = v.as_deref().expect("checked above").trim();
 			let uri: axum::http::Uri = raw.parse().map_err(|e| eyre::eyre!("{name} is not a URL: {e}"))?;
-			eyre::ensure!(uri.scheme_str() == Some("http") && uri.path() == "/" && uri.query().is_none(), "{name} must be a bare http:// origin, not {raw}");
+			eyre::ensure!(
+				uri.scheme_str() == Some("http") && uri.path() == "/" && uri.query().is_none(),
+				"{name} must be a bare http:// origin, not {raw}"
+			);
 			Ok(uri)
 		};
 		Ok(Some(panel_server::forward::Upstreams {
 			review_archive: uri("PANEL_REVIEW_ARCHIVE_URL", &self.panel_review_archive_url)?,
 			playbook: uri("PANEL_PLAYBOOK_URL", &self.panel_playbook_url)?,
-			signer: self.panel_assertion_key.as_deref().expect("checked above").trim().parse().map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEY: {e}"))?,
+			signer: self
+				.panel_assertion_key
+				.as_deref()
+				.expect("checked above")
+				.trim()
+				.parse()
+				.map_err(|e| eyre::eyre!("PANEL_ASSERTION_KEY: {e}"))?,
 		}))
 	}
 }

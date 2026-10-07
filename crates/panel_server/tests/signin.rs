@@ -596,6 +596,73 @@ async fn suspect_leads_are_marked_and_filtered() {
 	assert_eq!(card.body["lead"]["suspect"], Value::Null);
 }
 
+/// Messenger leads through the operator API: one taken by hand from a WhatsApp conversation,
+/// one from the landing with its ref; the list filtered by channel and found by ref (in any
+/// case); an operator says a customer wrote, and the card shows when and on which.
+#[tokio::test]
+async fn messenger_leads_over_the_operator_api() {
+	let db = TestDb::create().await;
+	let (app, fake, panel) = setup(&db).await;
+	fake.with(|f| {
+		f.profiles.insert("seed-operator".into(), Ok(profile(OPERATOR, "investor", SA_OPERATOR.members)));
+		f.next_user = Some((OPERATOR.into(), SignedDuration::from_mins(15)));
+	});
+	let mut b = Browser::default();
+	b.sign_in(&app, &fake, None).await;
+	let secret = panel
+		.add_source("aquafix-site", SourceKind::Site, [BrandId::parse("aquafix").unwrap()].into())
+		.await
+		.unwrap()
+		.unwrap()
+		.secret
+		.to_string();
+	let now = Timestamp::now();
+	let landing = [panel::testing::messenger_lead(now - SignedDuration::from_mins(2), "aquafix", "L-1", "telegram", "AQ-7K3F")];
+	panel.ingest(sign("aquafix-site", &secret, &landing, now).batch(), now).await.unwrap();
+
+	let by_hand = json!({"brand": "aquafix", "location": "royat", "need": "a leak", "channel": "whatsapp"});
+	let created = b.post(&app, "/api/v1/leads", by_hand).await;
+	assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+	let wa = created.body["lead_id"].as_str().unwrap().to_owned();
+	for (channel, why) in [("form", "the landing's"), ("sms", "not a channel")] {
+		let r = b
+			.post(&app, "/api/v1/leads", json!({"brand": "aquafix", "location": "royat", "need": "x", "channel": channel}))
+			.await;
+		assert_eq!(
+			(r.status, r.body),
+			(StatusCode::BAD_REQUEST, json!({"error": "channel is one of phone_inbound, whatsapp, telegram"})),
+			"{why}"
+		);
+	}
+
+	let ids = |r: &Value| r["leads"].as_array().unwrap().iter().map(|l| l["lead_id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+	let r = b.get(&app, "/api/v1/leads?channel=whatsapp").await;
+	assert_eq!((r.status, ids(&r.body)), (StatusCode::OK, vec![wa.clone()]), "{}", r.body);
+	let r = b.get(&app, "/api/v1/leads?message_ref=aq-7k3f").await;
+	assert_eq!(ids(&r.body), ["L-1"], "{}", r.body);
+	let row = &r.body["leads"][0];
+	assert_eq!((&row["channel"], &row["message_ref"], &row["messaged_at"]), (&json!("telegram"), &json!("AQ-7K3F"), &Value::Null));
+	assert_eq!(b.get(&app, "/api/v1/leads?channel=pigeon").await.status, StatusCode::BAD_REQUEST);
+	let pasted = b.get(&app, "/api/v1/leads?message_ref=R%C3%A9f.%20aq%207k3f").await;
+	assert_eq!(ids(&pasted.body), ["L-1"], "pasted with its label: {}", pasted.body);
+	assert_eq!(b.get(&app, "/api/v1/leads?message_ref=AQ-7K3U").await.status, StatusCode::BAD_REQUEST);
+
+	let wrote = b.post(&app, "/api/v1/leads/aquafix/L-1/messaged", json!({"channel": "telegram"})).await;
+	assert_eq!(wrote.status, StatusCode::CREATED, "{}", wrote.body);
+	let bad = b.post(&app, "/api/v1/leads/aquafix/L-1/messaged", json!({"channel": "phone"})).await;
+	assert_eq!((bad.status, bad.body), (StatusCode::BAD_REQUEST, json!({"error": "channel is one of whatsapp, telegram"})));
+	assert_eq!(
+		b.post(&app, "/api/v1/leads/aquafix/L-404/messaged", json!({"channel": "whatsapp"})).await.status,
+		StatusCode::NOT_FOUND
+	);
+	let card = b.get(&app, "/api/v1/leads/aquafix/L-1").await;
+	assert_eq!(card.body["lead"]["messaged_channel"], "telegram");
+	assert!(card.body["lead"]["messaged_at"].is_string(), "{}", card.body);
+	assert_eq!(card.body["lead"]["stage"], "created");
+	let types: Vec<&str> = card.body["events"].as_array().unwrap().iter().map(|e| e["type"].as_str().unwrap()).collect();
+	assert_eq!(types, ["lead.created", "lead.messaged"]);
+}
+
 /// A lead's flow and price, as the landings send them, on the list and the card, and the
 /// list filtered by flow.
 #[tokio::test]

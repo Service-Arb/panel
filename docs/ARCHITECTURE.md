@@ -70,7 +70,8 @@ crates/sa_auth/                      the `sa` permissions (concierge_iam derives
                                      `sa:operator` / `sa:admin`; the assertion the panel signs
                                      for the services behind it
 crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over `Panel`
-  src/http.rs                        POST /api/ingest/v1/events, GET /health; the sign-in and
+  src/http.rs                        POST /api/ingest/v1/events, a bot's GET
+                                     /api/ingest/v1/leads/by-ref/…, GET /health; the sign-in and
                                      /api/v1 mounted on top when signing in is configured; the
                                      /api/v1 route table and the section each sits under
   src/signin.rs                      /auth/login, /auth/callback, /auth/logout; the /api/v1 gate
@@ -125,6 +126,11 @@ registry: type@version known?
                └─ new: a call / payment row; its lead or its brand's experiments
                   recomputed; a PostHog outbox row for a lead event         → accepted
 ```
+
+A bot (source kind `bot`) signs the same way, and also looks a lead up by its messenger ref:
+`GET /api/ingest/v1/leads/by-ref/{brand}/{ref}`, the MAC over `GET <path?query>` in place of a
+body, so a signature opens that one lookup — see
+[BOT-API.md](BOT-API.md) and [Messenger leads](#messenger-leads).
 
 ## Signing in (§4)
 
@@ -252,23 +258,31 @@ every request is a new event (`201`).
 ```text
 GET    /me                                        {user_id, email, preferred_name, permissions,
                                                   dev_sign_in}
-GET    /leads?stage&brand&location&overdue&suspect&flow&created_from&created_to&cursor&limit
+GET    /leads?stage&brand&location&overdue&suspect&flow&channel&message_ref&created_from&created_to&cursor&limit
                                                   {leads: [Lead], next_cursor}; newest created
                                                   first, limit ≤ 200 (default 50); created_*
                                                   UTC days, both included; suspect=only |
                                                   exclude (absent: every lead); flow=quote |
                                                   estimate | fixed, anything else 400 (absent:
                                                   every lead; a lead that said no flow is under
-                                                  none of the three)
+                                                  none of the three); channel=form | phone_inbound
+                                                  | callback | whatsapp | telegram; message_ref=
+                                                  a ref as pasted (Réf. aq 7k3f: label, case,
+                                                  spaces; O→0, I/L→1 in the code), the leads
+                                                  carrying it
 GET    /leads/counts?brand&location               {stages: {created: n, …, lost: n} (every
                                                   stage, 0 included), overdue, total}
-POST   /leads                                     {brand, location, need, phone?} → 201
-                                                  {brand, lead_id: "p-<uuidv7>", event_id}
+POST   /leads                                     {brand, location, need, phone?, channel?} → 201
+                                                  {brand, lead_id: "p-<uuidv7>", event_id};
+                                                  channel phone_inbound (default) | whatsapp |
+                                                  telegram, anything else 400
 GET    /leads/{brand}/{lead}                      {lead: Lead, events: [Event]}
 POST   /leads/{brand}/{lead}/stage                {stage: contacted, channel?} | {stage: quoted,
                                                   amount?, currency?} | {stage: won, job_id?} |
                                                   {stage: lost, reason, note?} | {stage: completed}
                                                   → 201 {event_id}
+POST   /leads/{brand}/{lead}/messaged             {channel: whatsapp|telegram} → 201 {event_id}:
+                                                  the customer wrote (lead.messaged); idempotent
 POST   /leads/{brand}/{lead}/calls/attempt        → 201 {attempt_id}
 POST   /leads/{brand}/{lead}/calls/{attempt}/outcome
                                                   {outcome: answered|no_answer|wrong_number|later}
@@ -387,6 +401,42 @@ when the lead said nothing, rebuilt from the journal like every column; the same
 in `/api/v1` (null when absent) and the `flow=` filter of `GET /leads`. `reporting_leads`
 carries the four; `reporting_funnel_daily` counts the `estimate` and `fixed` leads apart.
 
+## Messenger leads
+
+MESSENGER-CHANNELS-SPEC §3. A landing's messenger variants let the customer write on WhatsApp
+(our prefilled message, ending `Réf. AQ-7K3F`) or open the brand's Telegram bot
+(`t.me/<bot>?start=AQ-7K3F`) instead of leaving a phone number; a bot or an auto-responder may
+start a lead from a conversation of its own.
+
+```text
+lead.created     channel += whatsapp | telegram; message_ref (optional): the ref the landing made,
+                 ^[A-Z]{2,4}-[0-9A-HJKMNP-TV-Z]{4,8}$, not PII, not unique
+lead.messaged@1  {channel: whatsapp|telegram, message_ref?}: the customer actually wrote. Writers
+                 bot | panel (a landing only knows a link was opened). Subject: the lead, or
+                 none and a ref → the brand's newest lead carrying it, looked up under the
+                 journal's write lock and journaled as the event's lead_id (so a rebuild, when a
+                 newer lead may carry the ref, does not look again; the content MAC is of the
+                 event as sent, so a resend is a duplicate); no such lead yet → deferred
+                 "unknown_ref: …" (409 + Retry-After, not journaled; the bot sends it again);
+                 resolved by ref, it takes the lead's location when it named none. A leadId
+                 with no lead yet: deferred "unknown_lead: …" the same way, never a phantom lead
+source kind bot  a key per bot (`panel source add … --kind bot`): lead.created with a messenger's
+                 channel only, lead.messaged, and the lookup by ref (the only kind that may)
+```
+
+On the lead: `leads.message_ref` (the counted creation's, indexed with the brand),
+`messaged_at` and `messaged_channel` (the first message, both or neither); a message moves no
+stage. `/api/v1` `Lead` carries `channel`, `message_ref`, `messaged_at`, `messaged_channel`;
+`GET /leads` filters on `channel=` and `message_ref=`; an operator takes a messenger lead in by
+hand (`POST /leads {channel}`) and says a customer wrote (`POST …/messaged`).
+`reporting_leads` carries the three columns, `reporting_funnel_daily` counts `messaged`.
+PostHog is told `sa_lead_messaged {channel}` once per lead, for the first message the panel
+journaled, never the ref. An operator's `POST …/messaged` on a lead that has a message already
+journals nothing and answers `200` with that message's id.
+
+The place's `telegram` (its bot's username) and `messengers` (kill switches) are place
+settings, below.
+
 ## Live updates, `/api/v1/live`
 
 A screen reads through `/api/v1` and is told, over one WebSocket, when what it read may have
@@ -455,7 +505,10 @@ elsewhere tells the lead it left and the one it joined.
 
 A landing bakes its places into its build and lays over each, field by field, what the
 panel answers for it (kitstart's `createPlaceSource`, `PlaceLive`): `phone`, `whatsapp`
-(E.164), `hours` (`[{days, opens, closes}]`), `serviceArea` (commune names), and for
+(E.164), `telegram` (the place's bot, its username without the `@`:
+`^[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]$`, 5–32 characters ending in bot), `messengers` (`{whatsapp?: bool, telegram?: bool}`, the
+landing's messenger buttons switched off; absent is on, another key refused as
+`messengers.<key>`), `hours` (`[{days, opens, closes}]`), `serviceArea` (commune names), and for
 storefronts `address`, `geo`, `storefrontPhoto` (https), `landmark` (a text per locale),
 `rating`. Hours are the place's local time, Europe/Paris for every place in v1 (no
 time zone per place). kitstart fetches every 10 minutes at most, times out after 3 s, and keeps its baked
@@ -715,7 +768,7 @@ funnel there (`panel_core::analytics`):
 
 ```text
 queued       Panel::journal, in the event's own transaction, when POSTHOG_PROJECT_API_KEY is
-             set: a new lead.created (the one that counts), lead.contacted, lead.quoted,
+             set: a new lead.created (the one that counts), lead.messaged, lead.contacted, lead.quoted,
              job.won, lead.lost, job.completed, payment.received, call.logged, every booking.*
              → posthog_outbox
              never: the rebuild (it projects without passing there), a duplicate, a second
@@ -728,7 +781,7 @@ timestamp    occurred_at
 distinct_id  the lead's analytics_id (lead.created's, the landing beacon's distinct_id), else
              sa-lead:<brand>:<lead>
 properties   brand_id, location_id, manual; channel, flow, quoted_cents, suspect (created);
-             channel (contacted); amount_cents, currency (quoted); reason (lost — the slug,
+             channel (messaged, contacted); amount_cents, currency (quoted); reason (lost — the slug,
              never the note); billed_cents, commission_cents, currency (paid); outcome (call);
              provider, preferred_date, preferred_part (booking requested); provider, match,
              lead_time_hours (booking created: start_at − booked_at, else − occurred_at);

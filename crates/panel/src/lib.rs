@@ -40,7 +40,8 @@ use jiff::Timestamp;
 use panel_core::{
 	Invalid,
 	event::{Envelope, KeyGrant, SourceKind},
-	ids::{BrandId, LeadId},
+	fact::{Fact, MessageRef},
+	ids::{BrandId, LeadId, LocationId},
 	lead::Recorded,
 	signature::{self, SignatureError},
 };
@@ -63,6 +64,15 @@ use crate::{
 /// and ours disagree.
 pub const STALE: &str = "stale or malformed timestamp";
 
+/// Why a `lead.messaged` naming its lead by a ref no lead of the brand carries is deferred: the
+/// landing posts its `lead.created` in the background as the customer taps, so the message may
+/// come first. Like a `booking.requested` before its lead, the batch is answered 409 with
+/// `Retry-After`, nothing of that event journaled, and the bot sends the same event again.
+pub const UNKNOWN_REF: &str = "unknown_ref: no lead of the brand carries properties.message_ref";
+
+/// Why a `lead.messaged` naming a lead the panel has not seen is deferred, as [`UNKNOWN_REF`] is.
+pub const UNKNOWN_LEAD: &str = "unknown_lead: subject.lead_id names no lead yet: send again after its lead.created";
+
 /// Why a whole batch was refused. Per-event verdicts are [`Outcome`]s instead.
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
@@ -70,9 +80,13 @@ pub enum IngestError {
 	/// caller is told only that it was refused; the log says which.
 	#[error("unauthorized: {0}")]
 	Unauthorized(&'static str),
-	/// The body as a whole is not a batch.
+	/// The body as a whole is not a batch; or, for a lookup, the brand or the ref asked is not
+	/// one.
 	#[error("{0}")]
 	BadRequest(Invalid),
+	/// A good signature, by a key that may not ask this: not a bot's, or not for that brand.
+	#[error("forbidden: {0}")]
+	Forbidden(&'static str),
 	#[error(transparent)]
 	Internal(#[from] eyre::Report),
 }
@@ -120,6 +134,27 @@ impl std::fmt::Debug for NewSource {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("NewSource").field("key_id", &self.key_id).field("secret", &"<redacted>").finish()
 	}
+}
+
+/// A lead as a bot sees it through the lookup by ref: where it stands and what the customer
+/// asked for, never who they are — no name, no phone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefLead {
+	pub lead_id: String,
+	/// `None` for a lead seen before its `lead.created`.
+	pub channel: Option<String>,
+	pub stage: &'static str,
+	pub created_at: Option<Timestamp>,
+	pub message_ref: String,
+	/// What the customer needs, as the landing put it: their words, so a bot shows it back only
+	/// to the person who carries the ref.
+	pub need: Option<String>,
+	pub locality: Option<String>,
+	pub quoted_cents: Option<i64>,
+	pub flow: Option<String>,
+	/// When the customer first wrote on a messenger, and on which: a bot need not say it twice.
+	pub messaged_at: Option<Timestamp>,
+	pub messaged_channel: Option<&'static str>,
 }
 
 /// What a rebuild did.
@@ -173,7 +208,11 @@ async fn queue_capture(conn: &mut sqlx::SqliteConnection, recorded: &Recorded, l
 	let (Some(capture), Some(lead)) = (panel_core::analytics::capture_of(recorded), lead) else {
 		return Ok(());
 	};
-	if matches!(recorded.fact, panel_core::fact::Fact::LeadCreated { .. }) && lead.creation != Some(recorded.id) {
+	if matches!(recorded.fact, Fact::LeadCreated { .. }) && lead.creation != Some(recorded.id) {
+		return Ok(());
+	}
+	// A conversation is told once: its first message, as the panel journaled them.
+	if matches!(recorded.fact, Fact::LeadMessaged { .. }) && store::reads::first_message(conn, &lead.brand_id, &lead.lead_id).await? != Some(recorded.id.raw()) {
 		return Ok(());
 	}
 	let properties = serde_json::to_value(&capture.properties).wrap_err("PostHog properties")?;
@@ -294,6 +333,48 @@ impl Panel {
 		Ok(verdicts)
 	}
 
+	/// The brand's newest lead carrying `message_ref`, for a bot's key of that brand (`GET
+	/// /api/ingest/v1/leads/by-ref/{brand}/{ref}`): signed as a batch is, `request.body` being
+	/// what the server signs in place of one — `GET <path>`.
+	/// `Ok(None)` when no lead of the brand carries it.
+	pub async fn lead_by_ref(&self, request: SignedBatch<'_>, brand: &str, message_ref: &str, now: Timestamp) -> Result<Option<RefLead>, IngestError> {
+		let grant = self.authenticate(&request, now).await?;
+		let brand = BrandId::parse(brand).map_err(IngestError::BadRequest)?;
+		let message_ref = MessageRef::parse(message_ref).map_err(|_| IngestError::BadRequest(Invalid::new("the ref is not like \"AQ-7K3F\"")))?;
+		// What the customer asked for is read back only to what holds a conversation with them.
+		if grant.kind != SourceKind::Bot {
+			tracing::warn!(key_id = grant.key_id, kind = %grant.kind, "lookup by ref: not a bot's key");
+			return Err(IngestError::Forbidden("only a bot's key looks a lead up by its ref"));
+		}
+		if !grant.brands.contains(&brand) {
+			tracing::warn!(key_id = grant.key_id, %brand, "lookup by ref: a brand the key may not write for");
+			return Err(IngestError::Forbidden("this key is not for that brand"));
+		}
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+		let Some(row) = store::reads::lead_by_ref(&mut conn, &brand, &message_ref).await? else {
+			return Ok(None);
+		};
+		drop(conn);
+		let pii = match &row.creation {
+			Some(sealed) => self.open_pii(sealed)?,
+			None => None,
+		};
+		let text = |key: &str| pii.as_ref().and_then(|p| p.get(key)).and_then(Value::as_str).map(str::to_owned);
+		Ok(Some(RefLead {
+			need: text("need"),
+			locality: text("locality"),
+			lead_id: row.lead_id,
+			channel: row.channel,
+			stage: row.stage.as_str(),
+			created_at: row.created_at,
+			message_ref: message_ref.as_str().to_owned(),
+			quoted_cents: row.quoted_cents,
+			flow: row.flow,
+			messaged_at: row.messaged.map(|(at, _)| at),
+			messaged_channel: row.messaged.map(|(_, m)| m.as_str()),
+		}))
+	}
+
 	async fn authenticate(&self, batch: &SignedBatch<'_>, now: Timestamp) -> Result<KeyGrant, IngestError> {
 		let refuse = |e: SignatureError| {
 			IngestError::Unauthorized(match e {
@@ -347,7 +428,7 @@ impl Panel {
 			Checked::Unregistered => None,
 			Checked::Invalid(e) => return Ok(Outcome::Rejected(e)),
 		};
-		if let Some(panel_core::fact::Fact::BookingRequested { preferred_date, .. }) = &fact {
+		if let Some(Fact::BookingRequested { preferred_date, .. }) = &fact {
 			// The wish is judged against the day it arrives, here and not in the registry: a
 			// rebuild a year on must not refuse what was fine then.
 			let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
@@ -387,7 +468,7 @@ impl Panel {
 
 	/// Journals one event and, when registered, projects it — in one transaction, so a
 	/// projection never runs ahead of the journal nor behind it.
-	async fn journal(&self, incoming: &Incoming, key_id: Option<&str>, status: Status, fact: Option<panel_core::fact::Fact>, now: Timestamp) -> eyre::Result<Outcome> {
+	async fn journal(&self, incoming: &Incoming, key_id: Option<&str>, status: Status, fact: Option<Fact>, now: Timestamp) -> eyre::Result<Outcome> {
 		let pii = match &incoming.pii {
 			Some(pii) => {
 				let plain = Zeroizing::new(serde_json::to_vec(pii).wrap_err("serializing PII")?);
@@ -398,6 +479,40 @@ impl Panel {
 		// The write lock up front: a rebuild in progress is waited out, and so is another
 		// event of the same lead (see `store`).
 		let mut tx = self.store.begin_write().await?;
+		// A message naming its lead by ref alone is journaled under the lead the ref names now,
+		// found under the write lock so no newer lead slips in between: the journal keeps that
+		// lead id, so a rebuild — when newer leads may carry the same ref — does not look again.
+		// The content MAC is of the event as sent, so a resend is still a duplicate. The lead's
+		// location goes with it when the bot named none, so the event and its PostHog capture sit
+		// where the lead does.
+		let named;
+		let incoming = match &fact {
+			Some(Fact::LeadMessaged { message_ref: Some(r), .. }) if incoming.envelope.subject.lead_id.is_none() => {
+				let Some(lead) = store::reads::lead_by_ref(&mut tx, &incoming.envelope.subject.brand_id, r).await? else {
+					return Ok(Outcome::Deferred(Invalid::new(UNKNOWN_REF)));
+				};
+				let mut resolved = incoming.clone();
+				let subject = &mut resolved.envelope.subject;
+				subject.lead_id = Some(LeadId::parse(&lead.lead_id).wrap_err("a stored lead id")?);
+				if subject.location_id.is_none() {
+					subject.location_id = lead.location_id.as_deref().map(LocationId::parse).transpose().wrap_err("a stored location id")?;
+				}
+				named = resolved;
+				&named
+			}
+			// A message names a lead that is there: a bot's leadId the panel has no lead for is
+			// waited for like a booking.requested before its lead, never a phantom lead.
+			Some(Fact::LeadMessaged { .. }) => {
+				let env = &incoming.envelope;
+				if let Some(lead) = &env.subject.lead_id
+					&& !store::bookings::lead_exists(&mut tx, &env.subject.brand_id, lead).await?
+				{
+					return Ok(Outcome::Deferred(Invalid::new(UNKNOWN_LEAD)));
+				}
+				incoming
+			}
+			_ => incoming,
+		};
 		let inserted = events::insert(
 			&mut tx,
 			&NewEvent {

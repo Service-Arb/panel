@@ -107,7 +107,8 @@ impl Change {
 		let lead = || event.subject.lead_id.as_ref().map(|l| l.as_str().to_owned());
 		let (topic, id) = match &event.fact {
 			Fact::LeadCreated { .. } => (Topic::Leads, lead()),
-			Fact::LeadContacted { .. }
+			Fact::LeadMessaged { .. }
+			| Fact::LeadContacted { .. }
 			| Fact::LeadQuoted { .. }
 			| Fact::JobWon
 			| Fact::LeadLost { .. }

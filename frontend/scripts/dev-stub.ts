@@ -41,6 +41,9 @@ const CSRF = "stub-csrf";
 const MIN_SAMPLE = Number(process.env.STUB_MIN_SAMPLE ?? 30);
 const LIVE_EVERY = process.env.STUB_LIVE_EVERY ? Number(process.env.STUB_LIVE_EVERY) : null;
 const USER_ID = "00000000-0000-7000-8000-000000000001";
+const CHANNELS = ["form", "phone_inbound", "callback", "whatsapp", "telegram"];
+const MANUAL_CHANNELS = ["phone_inbound", "whatsapp", "telegram"];
+const MESSAGE_REF = /^[A-Z]{2,4}-[0-9A-HJKMNP-TV-Z]{4,8}$/;
 
 type Json = Record<string, unknown>;
 const now = () => new Date();
@@ -62,6 +65,10 @@ interface StubLead {
   payments: { billed: number; commission: number; currency: string }[];
   /** The form variant and its price; null on leads from before the variants. */
   deal: StubDeal | null;
+  channel: string;
+  /** The messenger ref the landing made (`AQ-7K3F`), and the customer's first message. */
+  message_ref: string | null;
+  messaged: { at: string; channel: string } | null;
 }
 
 function makeLead(i: number, stage: string, minutes: number, pii: Json, location: string | null = "lyon-3", brand = "aquafix"): StubLead {
@@ -69,7 +76,7 @@ function makeLead(i: number, stage: string, minutes: number, pii: Json, location
   const order = ["created", "contacted", "quoted", "won", "completed", "paid"];
   const times: Record<string, string> = { created_at: created };
   for (const s of order.slice(1, order.indexOf(stage) + 1)) times[`${s}_at`] = minsAgo(minutes - 10);
-  return { brand, lead_id: `stub-${i}`, location, stage, manual: false, times, lost_reason: null, suspect: null, pii, events: [event("lead.created", { channel: "form" }, "site", created)], payments: [], deal: null };
+  return { brand, lead_id: `stub-${i}`, location, stage, manual: false, times, lost_reason: null, suspect: null, pii, events: [event("lead.created", { channel: "form" }, "site", created)], payments: [], deal: null, channel: "form", message_ref: null, messaged: null };
 }
 
 function event(type: string, properties: Json, kind = "panel", at = iso(now())): Json {
@@ -90,6 +97,10 @@ const leads: StubLead[] = [
 // Two the antispam doubted: one sender too often, one form back too soon.
 leads.push({ ...makeLead(10, "created", 12, { name: "Bot? (stub)", phone: "+33 6 00 00 00 10", need: "hot_water" }), suspect: "rate_limited" });
 leads.push({ ...makeLead(11, "contacted", 60 * 5, { need: "asdf (stub)", locality: "69003", bedrooms: 2 }, "paris-11", "vifnet"), suspect: "too_fast" });
+// Messenger leads: one still waiting for the customer's WhatsApp message, one who wrote on Telegram.
+leads.push({ ...makeLead(12, "created", 9, { need: "Leak behind the washing machine (stub)", locality: "69003" }), channel: "whatsapp", message_ref: "AQ-7K3F" });
+leads.push({ ...makeLead(13, "contacted", 60 * 3, { need: "Office cleaning, weekly (stub)" }, "paris-11", "vifnet"), channel: "telegram", message_ref: "VF-Q9MZ", messaged: { at: minsAgo(60 * 3 - 2), channel: "telegram" } });
+leads[12]!.events.push(event("lead.messaged", { channel: "telegram", message_ref: "VF-Q9MZ" }, "bot", minsAgo(60 * 3 - 2)));
 seedDeals(leads);
 leads[5]!.payments.push({ billed: 23_100, commission: 2_310, currency: "EUR" });
 leads[7]!.payments.push({ billed: 208_000, commission: 20_800, currency: "EUR" }, { billed: 9_050, commission: 0, currency: "GBP" });
@@ -102,7 +113,8 @@ function leadDto(l: StubLead): Json {
   const since = t("created_at") ?? iso(now());
   const secs = Math.floor((now().getTime() - Date.parse(since)) / 1000);
   return {
-    brand: l.brand, lead_id: l.lead_id, location: l.location, job_id: null, stage: l.stage, channel: "form", manual: l.manual,
+    brand: l.brand, lead_id: l.lead_id, location: l.location, job_id: null, stage: l.stage, channel: l.channel, manual: l.manual,
+    message_ref: l.message_ref, messaged_at: l.messaged?.at ?? null, messaged_channel: l.messaged?.channel ?? null,
     created_at: t("created_at"), contacted_at: t("contacted_at"), quoted_at: t("quoted_at"), won_at: t("won_at"),
     completed_at: t("completed_at"), paid_at: t("paid_at"), lost_at: t("lost_at"), lost_reason: l.lost_reason, suspect: l.suspect,
     last_event_at: String(l.events.at(-1)?.occurred_at ?? since),
@@ -237,7 +249,12 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     if (flow === false) return send(res, 400, { error: "flow is not one of quote, estimate, fixed" });
     const booking = q.get("booking");
     if (booking !== null && !BOOKING_STATUSES.some((s) => s === booking)) return send(res, 400, { error: "booking status is not one of none, requested, booked, canceled, done, no_show" });
+    const channel = q.get("channel");
+    if (channel !== null && !CHANNELS.includes(channel)) return send(res, 400, { error: "channel is not one of form, phone_inbound, callback, whatsapp, telegram" });
+    const ref = q.get("message_ref")?.trim().toUpperCase() ?? null;
+    if (ref !== null && !MESSAGE_REF.test(ref)) return send(res, 400, { error: "message_ref is not like AQ-7K3F" });
     const list = leads
+      .filter((l) => (channel === null || l.channel === channel) && (ref === null || l.message_ref === ref))
       .filter((l) => (suspect !== "only" || l.suspect !== null) && (suspect !== "exclude" || l.suspect === null))
       .filter((l) => flow === null || l.deal?.flow === flow)
       .filter((l) => booking === null || bookingDto(l.brand, l.lead_id).status === booking)
@@ -253,6 +270,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const l = makeLead(leads.length + 1, "created", 0, { need: b.need, ...(b.phone ? { phone: b.phone } : {}) }, String(b.location), String(b.brand));
     l.lead_id = `p-${randomUUID()}`;
     l.manual = true;
+    if (b.channel !== undefined && !MANUAL_CHANNELS.includes(String(b.channel))) return send(res, 400, { error: "channel is one of phone_inbound, whatsapp, telegram" });
+    l.channel = b.channel === undefined ? "phone_inbound" : String(b.channel);
     leads.push(l);
     changed("leads", l.brand, l.lead_id);
     return send(res, 201, { brand: l.brand, lead_id: l.lead_id, event_id: randomUUID() });
@@ -302,6 +321,18 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     lead.times[`${stage}_at`] = iso(now());
     if (stage === "lost") lead.lost_reason = String(b.reason);
     lead.events.push(event(stage === "won" || stage === "completed" ? `job.${stage}` : `lead.${stage}`, b));
+    return send(res, 201, { event_id: randomUUID() });
+  }
+  if (rest === "/messaged") {
+    const b = await readJson(req);
+    const channel = String(b.channel);
+    if (channel !== "whatsapp" && channel !== "telegram") return send(res, 400, { error: "channel is one of whatsapp, telegram" });
+    // The first message counts; a repeat is the same answer, nothing new journaled.
+    if (!lead.messaged) {
+      const e = event("lead.messaged", { channel });
+      lead.messaged = { at: String(e.occurred_at), channel };
+      lead.events.push(e);
+    }
     return send(res, 201, { event_id: randomUUID() });
   }
   if (rest === "/calls/attempt") {

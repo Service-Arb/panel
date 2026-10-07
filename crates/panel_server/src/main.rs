@@ -111,6 +111,12 @@ enum PlaceCmd {
 		/// Commune names split by commas: 'Royat,Chamalières'.
 		#[arg(long = "service-area")]
 		service_area: Option<String>,
+		/// The place's Telegram bot, its username without the @: aquafix_devis_bot.
+		#[arg(long)]
+		telegram: Option<String>,
+		/// Messengers switched on or off, split by commas: 'whatsapp=on,telegram=off'.
+		#[arg(long)]
+		messengers: Option<String>,
 		/// A field to clear (the site's baked value takes over); repeat for several.
 		#[arg(long = "clear", value_name = "FIELD")]
 		clear: Vec<String>,
@@ -149,8 +155,8 @@ enum SourceCmd {
 	Add {
 		/// Lowercase slug, e.g. aquafix-site.
 		key_id: String,
-		/// site | review_archive | gbp | posthog | sheet | telephony (panel and booking are the
-		/// panel's own, with no key)
+		/// site | review_archive | gbp | posthog | sheet | telephony | bot (panel and booking are
+		/// the panel's own, with no key; bot is a messenger bot, docs/BOT-API.md)
 		#[arg(long)]
 		kind: String,
 		/// A brand it may write for; repeat for several.
@@ -370,6 +376,8 @@ async fn place(panel: &Panel, cmd: PlaceCmd) -> eyre::Result<()> {
 			whatsapp,
 			hours,
 			service_area,
+			telegram,
+			messengers,
 			clear,
 		} => {
 			let (brand, slug) = ids(&brand, &slug)?;
@@ -385,6 +393,12 @@ async fn place(panel: &Panel, cmd: PlaceCmd) -> eyre::Result<()> {
 			}
 			if let Some(a) = service_area {
 				set.insert("serviceArea".into(), a.split(',').map(str::trim).collect::<Vec<_>>().into());
+			}
+			if let Some(t) = telegram {
+				set.insert("telegram".into(), t.into());
+			}
+			if let Some(m) = messengers {
+				set.insert("messengers".into(), place::messengers_from_spec(&m).map_err(|e| eyre::eyre!("--messengers {e}"))?);
 			}
 			eyre::ensure!(!set.is_empty() || !clear.is_empty(), "nothing to set: give a field, or --clear one");
 			panel.patch_place(&cli, &brand, &slug, set, &clear, now).await.map_err(refused)?

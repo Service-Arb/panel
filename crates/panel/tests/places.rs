@@ -212,3 +212,37 @@ async fn the_place_settings_migration_goes_both_ways() {
 		.unwrap();
 	assert_eq!(panel.place_history(&brand, &slug).await.unwrap().len(), 1);
 }
+
+/// The messengers a place offers: its Telegram bot and the switches, set and cleared field by
+/// field as the CLI does, and served to the sites as they are.
+#[tokio::test]
+async fn a_places_messengers_reach_the_sites() {
+	let db = TestDb::create().await;
+	let panel = panel(&db).await;
+	let (brand, slug) = ids();
+	let set = Map::from_iter([
+		("telegram".to_owned(), json!("aquafix_devis_bot")),
+		("messengers".to_owned(), panel_core::place::messengers_from_spec("whatsapp=on,telegram=off").unwrap()),
+		("whatsapp".to_owned(), json!("+33612345678")),
+	]);
+	panel.patch_place(&Editor::Cli, &brand, &slug, set, &[], now()).await.unwrap();
+	assert_eq!(
+		panel.live_place(&brand, &slug).await.unwrap(),
+		Live::Settings(settings(
+			json!({"whatsapp": "+33612345678", "telegram": "aquafix_devis_bot", "messengers": {"whatsapp": true, "telegram": false}})
+		))
+	);
+
+	let bad = Map::from_iter([("telegram".to_owned(), json!("@aquafix")), ("messengers".to_owned(), json!({"sms": true}))]);
+	let Err(PlaceError::Invalid(fields)) = panel.patch_place(&Editor::Cli, &brand, &slug, bad, &[], now()).await else {
+		panic!("a bad bot and an unknown messenger passed")
+	};
+	assert_eq!(fields.keys().collect::<Vec<_>>(), ["messengers.sms", "telegram"]);
+
+	let later = now() + SignedDuration::from_mins(1);
+	panel
+		.patch_place(&Editor::Cli, &brand, &slug, Map::new(), &["telegram".to_owned(), "messengers".to_owned()], later)
+		.await
+		.unwrap();
+	assert_eq!(panel.live_place(&brand, &slug).await.unwrap(), Live::Settings(settings(json!({"whatsapp": "+33612345678"}))));
+}

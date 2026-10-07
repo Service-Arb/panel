@@ -2,7 +2,8 @@
 //! `sa_lead_contacted`, …), so the funnel from a visit to a payment is one funnel there.
 //!
 //! Never PII: a brand, a location, the closed vocabularies (channel, flow, outcome, a loss's
-//! reason slug) and amounts. Never the customer's words, a note, a name or a phone. The person
+//! reason slug) and amounts. Not a messenger ref either: PostHog has the lead's person already,
+//! and the ref is what a customer reads out to an operator. Never the customer's words, a note, a name or a phone. The person
 //! is the landing's analytics id from the lead's creation, so the visit and the lead are one
 //! person in PostHog; a lead without one (typed in, or from a landing before the field) is
 //! `sa-lead:<brand>:<lead>`.
@@ -45,6 +46,10 @@ pub fn capture_of(e: &Recorded) -> Option<Capture> {
 				p.insert("suspect", json!(s.as_str()));
 			}
 			"sa_lead_created"
+		}
+		Fact::LeadMessaged { channel, .. } => {
+			p.insert("channel", json!(channel.as_str()));
+			"sa_lead_messaged"
 		}
 		Fact::LeadContacted { channel } => {
 			if let Some(c) = channel {
@@ -160,7 +165,7 @@ mod tests {
 	use crate::{
 		booking::{Closed, DayPart, Provider},
 		event::{SourceKind, Subject},
-		fact::{CallOutcome, LeadChannel, LeadOffer},
+		fact::{CallOutcome, LeadChannel, LeadOffer, MessageRef, Messenger},
 		ids::{BrandId, EventId, LeadId, LocationId},
 	};
 
@@ -194,6 +199,7 @@ mod tests {
 			suspect: None,
 			offer: LeadOffer::parse(Some("fixed"), Some(9_900), Some("2026-10-01"), []).unwrap(),
 			analytics_id: None,
+			message_ref: Some(MessageRef::parse("AQ-7K3F").unwrap()),
 		}))
 		.unwrap();
 		assert_eq!(created.event, "sa_lead_created");
@@ -209,6 +215,14 @@ mod tests {
 		assert_eq!((call.event, call.properties["outcome"].clone()), ("sa_call_logged", json!("no_answer")));
 		assert_eq!(capture_of(&rec(Fact::CallAttempted)), None);
 		assert_eq!(capture_of(&rec(Fact::RetiredCount)), None);
+		let messaged = capture_of(&rec(Fact::LeadMessaged {
+			channel: Messenger::Whatsapp,
+			message_ref: Some(MessageRef::parse("AQ-7K3F").unwrap()),
+		}))
+		.unwrap();
+		assert_eq!(messaged.event, "sa_lead_messaged");
+		assert_eq!(messaged.properties.keys().copied().collect::<Vec<_>>(), ["brand_id", "channel", "location_id", "manual"]);
+		assert_eq!(messaged.properties["channel"], "whatsapp");
 	}
 
 	fn created(matched: Option<BookingMatch>, booked_at: Option<Timestamp>) -> Fact {

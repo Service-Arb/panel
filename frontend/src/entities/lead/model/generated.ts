@@ -6,6 +6,15 @@ export type Stage = (typeof STAGES)[number];
 export const SUSPECTS = ["rate_limited", "too_fast"] as const;
 export type Suspect = (typeof SUSPECTS)[number];
 
+export const CHANNELS = ["form", "phone_inbound", "callback", "whatsapp", "telegram"] as const;
+export type Channel = (typeof CHANNELS)[number];
+
+export const MANUAL_CHANNELS = ["phone_inbound", "whatsapp", "telegram"] as const;
+export type ManualChannel = (typeof MANUAL_CHANNELS)[number];
+
+export const MESSENGERS = ["whatsapp", "telegram"] as const;
+export type Messenger = (typeof MESSENGERS)[number];
+
 export const FLOWS = ["quote", "estimate", "fixed"] as const;
 export type Flow = (typeof FLOWS)[number];
 

@@ -51,7 +51,7 @@ function CardBody({ card, leadRef, elsewhere, onChanged }: { card: LeadCard; lea
   return (
     <div className="flex flex-col gap-4">
       {elsewhere && <UpdatedNote key={lead.last_event_at} at={lead.last_event_at} type={events.at(-1)?.type ?? null} />}
-      <LeadDetails lead={lead} />
+      <LeadDetails lead={lead} onChanged={onChanged} />
       <PricingBlock lead={lead} />
       {phone && <CallButton leadRef={leadRef} phone={phone} />}
       {hasMoves(lead.stage) && (

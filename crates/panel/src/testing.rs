@@ -120,6 +120,33 @@ pub fn sign_verbatim(key_id: &str, secret: &str, events: &[Value], at: Timestamp
 	}
 }
 
+/// A `GET` signed as a source signs a batch: what a bot sends to look a lead up by its ref
+/// (`GET /api/ingest/v1/leads/by-ref/…`), the MAC over `GET <path>` in place of a body.
+pub fn sign_get(key_id: &str, secret: &str, path: &str, at: Timestamp) -> Signed {
+	let timestamp = at.as_second().to_string();
+	Signed {
+		key_id: key_id.to_owned(),
+		signature: signature::sign(secret.as_bytes(), &timestamp, format!("GET {path}").as_bytes()),
+		timestamp,
+		body: Vec::new(),
+	}
+}
+
+/// A messenger lead as a landing sends it: `lead.created` with its channel and ref, the
+/// customer's need and locality (and a phone and a name, which a lookup must never give back)
+/// in its PII.
+pub fn messenger_lead(occurred_at: Timestamp, brand: &str, lead: &str, channel: &str, message_ref: &str) -> Value {
+	let mut e = event(
+		"lead.created",
+		occurred_at,
+		"site",
+		json!({"brandId": brand, "locationId": "royat", "leadId": lead}),
+		json!({"channel": channel, "messageRef": message_ref}),
+	);
+	e["pii"] = json!({"need": "fuite sous l'évier", "locality": "Royat", "phone": "+33612345678", "name": "Jean Dupont"});
+	e
+}
+
 /// An event as a source writes it, with a fresh id.
 pub fn event(r#type: &str, occurred_at: Timestamp, kind: &str, subject: Value, properties: Value) -> Value {
 	json!({

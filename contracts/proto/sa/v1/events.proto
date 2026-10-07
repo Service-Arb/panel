@@ -45,9 +45,10 @@ message Event {
 }
 
 message Source {
-  // site | review_archive | gbp | posthog | panel | sheet | telephony | booking. Must be the
-  // kind the signing key is registered for. `booking` is the panel's own booking adapters
-  // (a provider's webhook or its periodic pull): no key is ever issued for it.
+  // site | review_archive | gbp | posthog | panel | sheet | telephony | booking | bot. Must be
+  // the kind the signing key is registered for. `booking` is the panel's own booking adapters
+  // (a provider's webhook or its periodic pull): no key is ever issued for it. `bot` is a
+  // messenger bot or auto-responder (docs/BOT-API.md).
   string kind = 1;
   // Which one. For a signed batch, the key id it is signed with ("aquafix-site"); anything
   // else is rejected.
@@ -90,9 +91,10 @@ message EventResult {
 
 // ── properties, one message per type@type_version ──────────────────────────────────────
 
-// lead.created@1 — subject.lead_id required.
+// lead.created@1 — subject.lead_id required. Written by a site, the panel, or a bot — a bot
+// only with channel whatsapp or telegram.
 message LeadCreatedV1 {
-  // form | phone_inbound | callback
+  // form | phone_inbound | callback | whatsapp | telegram
   string channel = 1;
   // Who typed it in, for leads entered by hand (a panel user id).
   optional string entered_by = 2;
@@ -124,6 +126,29 @@ message LeadCreatedV1 {
   // sends the lead's later life to PostHog under it, so a visit and its lead are one person
   // there. Absent: the panel uses `sa-lead:<brand>:<lead>`.
   optional string analytics_id = 8;
+  // The reference the customer carries into a messenger (MESSENGER-CHANNELS-SPEC §1): the
+  // brand's 2–4 capital letters, a dash, 4–8 of Crockford base32 without I, L, O, U
+  // (`^[A-Z]{2,4}-[0-9A-HJKMNP-TV-Z]{4,8}$`, e.g. "AQ-7K3F"). Made by the landing's form, so
+  // not unique: `lead.messaged` and the lookup by ref name the brand's newest lead carrying
+  // it. Not PII.
+  optional string message_ref = 9;
+}
+
+// lead.messaged@1 — the customer actually wrote the brand on a messenger. Written by a bot or
+// the panel. subject.lead_id names the lead; or, absent, `message_ref` does, and the panel
+// journals the event under the brand's newest lead carrying that ref (the lead id it found is
+// what the journal keeps, so a rebuild does not look again). A ref no lead of the brand carries
+// is `deferred` (the batch answered 409 with Retry-After, the event not journaled), the reason
+// starting with `unknown_ref`: the landing's lead.created may not have arrived yet; send the
+// same event again. Resolved by ref, the event takes the lead's location when it named none.
+// A subject.lead_id the panel has no lead for is deferred the same way (`unknown_lead`). The
+// customer's handle (a Telegram @username, a WhatsApp number or name) is PII: `pii.handle` /
+// `pii.phone`, never here.
+message LeadMessagedV1 {
+  // whatsapp | telegram
+  string channel = 1;
+  // As in LeadCreatedV1. Required when subject.lead_id is absent.
+  optional string message_ref = 2;
 }
 
 // lead.contacted@1 — subject.lead_id required.

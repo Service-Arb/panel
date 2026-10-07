@@ -27,10 +27,13 @@ pub enum SourceKind {
 	/// The panel's booking adapters: a provider's webhook, or the calendar it pulls. Written
 	/// by the panel itself; no signing key is ever issued for it.
 	Booking,
+	/// A messenger bot or auto-responder (a brand's Telegram bot, a WhatsApp responder):
+	/// it starts a lead from a conversation and says when a customer wrote.
+	Bot,
 }
 
 impl SourceKind {
-	pub const ALL: [Self; 8] = [
+	pub const ALL: [Self; 9] = [
 		Self::Site,
 		Self::ReviewArchive,
 		Self::Gbp,
@@ -39,6 +42,7 @@ impl SourceKind {
 		Self::Sheet,
 		Self::Telephony,
 		Self::Booking,
+		Self::Bot,
 	];
 
 	pub fn as_str(self) -> &'static str {
@@ -51,6 +55,7 @@ impl SourceKind {
 			Self::Sheet => "sheet",
 			Self::Telephony => "telephony",
 			Self::Booking => "booking",
+			Self::Bot => "bot",
 		}
 	}
 
@@ -70,10 +75,11 @@ impl FromStr for SourceKind {
 	type Err = Invalid;
 
 	fn from_str(s: &str) -> Result<Self, Invalid> {
-		Self::ALL
-			.into_iter()
-			.find(|k| k.as_str() == s)
-			.ok_or_else(|| Invalid::new(format!("source.kind {s:?} is not one of site, review_archive, gbp, posthog, panel, sheet, telephony, booking")))
+		Self::ALL.into_iter().find(|k| k.as_str() == s).ok_or_else(|| {
+			Invalid::new(format!(
+				"source.kind {s:?} is not one of site, review_archive, gbp, posthog, panel, sheet, telephony, booking, bot"
+			))
+		})
 	}
 }
 
@@ -159,11 +165,14 @@ impl Envelope {
 /// booking is its adapter's (kind booking); what an operator does to one is the panel's. A
 /// landing declares its experiments; only an admin in the panel lays a setting over them. A
 /// type the panel does not know is open to every kind (§3.2): it is stored, not projected,
-/// and judged again once it is registered.
+/// and judged again once it is registered. A messenger bot starts a lead from a conversation
+/// (its channel a messenger's: the registry checks that) and says when a customer wrote; an
+/// operator may say the latter too, a landing never — it only knows a link was opened.
 pub fn may_write(kind: SourceKind, type_name: &str) -> bool {
-	use SourceKind::{Booking, Panel, Posthog, Site, Telephony};
+	use SourceKind::{Booking, Bot, Panel, Posthog, Site, Telephony};
 	match type_name {
-		"lead.created" => matches!(kind, Site | Panel),
+		"lead.created" => matches!(kind, Site | Panel | Bot),
+		"lead.messaged" => matches!(kind, Bot | Panel),
 		"booking.requested" => matches!(kind, Site),
 		"booking.created" | "booking.canceled" => matches!(kind, Booking),
 		"booking.set" | "booking.status_changed" | "booking.cleared" | "booking.attached" => matches!(kind, Panel),
@@ -248,8 +257,9 @@ mod tests {
 	#[test]
 	fn who_writes_what() {
 		use SourceKind::*;
-		let table: [(&str, &[SourceKind]); 21] = [
-			("lead.created", &[Site, Panel]),
+		let table: [(&str, &[SourceKind]); 22] = [
+			("lead.created", &[Site, Panel, Bot]),
+			("lead.messaged", &[Bot, Panel]),
 			("lead.contacted", &[Panel, Telephony]),
 			("lead.quoted", &[Panel]),
 			("job.won", &[Panel]),

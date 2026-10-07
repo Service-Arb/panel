@@ -78,7 +78,8 @@ const DASHBOARD: &str = "/review_archive";
 
 /// A view of the dashboard: below its page, and not a file (the export's payloads have a dot).
 fn dashboard_view(path: &str) -> bool {
-	path.strip_prefix(DASHBOARD).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1 && !rest.rsplit('/').next().is_some_and(|last| last.contains('.')))
+	path.strip_prefix(DASHBOARD)
+		.is_some_and(|rest| rest.starts_with('/') && rest.len() > 1 && !rest.rsplit('/').next().is_some_and(|last| last.contains('.')))
 }
 
 async fn page(mut files: Files, mut req: Request) -> Response {
@@ -132,7 +133,16 @@ mod tests {
 		for p in ["/api", "/api/", "/api/v1/nope", "/auth/x", "/health", "/grafana", "/grafana/d/1"] {
 			assert!(reserved(p), "{p}");
 		}
-		for p in ["/", "/apiary/", "/authors", "/healthy", "/leads/", "/_next/static/a.js", "/review_archive", "/review_archive/gmails/3"] {
+		for p in [
+			"/",
+			"/apiary/",
+			"/authors",
+			"/healthy",
+			"/leads/",
+			"/_next/static/a.js",
+			"/review_archive",
+			"/review_archive/gmails/3",
+		] {
 			assert!(!reserved(p), "{p}");
 		}
 		for p in ["/review_archive/mfe/x.js", "/playbook_mcp/token", "/.well-known/oauth-protected-resource/playbook_mcp"] {
