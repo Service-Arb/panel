@@ -1,4 +1,4 @@
-import { BOOKING_STATUSES, FLOWS, type LeadCounts, type LeadFilter, STAGES, type Stage } from "@/entities/lead";
+import { BOOKING_STATUSES, CHANNELS, FLOWS, type LeadCounts, type LeadFilter, STAGES, type Stage } from "@/entities/lead";
 import type { MessageKey, T } from "@/shared/i18n";
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -17,6 +17,8 @@ export function leadFilterFrom(params: URLSearchParams): LeadFilter {
     suspect: suspectFilterOf(params.get("suspect")),
     flow: flowFilterOf(params.get("flow")),
     booking: bookingFilterOf(params.get("booking")),
+    channel: channelFilterOf(params.get("channel")),
+    messageRef: messageRefOf(params.get("message_ref")),
   };
 }
 
@@ -32,6 +34,8 @@ export function paramsWith(params: URLSearchParams, patch: Partial<LeadFilter>):
   if ("suspect" in patch) set("suspect", patch.suspect ?? null);
   if ("flow" in patch) set("flow", patch.flow ?? null);
   if ("booking" in patch) set("booking", patch.booking ?? null);
+  if ("channel" in patch) set("channel", patch.channel ?? null);
+  if ("messageRef" in patch) set("message_ref", patch.messageRef ?? null);
   return next;
 }
 
@@ -45,7 +49,7 @@ export function narrows(filter: LeadFilter, keys: readonly (keyof LeadFilter)[] 
   return keys.some((k) => filter[k] !== null && filter[k] !== false);
 }
 
-const FILTER_KEYS: readonly (keyof LeadFilter)[] = ["stage", "brand", "location", "overdue", "createdFrom", "createdTo", "suspect", "flow", "booking"];
+const FILTER_KEYS: readonly (keyof LeadFilter)[] = ["stage", "brand", "location", "overdue", "createdFrom", "createdTo", "suspect", "flow", "booking", "channel", "messageRef"];
 
 /** As with suspect: a word the API does not take would answer 400, so it reads as "every lead". */
 export function flowFilterOf(v: string | null): LeadFilter["flow"] {
@@ -55,6 +59,23 @@ export function flowFilterOf(v: string | null): LeadFilter["flow"] {
 /** A booking status the API takes (anything else answers 400): every lead otherwise. */
 export function bookingFilterOf(v: string | null): LeadFilter["booking"] {
   return BOOKING_STATUSES.find((s) => s === v) ?? null;
+}
+
+/** A channel the API takes (anything else answers 400): every lead otherwise. */
+export function channelFilterOf(v: string | null): LeadFilter["channel"] {
+  return CHANNELS.find((c) => c === v) ?? null;
+}
+
+/** `panel_core::fact::MessageRef`: 2–4 letters, a dash, 4–8 of Crockford base32. */
+const MESSAGE_REF = /^[A-Z]{2,4}-[0-9A-HJKMNP-TV-Z]{4,8}$/;
+
+/**
+ * A ref as an operator types it ("aq-7k3f ", copied from a message) in the form
+ * the API matches; null when it cannot be one, which the API would answer 400.
+ */
+export function messageRefOf(raw: string | null): string | null {
+  const ref = raw?.trim().toUpperCase() ?? "";
+  return MESSAGE_REF.test(ref) ? ref : null;
 }
 
 export function stageOrNull(v: string | null): Stage | null {

@@ -2,7 +2,7 @@
 
 import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, cn } from "@evinvest/uikit";
 
-import { BookingLine, DealSummary, type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
+import { BookingLine, ChannelBadge, DealSummary, type Lead, SlaBadge, StageBadge, SuspectBadge, contactOf } from "@/entities/lead";
 import { useLocale, useT } from "@/shared/i18n";
 import { formatDateTime } from "@/shared/lib/format";
 import { EDGE_CELL, TABLE_HEAD } from "@/shared/ui/table";
@@ -66,8 +66,9 @@ export function LeadTable({ leads, flash, selected, onOpen }: LeadTableProps) {
                 </button>
               </TableCell>
               <TableCell className={cn(EDGE_CELL, "text-ink-mid")}>
-                <span className="flex items-center gap-1.5">
+                <span className="flex flex-wrap items-center gap-1.5">
                   {lead.brand} · {lead.location ?? "—"}
+                  <ChannelBadge channel={lead.channel} />
                   {lead.manual && <Badge variant="outline">{t("leads.manual")}</Badge>}
                 </span>
               </TableCell>

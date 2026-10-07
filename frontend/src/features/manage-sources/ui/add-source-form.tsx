@@ -3,7 +3,7 @@
 import { Button, Field, FieldDescription, FieldLabel, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@evinvest/uikit";
 import { useId, useState } from "react";
 
-import { type AddedSource, KEYED_SOURCE_KINDS, type KeyedSourceKind, addSource } from "@/entities/source";
+import { type AddedSource, KEYED_SOURCE_KINDS, type KeyedSourceKind, addSource, sourceKindLabel } from "@/entities/source";
 import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
 import { notifyFailure } from "@/shared/ui/notify";
@@ -59,7 +59,7 @@ export function AddSourceForm({ onAdded }: { onAdded: (added: AddedSource) => vo
           <SelectContent>
             {KEYED_SOURCE_KINDS.map((k) => (
               <SelectItem key={k} value={k}>
-                {k}
+                {sourceKindLabel(k, t)}
               </SelectItem>
             ))}
           </SelectContent>

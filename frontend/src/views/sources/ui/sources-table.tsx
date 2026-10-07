@@ -2,7 +2,7 @@
 
 import { Badge, Card, CardContent, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, cn } from "@evinvest/uikit";
 
-import type { Source } from "@/entities/source";
+import { type Source, sourceKindLabel } from "@/entities/source";
 import { RevokeButton } from "@/features/manage-sources";
 import { useLocale, useT } from "@/shared/i18n";
 import { formatDateTime } from "@/shared/lib/format";
@@ -52,7 +52,7 @@ function Wide({ sources, onRevoked }: { sources: Source[]; onRevoked: () => void
         {sources.map((s) => (
           <TableRow key={s.key_id} className={cn(s.revoked_at && "text-ink-soft")}>
             <TableCell className={cn(EDGE_CELL, "font-mono text-xs")}>{s.key_id}</TableCell>
-            <TableCell className={EDGE_CELL}>{s.kind}</TableCell>
+            <TableCell className={EDGE_CELL}>{sourceKindLabel(s.kind, t)}</TableCell>
             <TableCell className={cn(EDGE_CELL, "text-ink-mid")}>{s.brands.join(", ")}</TableCell>
             <TableCell className={cn(EDGE_CELL, "text-right tabular-nums text-ink-soft")}>{formatDateTime(s.created_at, locale)}</TableCell>
             <TableCell className={cn(EDGE_CELL, "text-right")}>
@@ -66,6 +66,7 @@ function Wide({ sources, onRevoked }: { sources: Source[]; onRevoked: () => void
 }
 
 function Narrow({ sources, onRevoked }: { sources: Source[]; onRevoked: () => void }) {
+  const t = useT();
   const locale = useLocale();
   return (
     <ul className="divide-y divide-border">
@@ -74,7 +75,7 @@ function Narrow({ sources, onRevoked }: { sources: Source[]; onRevoked: () => vo
           <div className="flex min-w-0 flex-col gap-0.5">
             <span className="truncate font-mono text-xs">{s.key_id}</span>
             <span className="text-sm text-ink-mid">
-              {s.kind} · {s.brands.join(", ")}
+              {sourceKindLabel(s.kind, t)} · {s.brands.join(", ")}
             </span>
             <span className="text-xs tabular-nums text-ink-soft">{formatDateTime(s.created_at, locale)}</span>
           </div>

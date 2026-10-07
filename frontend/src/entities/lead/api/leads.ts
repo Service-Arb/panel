@@ -3,7 +3,7 @@ import { object, str } from "@/shared/lib/parse";
 
 import type { BookingStatus } from "../model/booking";
 import type { Flow } from "../model/pricing";
-import { type LeadCard, type LeadCounts, type LeadPage, type LeadRef, type Stage, leadCardParser, leadCountsParser, leadPageParser, leadPath } from "../model/lead";
+import { type Channel, type LeadCard, type LeadCounts, type LeadPage, type LeadRef, type ManualChannel, type Messenger, type Stage, leadCardParser, leadCountsParser, leadPageParser, leadPath } from "../model/lead";
 
 export interface LeadFilter {
   stage: Stage | null;
@@ -19,6 +19,10 @@ export interface LeadFilter {
   flow: Flow | null;
   /** Where the lead's booking stands (`none` included); null is every lead. */
   booking: BookingStatus | null;
+  /** How the lead came in; null is every lead. */
+  channel: Channel | null;
+  /** A messenger ref as the customer quotes it; the API matches it in any case. */
+  messageRef: string | null;
 }
 
 export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50): Promise<LeadPage> {
@@ -32,6 +36,8 @@ export function fetchLeads(filter: LeadFilter, cursor: string | null, limit = 50
     suspect: filter.suspect,
     flow: filter.flow,
     booking: filter.booking,
+    channel: filter.channel,
+    message_ref: filter.messageRef,
     cursor,
     limit,
   });
@@ -51,12 +57,14 @@ export interface NewLead {
   location: string;
   need: string;
   phone: string | null;
+  /** A call (the default on the server) or a customer who wrote on a messenger without the landing. */
+  channel: ManualChannel;
 }
 
 const createdParser = object({ brand: str, lead_id: str, event_id: str });
 
 export function createLead(lead: NewLead): Promise<{ brand: string; lead_id: string }> {
-  const body = { brand: lead.brand, location: lead.location, need: lead.need, ...(lead.phone ? { phone: lead.phone } : {}) };
+  const body = { brand: lead.brand, location: lead.location, need: lead.need, channel: lead.channel, ...(lead.phone ? { phone: lead.phone } : {}) };
   return http.send("POST", "/api/v1/leads", body, createdParser);
 }
 
@@ -70,6 +78,11 @@ export type StageMove =
 
 export async function moveLead(ref: LeadRef, move: StageMove): Promise<void> {
   await http.send("POST", `${leadPath(ref)}/stage`, move, ignoreBody);
+}
+
+/** The customer wrote on a messenger (`lead.messaged`); the server takes a repeat as done. */
+export async function markMessaged(ref: LeadRef, channel: Messenger): Promise<void> {
+  await http.send("POST", `${leadPath(ref)}/messaged`, { channel }, ignoreBody);
 }
 
 export interface PaymentInput {

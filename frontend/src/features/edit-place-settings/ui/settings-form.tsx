@@ -13,6 +13,7 @@ import { AreaChips } from "./area-chips";
 import { BookingFields } from "./booking-fields";
 import { HoursEditor } from "./hours-editor";
 import { KeptFields } from "./kept-fields";
+import { MessengerSwitches, TelegramField } from "./messenger-fields";
 import { PhoneField } from "./phone-field";
 
 export interface SettingsFormProps {
@@ -67,6 +68,8 @@ export function SettingsForm({ place, onSaved, onReload, fresher, onTakeFresh }:
       )}
       <PhoneField label={t("placeSettings.field.phone")} value={draft.phone} onChange={(phone) => set({ phone })} errors={errors.byField.phone} />
       <PhoneField label={t("placeSettings.field.whatsapp")} value={draft.whatsapp} onChange={(whatsapp) => set({ whatsapp })} errors={errors.byField.whatsapp} />
+      <TelegramField value={draft.telegram} onChange={(telegram) => set({ telegram })} errors={errors.byField.telegram} />
+      <MessengerSwitches value={draft.messengers} onChange={(messengers) => set({ messengers })} errors={errors.byField.messengers} />
       <HoursEditor rows={draft.hours} onChange={(hours) => set({ hours })} errors={errors.byField.hours} />
       <AreaChips names={draft.serviceArea} onChange={(serviceArea) => set({ serviceArea })} errors={errors.byField.serviceArea} />
       <BookingFields draft={draft.booking} onChange={(booking) => set({ booking })} serverErrors={errors.byKey} />

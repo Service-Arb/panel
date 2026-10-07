@@ -3,7 +3,7 @@
 import { Button, Field, FieldLabel, Input, Textarea, toast } from "@evinvest/uikit";
 import { useId, useState } from "react";
 
-import { type LeadRef, createLead } from "@/entities/lead";
+import { type LeadRef, type ManualChannel, createLead } from "@/entities/lead";
 import { type Place, locationsOf } from "@/entities/place";
 import { isSlug } from "@/shared/config/brands";
 import { useT } from "@/shared/i18n";
@@ -12,13 +12,15 @@ import { PanelOverlay } from "@/shared/ui/panel-overlay";
 import { useButtonSize, useControlSize } from "@/shared/ui/touch";
 
 import { readLastPlace, writeLastPlace } from "../model/last-place";
+import { ChannelField } from "./channel-field";
 import { PlaceFields, type PlaceValue } from "./place-fields";
 
 const EMPTY: PlaceValue = { brand: "", location: null, custom: "" };
 
 /**
- * "+ Call": a call that bypassed the form becomes a lead in three fields —
- * location (the last one by default), what they need, and the phone if given.
+ * "+ Call": a call — or a WhatsApp / Telegram message — that bypassed the form
+ * becomes a lead: location (the last one by default), how they reached us,
+ * what they need, and the phone if given.
  */
 export function CreateLeadButton({ brands, places, onCreated }: { brands: string[]; places: readonly Pick<Place, "brand" | "location">[]; onCreated: (ref: LeadRef) => void }) {
   const t = useT();
@@ -28,6 +30,7 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
   const [place, setPlace] = useState<PlaceValue>(EMPTY);
   const [need, setNeed] = useState("");
   const [phone, setPhone] = useState("");
+  const [channel, setChannel] = useState<ManualChannel>("phone_inbound");
   const [busy, setBusy] = useState(false);
   const size = useControlSize();
 
@@ -40,13 +43,14 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
     setPlace(last ? { brand: last.brand, location: last.location, custom: "" } : EMPTY);
     setNeed("");
     setPhone("");
+    setChannel("phone_inbound");
     setOpen(true);
   };
 
   const submit = async () => {
     setBusy(true);
     try {
-      const created = await createLead({ brand: place.brand, location, need: need.trim(), phone: phone.trim() || null });
+      const created = await createLead({ brand: place.brand, location, need: need.trim(), phone: phone.trim() || null, channel });
       writeLastPlace({ brand: place.brand, location });
       toast.positive(t("create.saved"));
       setOpen(false);
@@ -70,6 +74,7 @@ export function CreateLeadButton({ brands, places, onCreated }: { brands: string
           }}
         >
           <PlaceFields brands={brands} locations={locations} value={place} onChange={setPlace} />
+          <ChannelField value={channel} onChange={setChannel} />
           <Field className="flex flex-col gap-1">
             <FieldLabel htmlFor={`${id}-need`}>{t("create.need")}</FieldLabel>
             <Textarea id={`${id}-need`} size={size} rows={2} maxLength={1000} value={need} onChange={(e) => setNeed(e.target.value)} />
