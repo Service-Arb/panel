@@ -619,6 +619,7 @@
   "account.tokens": "Tokens",
   "account.tokens.now": "Now",
   "account.tokens.renewal": "+{daily} a day, up to {cap}",
+  "account.members": "View as member…",
   "account.tokens.history": "Token history",
   "account.tokens.unavailable": "Tokens can't be shown right now.",
   "account.usage": "Usage",
