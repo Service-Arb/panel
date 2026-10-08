@@ -44,7 +44,7 @@ export function PanelTopBar() {
                 items: [
                   { id: "account", href: ROUTES.account, label: t("account.title") },
                   ...(may(me, "sa:review_archive:members:act_as") || may(me, "sa:review_archive:tokens:grant")
-                    ? [{ id: "members", href: ROUTES.reviewArchiveMembers, label: t("account.members"), external: true }]
+                    ? [{ id: "members", href: ROUTES.reviewArchiveActAs, label: t("account.members"), external: true }]
                     : []),
                   { id: "tokens", href: ROUTES.reviewArchiveTokens, label: t("account.tokens.history"), external: true },
                 ],

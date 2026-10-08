@@ -31,7 +31,7 @@ export function MoreView() {
       <ItemGroup className="gap-2">
         <MoreLink href={ROUTES.account} icon={CircleUser} label="account.title" />
         {(may(me, "sa:review_archive:members:act_as") || may(me, "sa:review_archive:tokens:grant")) && (
-          <MoreLink href={ROUTES.reviewArchiveMembers} icon={Users} label="account.members" />
+          <MoreLink href={ROUTES.reviewArchiveActAs} icon={Users} label="account.members" />
         )}
         {may(me, "sa:work:read") && <MoreLink href={ROUTES.reviewArchive} icon={Archive} label="nav.reviewArchive" />}
         {may(me, "sa:work:read") && <MoreLink href={ROUTES.pricing} icon={Tags} label="nav.pricing" />}
