@@ -210,6 +210,9 @@ function find(brand: string, id: string): StubLead | undefined {
   return leads.find((l) => l.brand === brand && l.lead_id === id);
 }
 
+/** Never granted: the stub's role is fixed, so a request waits for good. */
+const accessRequests: { need: string; requested_at: string }[] = [];
+
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const path = url.pathname.replace(/^\/api\/v1/, "");
   const write = req.method !== "GET";
@@ -220,6 +223,15 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
 
   // The stub signs anyone in, as the backend's dev sign-in does: it says so.
   if (path === "/me") return send(res, 200, { user_id: USER_ID, permissions: ALIASES[`sa:${ROLE}`], email: "stub@example.test", preferred_name: `Stub ${ROLE}`, dev_sign_in: true });
+  if (path === "/access/requests/mine") return send(res, 200, { requests: accessRequests });
+  if (path === "/access/requests" && write) {
+    const { need } = (await readJson(req)) as { need: string };
+    const standing = accessRequests.find((r) => r.need === need);
+    if (standing) return send(res, 200, standing);
+    const made = { need, requested_at: new Date().toISOString() };
+    accessRequests.push(made);
+    return send(res, 201, made);
+  }
   if (path === "/funnel") return send(res, 200, funnel(url.searchParams.get("brand"), url.searchParams.get("by")));
   if (path.startsWith("/experiments")) {
     const reply = experimentsRoute(req.method ?? "GET", path, url.searchParams, write ? await readJson(req) : {}, ROLE, `stub-${ROLE}@example.test`);

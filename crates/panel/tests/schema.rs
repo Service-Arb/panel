@@ -160,6 +160,7 @@ async fn the_runtime_does_its_work_on_a_fresh_database() {
 			bot: FakeBot { blocked },
 			concierge: Operators,
 			locale: Locale::Ru,
+			cabinet: cabinet(),
 		};
 		let operator: PermissionSet = SA_OPERATOR.members.iter().copied().collect();
 		let token = panel.telegram_link_token(user, &operator, "Olga", now).await.unwrap();
@@ -176,7 +177,7 @@ async fn the_runtime_does_its_work_on_a_fresh_database() {
 		for need in ["a tap", "a sink"] {
 			panel.create_lead(colleague, NewLead { need: need.into(), ..new_lead() }, now).await.unwrap();
 		}
-		assert_eq!(panel.telegram_fan_out(now, Locale::Ru).await.unwrap(), 2, "the colleague's two leads");
+		assert_eq!(panel.telegram_fan_out(now, Locale::Ru, &cabinet()).await.unwrap(), 2, "the colleague's two leads");
 		assert_eq!(notifier(false).deliver(now).await.unwrap().sent, 1);
 		assert_eq!(notifier(true).deliver(now + SignedDuration::from_secs(2)).await.unwrap().dead, 1);
 		assert_eq!(
@@ -286,4 +287,8 @@ async fn telegram_roles_become_permissions_both_ways() {
 	assert_eq!(roles, [(ann, "operator".to_owned()), (bob, "admin".to_owned())]);
 	let token: String = sqlx::query_scalar("SELECT role FROM telegram_link_tokens").fetch_one(&pool).await.unwrap();
 	assert_eq!(token, "admin");
+}
+
+fn cabinet() -> url::Url {
+	"https://evinvest.test".parse().unwrap()
 }

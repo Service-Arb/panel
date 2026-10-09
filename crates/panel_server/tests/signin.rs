@@ -1295,8 +1295,8 @@ async fn put(b: &mut Browser, app: &Router, uri: &str, body: Value) -> Answer {
 
 // ── permissions ──────────────────────────────────────────────────────────────────────────
 
-/// A signed-in caller holding nothing in `sa` is shown nothing: every `/api/v1` route but `/me`
-/// and the profile's Telegram ones answers 403, and so does the live socket; with every
+/// A signed-in caller holding nothing in `sa` is shown nothing: every `/api/v1` route but `/me`,
+/// the access requests and the profile's Telegram ones answers 403, and so does the live socket; with every
 /// permission, none of them does.
 #[tokio::test]
 async fn no_permission_opens_no_section() {
@@ -1315,7 +1315,7 @@ async fn no_permission_opens_no_section() {
 	};
 	let routes = http::api_routes();
 	let open: Vec<&str> = routes.iter().filter(|r| r.section.is_none()).map(|r| r.path).collect();
-	assert_eq!(open, ["/me"], "every other route sits under a section");
+	assert_eq!(open, ["/me", "/access/requests", "/access/requests/mine"], "every other route sits under a section");
 	for (permissions, email, holds) in [(PermissionSet::from_iter(Vec::<String>::new()), "nobody", false), (admin(), "admin", true)] {
 		let app = app(permissions, &format!("{email}@localhost"));
 		let mut b = Browser::default();
@@ -1328,7 +1328,7 @@ async fn no_permission_opens_no_section() {
 			let got = b.send(&app, r.method.clone(), &uri, Some(json!({})), true).await;
 			let forbidden = got.status == StatusCode::FORBIDDEN;
 			match (r.section, holds) {
-				(None, _) => assert_eq!(got.status, StatusCode::OK, "{} {uri}: {}", r.method, got.body),
+				(None, _) => assert!(!forbidden, "{} {uri}: {}", r.method, got.body),
 				(Some(_), false) => assert!(forbidden, "{} {uri}: {} {}", r.method, got.status, got.body),
 				(Some(_), true) => assert!(!forbidden, "{} {uri}: {}", r.method, got.body),
 			}

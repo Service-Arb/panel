@@ -2,20 +2,13 @@
 
 import { Button, Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle, Skeleton } from "@evinvest/uikit";
 
+import { RequestAccess } from "@/features/request-access";
 import { useT } from "@/shared/i18n";
 import { useButtonSize } from "@/shared/ui/touch";
 
-/** 403 from the gate: signed in to EV, but no grant on `allocation:service_arb`. */
+/** Signed in to EV, but without the panel's work: asks the admins for `sa:operator`. */
 export function NoAccessScreen() {
-  const t = useT();
-  return (
-    <Empty className="min-h-svh">
-      <EmptyHeader>
-        <EmptyTitle>{t("state.noAccess.title")}</EmptyTitle>
-        <EmptyDescription>{t("state.noAccess.body")}</EmptyDescription>
-      </EmptyHeader>
-    </Empty>
-  );
+  return <RequestAccess need="sa:operator" continueTo={null} />;
 }
 
 /** 503: concierge unreachable. The session is kept, so this only offers to try again. */

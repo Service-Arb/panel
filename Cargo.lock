@@ -2449,6 +2449,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "url",
  "uuid",
  "zeroize",
 ]
@@ -2483,6 +2484,7 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "thiserror",
+ "url",
  "uuid",
 ]
 

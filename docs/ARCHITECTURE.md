@@ -45,6 +45,8 @@ crates/panel/                        the engine
   src/store/telegram.rs              links, rules, fan-out marks, the outbox and its pacing
   src/telegram.rs                    linking, the rules' fan-out, delivery, the buttons; the
                                      Bot and Directory ports
+  src/access.rs                      a user's access requests: made, standing a day, dropped once held
+  src/store/access.rs                access_requests
   src/experiment.rs                  the experiments listed, changed by an admin (journaled), and
                                      what a landing is answered; the link to PostHog's funnel
   src/capture.rs                     the PostHog outbox sent in batches, retried, given up; the
@@ -79,6 +81,7 @@ crates/panel_server/                 the `panel` binary: CLI and HTTP, thin over
                                      PublishCatalog; its development stand-in (PANEL_DEV_SIGN_IN)
   src/cookies.rs                     __Host- cookies, the double-submit CSRF check
   src/api.rs                         the operator API: JSON over the engine's `operator` module
+  src/access.rs                      /api/v1/access/requests: a need checked against the catalog
   src/live.rs                        GET /api/v1/live, the WebSocket that tells the screens what
                                      changed
   src/places.rs                      a place's settings: the editor's routes, and the sites'
@@ -163,7 +166,7 @@ POST /auth/logout    CSRF; every session of the user is closed
   wildcard; anything outside `sa` is a failed answer); the gate admits every signed-in user,
   and each `/api/v1` route sits under one section — Work (`sa:work:read`), Analysis
   (`sa:analysis:read`), Admin (`sa:admin:sources:manage`) — or none (`/me`, the profile's
-  `/telegram*`). `/me` also names `account_center` — concierge's `/cabinet/settings`, `null`
+  `/telegram*`, `/access/requests*`). `/me` also names `account_center` — concierge's `/cabinet/settings`, `null`
   under dev sign-in — so the static export never bakes in an origin. `http::api_routes` is the table the router is built from and the tests
   walk. Actions ask their own permission on top (`sa:work:leads:edit`, `sa:work:pii:see`,
   `sa:work:places:edit`, `sa:work:pricing:edit`, `sa:analysis:experiments:edit`).
@@ -309,6 +312,21 @@ POST   /sources                     Admin, fresh  {key_id, kind, brands} → 201
                                                   (the panel writes without a key)
 DELETE /sources/{key_id}            Admin, fresh  204, 404
 ```
+
+```text
+POST   /access/requests     {need}                → 201 {need, requested_at}, made now; 200 the one
+                                                  standing (made within 24 h: nobody told again);
+                                                  400 a need neither a permission nor an alias of
+                                                  the sa catalog; 409 a need held already
+GET    /access/requests/mine                      {requests: [{need, requested_at}]}
+                                                  A need is held when every permission it stands for
+                                                  is; both routes drop the caller's requests held.
+```
+
+The page `/access?need=&continue=` (outside the shell) is where a service sends a signed-in
+user lacking `need` — playbook's `/playbook_mcp/authorize`, for `sa:playbook:mcp:use`: it asks,
+then reads `/me` every 30 s and goes on to `continue` (a path, the `return_to` rule) once held.
+A ~375-byte authorize URL makes a ~478-byte `/access/?…`, under `return_to`'s 512.
 
 ```text
 GET    /telegram                                  {enabled, linked, blocked, rules: {rule: bool}}
@@ -638,7 +656,10 @@ each user in a private chat. Rules: `new_lead` and `contact_overdue` (`sa:work:l
 by default), `payment_received` and `source_silent` (`sa:admin:sources:manage`, off by
 default), `booked` (`sa:work:leads:edit`, on by default: a slot booked, moved or canceled — "Бронь: <slot> (Paris)", "Бронь
 перенесена", "Бронь отменена", "… без заявки" for one without a lead; not to the operator who
-set or closed it themselves; no buttons). A 3★ review, a
+set or closed it themselves; no buttons), `access_requested` (every permission of `sa:admin`,
+on by default: "🔑 Playbook access request" / "🔑 Access request", the email and name, and a URL
+button "Grant access" to `<CONCIERGE_PUBLIC_ORIGIN>/en/cabinet/admin/allocations/service_arb?email=&target=`;
+at most once a day per user and need). A 3★ review, a
 funnel drop and Grafana alerts are variants to come, once their sources exist.
 
 ```text

@@ -4,6 +4,7 @@
 //!
 //! A library target too, so tests can serve the real router in-process.
 
+pub mod access;
 pub mod api;
 pub mod booking;
 pub mod capture;

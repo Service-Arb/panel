@@ -17,6 +17,19 @@ dev_sign_in: boolean,
  */
 account_center: string | null, };
 
+/**
+ * An access request of the caller's, standing.
+ */
+export type AccessRequest = { 
+/**
+ * A permission or an alias of the `sa` catalog.
+ */
+need: Permission | keyof typeof ALIASES, 
+/**
+ * RFC 3339.
+ */
+requested_at: string, };
+
 export const PERMISSIONS = ["sa:admin:sources:manage", "sa:analysis:experiments:edit", "sa:analysis:read", "sa:playbook:mcp:use", "sa:review_archive:archive:operate", "sa:review_archive:members:act_as", "sa:review_archive:tokens:grant", "sa:work:leads:edit", "sa:work:pii:see", "sa:work:places:edit", "sa:work:pricing:edit", "sa:work:read"] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
