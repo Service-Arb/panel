@@ -17,6 +17,7 @@
 //! their bookings to leads; [`live`] the bus that tells the server's sockets what changed,
 //! published here after each commit.
 
+pub mod access;
 pub mod booking;
 pub mod capture;
 pub mod experiment;

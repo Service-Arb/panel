@@ -156,7 +156,7 @@ impl From<ActionError> for ApiError {
 pub(crate) type ApiResult<T> = Result<T, ApiError>;
 
 /// A JSON body, its rejection turned into our error shape.
-fn body<T: DeserializeOwned>(b: Result<Json<T>, JsonRejection>) -> ApiResult<T> {
+pub(crate) fn body<T: DeserializeOwned>(b: Result<Json<T>, JsonRejection>) -> ApiResult<T> {
 	b.map(|Json(v)| v).map_err(|e| ApiError::BadRequest(e.body_text()))
 }
 

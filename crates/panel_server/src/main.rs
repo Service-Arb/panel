@@ -586,6 +586,7 @@ async fn serve(
 						bot: BotApi::new(telegram::API_BASE, &tg.token)?,
 						concierge: concierge.clone(),
 						locale: tg.locale,
+						cabinet: config.concierge_origin.parse().wrap_err("the concierge origin is not a URL")?,
 					};
 					tracing::info!("telegram notifications on");
 					// Held, and awaited at shutdown: the poller gives its lease back on the way out.

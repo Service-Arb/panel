@@ -5,12 +5,12 @@ ones of `SA-PANEL-SPEC.md` §10 (hybrid 1+2): Overview, Leads, Locations, Experi
 Sources (admin), and on a phone a bottom tab bar with "More" in place of the sidebar.
 
 ```text
-app/                 routes: (panel)/ is everything behind sign-in, signed-out/ is not
+app/                 routes: (panel)/ is everything behind sign-in, signed-out/ and access/ are not
 src/views/           one slice per screen, plus shell/ (the kit's AppShell: rail, tab bar, nav marks, access states)
 src/features/        call-lead · move-stage · record-payment · create-lead ·
                      lead-filters · funnel-filters · manage-sources · sign-out ·
                      edit-place-settings · revert-place-change · withdraw-place · add-place ·
-                     configure-experiment
+                     configure-experiment · request-access
 src/entities/        session · lead · funnel · experiment · place · source — types, response checks, requests
 src/shared/          api/ (fetch, CSRF, the gate's answers), i18n/, lib/ (live/: the socket), ui/
 messages/            en.json (the source of keys) and ru.json

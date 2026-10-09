@@ -156,7 +156,11 @@ fn entities(m: &Rendered) -> Value {
 }
 
 fn keyboard(buttons: &[InlineButton]) -> Value {
-	json!({"inline_keyboard": buttons.iter().map(|b| json!([{"text": b.label, "callback_data": b.data}])).collect::<Vec<_>>()})
+	let row = |b: &InlineButton| match b {
+		InlineButton::Callback { label, data } => json!([{"text": label, "callback_data": data}]),
+		InlineButton::Url { label, url } => json!([{"text": label, "url": url}]),
+	};
+	json!({"inline_keyboard": buttons.iter().map(row).collect::<Vec<_>>()})
 }
 
 impl Bot for BotApi {
@@ -389,7 +393,7 @@ pub async fn run(notifier: Notifier<BotApi, Concierge>, name: BotName, shutdown:
 	let n = notifier.clone();
 	work.spawn(crate::every(FAN_OUT_EVERY, shutdown.clone(), "telegram fan-out", move || {
 		let n = n.clone();
-		async move { n.panel.telegram_fan_out(Timestamp::now(), n.locale).await.map(drop) }
+		async move { n.panel.telegram_fan_out(Timestamp::now(), n.locale, &n.cabinet).await.map(drop) }
 	}));
 	let n = notifier.clone();
 	work.spawn(crate::every(DELIVER_EVERY, shutdown.clone(), "telegram delivery", move || {

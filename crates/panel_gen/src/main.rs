@@ -13,6 +13,7 @@ use panel_core::{
 	pricing,
 };
 use panel_server::{
+	access::AccessRequestDto,
 	api::{CURRENCIES, IDEMPOTENCY_KEY},
 	signin::Caller,
 };
@@ -21,7 +22,10 @@ use sa_auth::Catalog;
 fn main() {
 	let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../frontend/src");
 	let [permissions, aliases] = Catalog::collect("sa", 0).ts();
-	Ts::write(&root.join("entities/session/model/generated.ts"), &[Ts::types::<Caller>(), permissions, aliases]);
+	Ts::write(
+		&root.join("entities/session/model/generated.ts"),
+		&[Ts::types::<Caller>(), Ts::types::<AccessRequestDto>(), permissions, aliases],
+	);
 	Ts::write(
 		&root.join("entities/lead/model/generated.ts"),
 		&[

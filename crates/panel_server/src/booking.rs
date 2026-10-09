@@ -39,7 +39,7 @@ use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::{
-	api::{ApiError, ApiResult},
+	api::{ApiError, ApiResult, body},
 	http::{ApiRoute, Section},
 	signin::{Caller, Freshness},
 };
@@ -132,10 +132,6 @@ async fn hook(State(hooks): State<Hooks>, Path((provider, brand)): Path<(String,
 			(StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "internal error" }))).into_response()
 		}
 	}
-}
-
-fn body<T: serde::de::DeserializeOwned>(b: Result<Json<T>, JsonRejection>) -> ApiResult<T> {
-	b.map(|Json(v)| v).map_err(|e| ApiError::BadRequest(e.body_text()))
 }
 
 fn ids(brand: &str, lead: &str) -> ApiResult<(BrandId, LeadId)> {

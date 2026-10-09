@@ -100,11 +100,13 @@ const PARALLEL_SENDS: usize = 8;
 /// Links re-confirmed per pass.
 const RECHECKS: i64 = 20;
 
-/// A button under a message: its label and its signed data.
+/// A button under a message.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InlineButton {
-	pub label: &'static str,
-	pub data: String,
+pub enum InlineButton {
+	/// Pressed, it comes back to the bot with its signed data.
+	Callback { label: &'static str, data: String },
+	/// Opens `url`.
+	Url { label: String, url: String },
 }
 
 /// The Bot API, as the notifier needs it. Every call answers the failure as
@@ -217,7 +219,7 @@ fn link_token_hash(token: &str) -> [u8; 32] {
 
 /// The id a rule fans out under for something that is not a journal event: a UUID (version 8)
 /// named by its parts.
-fn derived_event_id(parts: &[&str]) -> Uuid {
+pub(crate) fn derived_event_id(parts: &[&str]) -> Uuid {
 	let mut h = Sha256::new();
 	h.update(b"sa-panel/tg-fanout/v1");
 	for p in parts {
@@ -308,10 +310,11 @@ impl Panel {
 	}
 
 	/// Queues what the rules say is due at `now`: new leads, overdue leads, payments, silent
-	/// sources and bookings, each told once per recipient. Safe on several replicas at once: each
-	/// candidate is claimed, and the outbox refuses a second `(rule, event, chat)`. How many
+	/// sources, bookings and access requests, each told once per recipient. Safe on several
+	/// replicas at once: each candidate is claimed, and the outbox refuses a second `(rule,
+	/// event, chat)`. `cabinet` is concierge's origin, where the admins grant access. How many
 	/// messages were queued.
-	pub async fn telegram_fan_out(&self, now: Timestamp, locale: Locale) -> eyre::Result<usize> {
+	pub async fn telegram_fan_out(&self, now: Timestamp, locale: Locale, cabinet: &url::Url) -> eyre::Result<usize> {
 		let confirmed_since = now - ACCESS_TTL;
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection for the fan-out")?;
 		let new = db::new_leads(&mut conn, now - NEW_LEAD_WINDOW, BATCH).await?;
@@ -330,7 +333,7 @@ impl Panel {
 			};
 			// Whoever typed the lead in knows of it already.
 			queued += self
-				.fan_out_one(&mut conn, Rule::NewLead, c.event_id, lead, c.entered_by, note, confirmed_since, now, locale)
+				.fan_out_one(&mut conn, Rule::NewLead, c.event_id, lead, c.entered_by, note, confirmed_since, now, locale, cabinet)
 				.await?;
 		}
 		for c in &overdue {
@@ -343,7 +346,7 @@ impl Panel {
 				})
 			};
 			queued += self
-				.fan_out_one(&mut conn, Rule::ContactOverdue, c.event_id, lead, None, note, confirmed_since, now, locale)
+				.fan_out_one(&mut conn, Rule::ContactOverdue, c.event_id, lead, None, note, confirmed_since, now, locale, cabinet)
 				.await?;
 		}
 		for p in payments {
@@ -355,7 +358,18 @@ impl Panel {
 				currency: p.currency,
 			};
 			queued += self
-				.fan_out_one(&mut conn, Rule::PaymentReceived, p.event_id, None, None, |_| Ok(note.clone()), confirmed_since, now, locale)
+				.fan_out_one(
+					&mut conn,
+					Rule::PaymentReceived,
+					p.event_id,
+					None,
+					None,
+					|_| Ok(note.clone()),
+					confirmed_since,
+					now,
+					locale,
+					cabinet,
+				)
 				.await?;
 		}
 		for s in silent {
@@ -368,7 +382,7 @@ impl Panel {
 				last: s.last,
 			};
 			queued += self
-				.fan_out_one(&mut conn, Rule::SourceSilent, event, None, None, |_| Ok(note.clone()), confirmed_since, now, locale)
+				.fan_out_one(&mut conn, Rule::SourceSilent, event, None, None, |_| Ok(note.clone()), confirmed_since, now, locale, cabinet)
 				.await?;
 		}
 		for t in crate::store::bookings::to_tell(&mut conn, now - BOOKING_WINDOW, BATCH).await? {
@@ -406,7 +420,30 @@ impl Panel {
 			};
 			let lead = candidate.as_ref().map(|c| (c.brand_id.as_str(), c.lead_id.as_str()));
 			// Whoever set or closed the slot knows of it already.
-			queued += self.fan_out_one(&mut conn, Rule::Booked, t.event_id, lead, t.by, note, confirmed_since, now, locale).await?;
+			queued += self
+				.fan_out_one(&mut conn, Rule::Booked, t.event_id, lead, t.by, note, confirmed_since, now, locale, cabinet)
+				.await?;
+		}
+		for r in crate::store::access::to_tell(&mut conn, now - crate::access::ASK_AGAIN_AFTER, BATCH).await? {
+			let note = Note::AccessRequested {
+				email: r.email,
+				name: r.name,
+				need: r.need,
+			};
+			queued += self
+				.fan_out_one(
+					&mut conn,
+					Rule::AccessRequested,
+					r.event_id,
+					None,
+					None,
+					|_| Ok(note.clone()),
+					confirmed_since,
+					now,
+					locale,
+					cabinet,
+				)
+				.await?;
 		}
 		Ok(queued)
 	}
@@ -425,6 +462,7 @@ impl Panel {
 		confirmed_since: Timestamp,
 		now: Timestamp,
 		locale: Locale,
+		cabinet: &url::Url,
 	) -> eyre::Result<usize> {
 		let mut tx = crate::store::begin_write(&mut *conn).await?;
 		if !db::claim_fanout(&mut tx, rule, event, now).await? {
@@ -436,7 +474,8 @@ impl Panel {
 				continue;
 			}
 			let note = note(&r.permissions)?;
-			let sealed = self.seal_message(rule, event, r.chat_id, &note.render(locale))?;
+			let links: Vec<_> = note.link(locale, cabinet).into_iter().collect();
+			let sealed = self.seal_message(rule, event, r.chat_id, &note.render(locale), &links)?;
 			let message = NewMessage {
 				user_id: r.user_id,
 				chat_id: r.chat_id,
@@ -458,26 +497,30 @@ impl Panel {
 		Ok(queued)
 	}
 
-	/// A queued message, sealed: its text is PII.
-	fn seal_message(&self, rule: Rule, event: Uuid, chat: i64, m: &Rendered) -> eyre::Result<Vec<u8>> {
+	/// A queued message and its links (`(label, url)`), sealed: its text is PII, and so may a
+	/// link be.
+	fn seal_message(&self, rule: Rule, event: Uuid, chat: i64, m: &Rendered, links: &[(&str, String)]) -> eyre::Result<Vec<u8>> {
 		let code: Vec<[usize; 2]> = m.code.iter().map(|e| [e.offset, e.length]).collect();
-		let plain = Zeroizing::new(serde_json::to_vec(&serde_json::json!({"text": m.text, "code": code})).wrap_err("serializing a message")?);
+		let plain = Zeroizing::new(serde_json::to_vec(&serde_json::json!({"text": m.text, "code": code, "links": links})).wrap_err("serializing a message")?);
 		Ok(self.key.seal(&telegram_text_aad(rule.as_str(), event, chat), &plain)?)
 	}
 
-	fn open_message(&self, d: &db::Due) -> eyre::Result<Rendered> {
+	fn open_message(&self, d: &db::Due) -> eyre::Result<(Rendered, Vec<(String, String)>)> {
 		#[derive(serde::Deserialize)]
 		struct Plain {
 			text: String,
 			code: Vec<[usize; 2]>,
+			#[serde(default)] // queued before messages had links
+			links: Vec<(String, String)>,
 		}
 		eyre::ensure!(d.data_key_fp.as_slice() == self.key.fingerprint(), "sealed under another PANEL_DATA_KEY");
 		let plain = self.key.open(&telegram_text_aad(&d.rule, d.event_id, d.chat_id), &d.text_sealed).wrap_err("does not open")?;
 		let p: Plain = serde_json::from_slice(&plain).wrap_err("is not a message")?;
-		Ok(Rendered {
+		let message = Rendered {
 			text: p.text,
 			code: p.code.into_iter().map(|[offset, length]| Entity { offset, length }).collect(),
-		})
+		};
+		Ok((message, p.links))
 	}
 
 	/// A lead as a message to someone holding `permissions` shows it: the PII of its creation
@@ -520,6 +563,8 @@ pub struct Notifier<B, C> {
 	/// concierge: to rotate a session's tokens and to ask `GetMe` with them.
 	pub concierge: C,
 	pub locale: Locale,
+	/// concierge's origin: where the admins grant the access a user asks for.
+	pub cabinet: url::Url,
 }
 
 impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
@@ -527,7 +572,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		let key = self.panel.key.telegram_callback_key();
 		buttons
 			.into_iter()
-			.map(|b| InlineButton {
+			.map(|b| InlineButton::Callback {
 				label: b.label(self.locale),
 				data: notify::callback_data(&key, chat_id, message, b),
 			})
@@ -567,7 +612,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 		let note = Note::Backlog {
 			count: i64::try_from(count).unwrap_or(i64::MAX),
 		};
-		let sealed = self.panel.seal_message(Rule::NewLead, event, chat, &note.render(self.locale))?;
+		let sealed = self.panel.seal_message(Rule::NewLead, event, chat, &note.render(self.locale), &[])?;
 		let message = NewMessage {
 			user_id: user,
 			chat_id: chat,
@@ -599,7 +644,7 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 			db::dead(&mut conn, d.id, "access not confirmed").await?;
 			return Ok(Outcome::Dead);
 		}
-		let message = match self.panel.open_message(&d) {
+		let (message, links) = match self.panel.open_message(&d) {
 			Ok(m) => m,
 			Err(e) => {
 				// A message that cannot be read now never will be: it is given up, not retried.
@@ -608,7 +653,8 @@ impl<B: Bot, C: Refresher + Directory> Notifier<B, C> {
 				return Ok(Outcome::Dead);
 			}
 		};
-		let buttons = self.buttons(d.chat_id, d.id, d.buttons.iter().filter_map(|b| Button::from_name(b)));
+		let mut buttons = self.buttons(d.chat_id, d.id, d.buttons.iter().filter_map(|b| Button::from_name(b)));
+		buttons.extend(links.into_iter().map(|(label, url)| InlineButton::Url { label, url }));
 		// No pool connection is held while Telegram is asked.
 		drop(conn);
 		let answer = self.bot.send(d.chat_id, &message, &buttons).await;

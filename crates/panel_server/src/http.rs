@@ -51,7 +51,7 @@ use tower::{BoxError, ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutError, TimeoutLayer};
 
 use crate::{
-	api, booking, experiments,
+	access, api, booking, experiments,
 	live::{self, Live, LiveLimits},
 	places, pricing,
 	signin::{self, Freshness, Gate, SignIn},
@@ -106,7 +106,7 @@ impl ApiRoute {
 /// Every `/api/v1` route on the engine's state; the profile's Telegram routes, open to every
 /// signed-in user, are [`crate::telegram`]'s.
 pub fn api_routes() -> Vec<ApiRoute> {
-	[api::routes(), booking::routes(), places::routes(), pricing::routes(), experiments::routes()]
+	[api::routes(), access::routes(), booking::routes(), places::routes(), pricing::routes(), experiments::routes()]
 		.into_iter()
 		.flatten()
 		.collect()

@@ -7,7 +7,7 @@ use std::{fmt, str::FromStr};
 
 use hmac::{Hmac, KeyInit, Mac};
 use jiff::{SignedDuration, Timestamp};
-use sa_auth::{Leads, PermissionSet, Sources};
+use sa_auth::{Leads, PermissionSet, SA_ADMIN, Sources};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
@@ -33,10 +33,19 @@ pub enum Rule {
 	/// A slot was booked, moved or canceled — by the customer through a provider, or by an
 	/// operator.
 	Booked,
+	/// A signed-in user asked for a permission: at most once a day per user and need.
+	AccessRequested,
 }
 
 impl Rule {
-	pub const ALL: [Self; 5] = [Self::NewLead, Self::ContactOverdue, Self::PaymentReceived, Self::SourceSilent, Self::Booked];
+	pub const ALL: [Self; 6] = [
+		Self::NewLead,
+		Self::ContactOverdue,
+		Self::PaymentReceived,
+		Self::SourceSilent,
+		Self::Booked,
+		Self::AccessRequested,
+	];
 
 	pub fn as_str(self) -> &'static str {
 		match self {
@@ -45,23 +54,26 @@ impl Rule {
 			Self::PaymentReceived => "payment_received",
 			Self::SourceSilent => "source_silent",
 			Self::Booked => "booked",
+			Self::AccessRequested => "access_requested",
 		}
 	}
 
 	/// On for a user who never chose.
 	pub fn on_by_default(self) -> bool {
 		match self {
-			Self::NewLead | Self::ContactOverdue | Self::Booked => true,
+			Self::NewLead | Self::ContactOverdue | Self::Booked | Self::AccessRequested => true,
 			Self::PaymentReceived | Self::SourceSilent => false,
 		}
 	}
 
 	/// Whether someone holding `permissions` gets this rule's messages at all: leads are
-	/// whoever works them; money and the sources are whoever manages the sources.
+	/// whoever works them; money and the sources are whoever manages the sources; access
+	/// requests are whoever holds all of `sa:admin`.
 	pub fn open_to(self, permissions: &PermissionSet) -> bool {
 		match self {
 			Self::NewLead | Self::ContactOverdue | Self::Booked => permissions.may(Leads::Edit),
 			Self::PaymentReceived | Self::SourceSilent => permissions.may(Sources::Manage),
+			Self::AccessRequested => SA_ADMIN.members.iter().all(|m| permissions.iter().any(|p| p == *m)),
 		}
 	}
 }
@@ -76,10 +88,11 @@ impl FromStr for Rule {
 	type Err = Invalid;
 
 	fn from_str(s: &str) -> Result<Self, Invalid> {
-		Self::ALL
-			.into_iter()
-			.find(|r| r.as_str() == s)
-			.ok_or_else(|| Invalid::new(format!("{s:?} is not one of new_lead, contact_overdue, payment_received, source_silent, booked")))
+		Self::ALL.into_iter().find(|r| r.as_str() == s).ok_or_else(|| {
+			Invalid::new(format!(
+				"{s:?} is not one of new_lead, contact_overdue, payment_received, source_silent, booked, access_requested"
+			))
+		})
 	}
 }
 
@@ -238,6 +251,13 @@ pub enum Note {
 		slot: Option<String>,
 		provider: String,
 	},
+	/// A signed-in user asked for `need`, a permission or an alias of the `sa` catalog.
+	AccessRequested {
+		email: String,
+		/// Their preferred name; empty when they have none.
+		name: String,
+		need: String,
+	},
 }
 
 /// What became of a slot.
@@ -256,6 +276,7 @@ impl Note {
 			Self::PaymentReceived { .. } => Rule::PaymentReceived,
 			Self::SourceSilent { .. } => Rule::SourceSilent,
 			Self::Booking { .. } => Rule::Booked,
+			Self::AccessRequested { .. } => Rule::AccessRequested,
 		}
 	}
 
@@ -263,8 +284,22 @@ impl Note {
 	pub fn buttons(&self) -> &'static [Button] {
 		match self {
 			Self::NewLead(_) | Self::SuspectLead { .. } | Self::ContactOverdue { .. } => &[Button::Take, Button::NoAnswer],
-			Self::PaymentReceived { .. } | Self::SourceSilent { .. } | Self::Backlog { .. } | Self::Booking { .. } => &[],
+			Self::PaymentReceived { .. } | Self::SourceSilent { .. } | Self::Backlog { .. } | Self::Booking { .. } | Self::AccessRequested { .. } => &[],
 		}
+	}
+
+	/// A link under it, `(label, url)`: for an access request, the cabinet's grant form at
+	/// `cabinet` (concierge's origin), prefilled with the email and the need.
+	pub fn link(&self, locale: Locale, cabinet: &url::Url) -> Option<(&'static str, String)> {
+		let Self::AccessRequested { email, need, .. } = self else { return None };
+		let mut url = cabinet.clone();
+		url.set_path("/en/cabinet/admin/allocations/service_arb");
+		url.query_pairs_mut().clear().append_pair("email", email).append_pair("target", need);
+		let label = match locale {
+			Locale::Ru => "Выдать доступ",
+			Locale::En => "Grant access",
+		};
+		Some((label, url.into()))
 	}
 
 	/// Plain text (sent without a parse mode, so nothing a customer typed is markup).
@@ -358,6 +393,27 @@ impl Note {
 					None => out.push(&format!("{head}\n{brand}")),
 				}
 				out.push(&format!("\n{} {provider}", if ru { "Через:" } else { "Via:" }));
+			}
+			Self::AccessRequested { email, name, need } => {
+				let playbook = need == sa_auth::Mcp::Use.as_str();
+				out.push(match (playbook, ru) {
+					(true, true) => "🔑 Запрос доступа к плейбуку\n",
+					(true, false) => "🔑 Playbook access request\n",
+					(false, true) => "🔑 Запрос доступа\n",
+					(false, false) => "🔑 Access request\n",
+				});
+				out.code(&one_line(email, MAX_NAME));
+				out.push(&match (playbook, ru) {
+					(true, true) => " хочет подключить Claude Code к плейбуку.".to_owned(),
+					(true, false) => " wants to connect Claude Code to the playbook.".to_owned(),
+					(false, true) => format!(" просит {need}."),
+					(false, false) => format!(" asks for {need}."),
+				});
+				let name = one_line(name, MAX_NAME);
+				if !name.is_empty() {
+					out.push(if ru { "\nИмя: " } else { "\nName: " });
+					out.code(&name);
+				}
 			}
 			Self::Backlog { count } => out.push(&if ru {
 				format!("{count} новых заявок ждут звонка. Откройте панель.")
@@ -651,12 +707,12 @@ mod tests {
 			assert_eq!(r.as_str().parse::<Rule>().unwrap(), r);
 		}
 		assert!("review_low".parse::<Rule>().is_err(), "not yet");
-		assert_eq!(Rule::ALL.iter().filter(|r| r.on_by_default()).count(), 3);
+		assert_eq!(Rule::ALL.iter().filter(|r| r.on_by_default()).count(), 4);
 		let operator: PermissionSet = sa_auth::SA_OPERATOR.members.iter().copied().collect();
 		let admin: PermissionSet = sa_auth::SA_ADMIN.members.iter().copied().collect();
 		assert!(Rule::Booked.on_by_default() && Rule::Booked.open_to(&operator));
 		assert!(Rule::NewLead.open_to(&operator) && Rule::ContactOverdue.open_to(&operator));
-		assert!(!Rule::PaymentReceived.open_to(&operator) && !Rule::SourceSilent.open_to(&operator));
+		assert!(!Rule::PaymentReceived.open_to(&operator) && !Rule::SourceSilent.open_to(&operator) && !Rule::AccessRequested.open_to(&operator));
 		assert!(Rule::ALL.iter().all(|r| r.open_to(&admin)));
 		assert!(Rule::ALL.iter().all(|r| !r.open_to(&std::iter::empty::<&str>().collect())), "no permission, no rule");
 	}
