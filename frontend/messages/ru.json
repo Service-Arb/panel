@@ -641,6 +641,7 @@
   "account.tokens": "Токены",
   "account.tokens.now": "Сейчас",
   "account.tokens.renewal": "+{daily} в день, до {cap}",
+  "account.actAs": "Смотреть как участник…",
   "account.tokens.history": "История токенов",
   "account.tokens.unavailable": "Токены сейчас не показать.",
   "account.usage": "Использование",
