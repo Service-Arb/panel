@@ -13,7 +13,7 @@ import { Check, ChevronDown } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { useMe } from "@/entities/session";
+import { may, useMe } from "@/entities/session";
 import { useTokens } from "@/entities/tokens";
 import { useSignOut } from "@/features/sign-out";
 import { switchAccountPath } from "@/shared/api";
@@ -43,6 +43,9 @@ export function PanelTopBar() {
                 id: "sa",
                 items: [
                   { id: "account", href: ROUTES.account, label: t("account.title") },
+                  ...(may(me, "sa:review_archive:members:act_as")
+                    ? [{ id: "act-as", href: ROUTES.reviewArchiveActAs, label: t("account.actAs"), external: true }]
+                    : []),
                   { id: "tokens", href: ROUTES.reviewArchiveTokens, label: t("account.tokens.history"), external: true },
                 ],
               },
