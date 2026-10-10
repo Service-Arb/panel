@@ -688,5 +688,17 @@
   "placeSettings.preview.telegram": "Telegram",
   "sources.kind.bot": "Бот (WhatsApp/Telegram)",
   "channel.other": "Другой канал",
-  "messenger.doneOther": "Написал · {at}"
+  "messenger.doneOther": "Написал · {at}",
+  "review.ask": "Попросить отзыв",
+  "review.via.whatsapp": "WhatsApp",
+  "review.via.whatsappCopy": "WhatsApp — скопировать текст",
+  "review.via.telegram": "Telegram — скопировать и открыть",
+  "review.needsPii": "Чтобы попросить отзыв, нужен доступ к контактам клиента.",
+  "review.requested": "Отзыв запрошен {at}, {channel}",
+  "review.requestedAt": "Отзыв запрошен {at}",
+  "review.saved": "Просьба об отзыве записана",
+  "review.copied": "Просьба об отзыве записана, текст скопирован",
+  "review.already": "У этого клиента отзыв уже просили",
+  "review.blocked": "Браузер заблокировал окно — откройте чат здесь",
+  "review.copyFailed": "Просьба записана, но текст не скопировался — выделите его здесь:"
 }

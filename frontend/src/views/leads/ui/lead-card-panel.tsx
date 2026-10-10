@@ -7,6 +7,7 @@ import { type LeadCard, type LeadRef, contactOf, encodeRef, fetchLeadCard } from
 import { CallButton } from "@/features/call-lead";
 import { StageActions, hasMoves } from "@/features/move-stage";
 import { PaymentForm, takesPayment } from "@/features/record-payment";
+import { RequestReview } from "@/features/request-review";
 import { useT } from "@/shared/i18n";
 import type { ChangedEvent } from "@/shared/lib/live";
 import { useResource } from "@/shared/lib/use-resource";
@@ -54,6 +55,7 @@ function CardBody({ card, leadRef, elsewhere, onChanged }: { card: LeadCard; lea
       <LeadDetails lead={lead} onChanged={onChanged} />
       <PricingBlock lead={lead} />
       {phone && <CallButton leadRef={leadRef} phone={phone} />}
+      <RequestReview lead={lead} events={events} onAsked={onChanged} />
       {hasMoves(lead.stage) && (
         <CardSection title={t("card.actions")}>
           <StageActions lead={lead} onMoved={onChanged} />
