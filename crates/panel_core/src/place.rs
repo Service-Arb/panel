@@ -365,6 +365,9 @@ pub const REVIEW_HOSTS: [&str; 2] = ["g.page", "search.google.com"];
 fn review_url(v: &Value) -> Result<Value, String> {
 	let s = text(v, MAX_URL).map_err(|_| "must be an https:// URL".to_owned())?;
 	let rest = s.strip_prefix("https://").ok_or("must be an https:// URL")?;
+	if !s.is_ascii() {
+		return Err("must be plain ASCII; write other characters percent-encoded".into());
+	}
 	if s.contains(char::is_whitespace) || s.contains('\\') {
 		return Err("must not contain spaces or backslashes".into());
 	}
@@ -378,7 +381,9 @@ fn review_url(v: &Value) -> Result<Value, String> {
 	if !REVIEW_HOSTS.iter().any(|h| authority.eq_ignore_ascii_case(h)) {
 		return Err(format!("must be a Google review link on {}", REVIEW_HOSTS.join(" or ")));
 	}
-	if tail.trim_start_matches(['/', '?', '#']).is_empty() {
+	// A fragment is not part of the page: `g.page/#x` still names no review page.
+	let page = tail.split('#').next().unwrap_or_default();
+	if page.trim_start_matches(['/', '?']).is_empty() {
 		return Err("must be the review page's link, not just the host".into());
 	}
 	Ok(Value::String(s))
@@ -711,6 +716,11 @@ mod tests {
 			("https://user:pw@g.page/r/x", "must not have a user or password in it"),
 			("https://g.page:8443/r/x", "must not have a port"),
 			("https://g.page", "must be the review page's link, not just the host"),
+			("https://g.page/#x", "must be the review page's link, not just the host"),
+			("https://search.google.com/#anything", "must be the review page's link, not just the host"),
+			("https://g.page?#", "must be the review page's link, not just the host"),
+			("https://g.page/r/x\u{200b}", "must be plain ASCII; write other characters percent-encoded"),
+			("https://g.page/r/\u{202e}x", "must be plain ASCII; write other characters percent-encoded"),
 			("https://g.page/", "must be the review page's link, not just the host"),
 			("https://g.page/r/a b", "must not contain spaces or backslashes"),
 			("https://g.page\\@evil.example/", "must not contain spaces or backslashes"),

@@ -67,8 +67,10 @@ const REVIEW_HOSTS = ["g.page", "search.google.com"];
 export function looksLikeReviewUrl(raw: string): boolean {
   const s = raw.trim();
   if (s === "") return true;
-  const m = /^https:\/\/([^/?#]*)[/?#]./i.exec(s);
-  return m !== null && REVIEW_HOSTS.includes((m[1] ?? "").toLowerCase());
+  // Plain ASCII only, and a fragment is not a page: `https://g.page/#x` names nothing.
+  if ([...s].some((c) => c.charCodeAt(0) > 127)) return false;
+  const m = /^https:\/\/([^/?#]*)([^#]*)/i.exec(s);
+  return m !== null && REVIEW_HOSTS.includes((m[1] ?? "").toLowerCase()) && /[^/?]/.test(m[2] ?? "");
 }
 
 /** Only the switches turned off are stored: absent is on, so an all-on place keeps no `messengers` at all. */

@@ -249,7 +249,7 @@ describe("the review link", () => {
 
   it("warns while typing about what the server would refuse", () => {
     for (const ok of ["", short, "https://search.google.com/local/writereview?placeid=ChIJ", "https://G.PAGE/x"]) expect(looksLikeReviewUrl(ok), ok).toBe(true);
-    for (const bad of ["http://g.page/x", "javascript:alert(1)", "https://evil.example/x", "https://g.page", "https://g.page@evil.example/x", "https://g.page:81/x"]) expect(looksLikeReviewUrl(bad), bad).toBe(false);
+    for (const bad of ["http://g.page/x", "javascript:alert(1)", "https://evil.example/x", "https://g.page", "https://g.page@evil.example/x", "https://g.page:81/x", "https://g.page/#x", "https://search.google.com/#anything", "https://g.page/r/x\u200b", "https://g.page/r/\u202ex"]) expect(looksLikeReviewUrl(bad), bad).toBe(false);
   });
 
   it("puts the server's reason beside its field", () => {
