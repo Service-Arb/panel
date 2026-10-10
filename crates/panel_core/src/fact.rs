@@ -216,6 +216,32 @@ impl LeadSuspect {
 	}
 }
 
+/// The locale of the landing a lead came from: the language any text to the customer is in.
+/// A lead with none is French, the brands' default.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeadLocale {
+	Fr,
+	En,
+}
+
+impl LeadLocale {
+	pub const ALL: [Self; 2] = [Self::Fr, Self::En];
+
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Fr => "fr",
+			Self::En => "en",
+		}
+	}
+
+	pub fn parse(raw: &str) -> Result<Self, Invalid> {
+		Self::ALL
+			.into_iter()
+			.find(|l| l.as_str() == raw)
+			.ok_or_else(|| Invalid::new("properties.locale is not one of fr, en"))
+	}
+}
+
 /// Which of a landing's flows a lead came through (FORM-VARIANTS-SPEC): a quote asked for, a
 /// price estimated from what the visitor picked, or a fixed price for a well-defined job.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -426,6 +452,8 @@ pub enum Fact {
 		analytics_id: Option<AnalyticsId>,
 		/// The reference the customer carries into a messenger ([`MessageRef`]).
 		message_ref: Option<MessageRef>,
+		/// The landing's locale, which language the customer is written to in; `None` is French.
+		locale: Option<LeadLocale>,
 	},
 	/// The customer actually wrote the brand on a messenger (`lead.messaged`). Its subject
 	/// names the lead, or the ref does and the panel finds the lead as it journals the event.
