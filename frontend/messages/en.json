@@ -710,5 +710,6 @@
   "reviews.week": "Week of {day}",
   "reviews.partialWeek": "Partial week",
   "reviews.smallSample": "Small sample",
-  "reviews.empty": "No finished jobs in this period"
+  "reviews.empty": "No finished jobs in this period",
+  "review.dismiss": "Close"
 }

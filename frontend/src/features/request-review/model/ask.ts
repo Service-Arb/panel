@@ -10,8 +10,8 @@ export interface AskPlan {
 
 export interface AskDeps {
   send(channel: Messenger): Promise<ReviewRequested>;
-  /** False when the browser refused the window. */
-  open(url: string): boolean;
+  /** The window it opened, null when the browser refused it. */
+  open(url: string): Window | null;
   copy(text: string): Promise<void>;
 }
 
@@ -22,8 +22,11 @@ export type AskOutcome =
   | { kind: "copied_and_opened" }
   /** The window was refused: the link is for the person to press. */
   | { kind: "blocked"; url: string }
-  /** The clipboard was refused: the text is for the person to select. */
-  | { kind: "copy_failed"; text: string };
+  /** The clipboard was refused: the text is for the person to select, and the chat (when there is one) to press. */
+  | { kind: "copy_failed"; text: string; url: string | null };
+
+/** What is left for the person to do by hand. */
+export type Leftover = Extract<AskOutcome, { kind: "blocked" | "copy_failed" }>;
 
 /**
  * The server first: the request is recorded before anything opens, as a call
@@ -38,8 +41,13 @@ export async function askForReview(plan: AskPlan, deps: AskDeps): Promise<AskOut
     await deps.copy(plan.text);
   } catch {
     // No clipboard outside a secure context, or the page lost the gesture.
-    return { kind: "copy_failed", text: plan.text };
+    return { kind: "copy_failed", text: plan.text, url: plan.url };
   }
   if (plan.url === null) return { kind: "copied" };
   return deps.open(plan.url) ? { kind: "copied_and_opened" } : { kind: "blocked", url: plan.url };
+}
+
+/** What is held for the card on screen: another lead's leftover is not shown on this one. */
+export function leftoverFor(held: { leadId: string; what: Leftover } | null, leadId: string): Leftover | null {
+  return held?.leadId === leadId ? held.what : null;
 }

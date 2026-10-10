@@ -2,11 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Lead, LeadEvent } from "@/entities/lead";
 import { NO_BOOKING } from "@/entities/lead/model/booking";
-import { type AskDeps, type AskPlan, askForReview } from "@/features/request-review/model/ask";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { type AskDeps, type AskPlan, askForReview, leftoverFor } from "@/features/request-review/model/ask";
 import { reviewGate } from "@/features/request-review/model/gate";
 import { telegramHandleOf, telegramUsername, telegramUrl, whatsappUrl } from "@/features/request-review/model/links";
 import { brandLabel, firstNameOf, messageLocale, reviewMessage } from "@/features/request-review/model/message";
 import { reviewPlans } from "@/features/request-review/model/plans";
+import { Leftover } from "@/features/request-review/ui/leftover";
+import { ReviewTrigger } from "@/features/request-review/ui/review-trigger";
 
 import en from "../messages/en.json";
 import ru from "../messages/ru.json";
@@ -21,6 +26,7 @@ function lead(patch: Partial<Lead> = {}): Lead {
   };
 }
 
+const WINDOW = {} as Window; // only its being non-null matters
 const LINK = "https://g.page/r/abc/review";
 
 describe("the message to the customer", () => {
@@ -122,7 +128,7 @@ describe("asking", () => {
     const calls: string[] = [];
     const d: AskDeps = {
       send: vi.fn(async (c) => (calls.push(`send:${c}`), { event_id: "e", already_requested: already })),
-      open: vi.fn((u) => (calls.push(`open:${u}`), true)),
+      open: vi.fn((u) => (calls.push(`open:${u}`), WINDOW)),
       copy: vi.fn(async (t) => void calls.push(`copy:${t}`)),
     };
     return { d, calls };
@@ -165,8 +171,8 @@ describe("asking", () => {
   it("hands the text over when the clipboard refuses, and the link when the window is blocked", async () => {
     const { d } = deps();
     vi.mocked(d.copy).mockRejectedValueOnce(new Error("denied"));
-    expect(await askForReview(tg, d)).toEqual({ kind: "copy_failed", text: "hi" });
-    vi.mocked(d.open).mockReturnValueOnce(false);
+    expect(await askForReview(tg, d)).toEqual({ kind: "copy_failed", text: "hi", url: "https://t.me/theo_stub" });
+    vi.mocked(d.open).mockReturnValueOnce(null);
     expect(await askForReview(whatsapp, d)).toEqual({ kind: "blocked", url: whatsapp.url });
   });
 });
@@ -208,5 +214,46 @@ describe("the catalogues", () => {
       expect(en[key]).toBeTruthy();
       expect(ru[key]).toBeTruthy();
     }
+  });
+});
+
+describe("what is left for the person to do", () => {
+  it("shows the text to select and the chat to open, in a status region, with a way to close it", () => {
+    const html = renderToStaticMarkup(createElement(Leftover, { left: { kind: "copy_failed", text: "Bonjour Jean, merci : https://g.page/r/abc", url: "https://t.me/theo_stub" }, onClose: () => undefined }));
+    expect(html).toContain('role="status"');
+    expect(html).toContain("Bonjour Jean, merci : https://g.page/r/abc");
+    expect(html).toContain('href="https://t.me/theo_stub"');
+    expect(html).toContain("overflow-wrap:anywhere");
+    expect(html).toContain("Close");
+  });
+
+  it("is for a blocked window only the link", () => {
+    const html = renderToStaticMarkup(createElement(Leftover, { left: { kind: "blocked", url: "https://wa.me/1?text=hi" }, onClose: () => undefined }));
+    expect(html).toContain('href="https://wa.me/1?text=hi"');
+    expect(html).not.toContain("<code");
+  });
+
+  it("stays for the lead it was held for through the card re-reading, and not for another", () => {
+    const held = { leadId: "L-1", what: { kind: "copy_failed", text: "hi", url: null } as const };
+    expect(leftoverFor(held, "L-1")).toBe(held.what); // the re-read lead has review_requested_at now; the held value is untouched
+    expect(leftoverFor(held, "L-2")).toBeNull();
+    expect(leftoverFor(null, "L-1")).toBeNull();
+  });
+});
+
+describe("the button when it is off", () => {
+  const render = (off: boolean) => renderToStaticMarkup(createElement(ReviewTrigger, { label: "Ask", off, reasonId: "why", size: "lg", onPress: () => undefined }));
+
+  it("is aria-disabled and described by the reason, not natively disabled, so it keeps focus and the reason is read", () => {
+    const html = render(true);
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain('aria-describedby="why"');
+    expect(html).not.toMatch(/\sdisabled(=|\s|>)/);
+  });
+
+  it("is plain when on", () => {
+    const html = render(false);
+    expect(html).not.toContain('aria-describedby');
+    expect(html).not.toContain('aria-disabled="true"');
   });
 });

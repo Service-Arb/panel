@@ -710,5 +710,6 @@
   "reviews.week": "Неделя с {day}",
   "reviews.partialWeek": "Неполная неделя",
   "reviews.smallSample": "Малая выборка",
-  "reviews.empty": "Нет выполненных работ за период"
+  "reviews.empty": "Нет выполненных работ за период",
+  "review.dismiss": "Закрыть"
 }
