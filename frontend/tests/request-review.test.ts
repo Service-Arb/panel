@@ -10,6 +10,7 @@ import { reviewGate } from "@/features/request-review/model/gate";
 import { telegramHandleOf, telegramUsername, telegramUrl, whatsappUrl } from "@/features/request-review/model/links";
 import { brandLabel, firstNameOf, messageLocale, reviewMessage } from "@/features/request-review/model/message";
 import { reviewPlans } from "@/features/request-review/model/plans";
+import { planItems } from "@/features/request-review/ui/plan-items";
 import { Leftover } from "@/features/request-review/ui/leftover";
 import { ReviewTrigger } from "@/features/request-review/ui/review-trigger";
 
@@ -281,5 +282,24 @@ describe("the button as a menu's trigger", () => {
     el.props.onClick({});
     expect(press).not.toHaveBeenCalled();
     expect(el.props).toMatchObject({ "aria-haspopup": "menu", "aria-expanded": false });
+  });
+});
+
+describe("the menu's entries", () => {
+  const plans: AskPlan[] = [
+    { channel: "whatsapp", text: "hi", url: "https://wa.me/1" },
+    { channel: "telegram", text: "hi", url: "https://t.me/theo_stub" },
+  ];
+
+  it("act through onClick, which the kit's item runs for a press and for Enter or Space; none uses onSelect", () => {
+    const picked: string[] = [];
+    const items = planItems(plans, (p) => p.channel, (p) => picked.push(p.channel));
+    expect(items).toHaveLength(2);
+    for (const item of items) {
+      expect(item.props).not.toHaveProperty("onSelect");
+      expect(typeof item.props.onClick).toBe("function");
+    }
+    items.forEach((item) => item.props.onClick());
+    expect(picked).toEqual(["whatsapp", "telegram"]);
   });
 });

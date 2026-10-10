@@ -1,6 +1,6 @@
 "use client";
 
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, toast } from "@evinvest/uikit";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, toast } from "@evinvest/uikit";
 import { useId } from "react";
 
 import { type Lead, type LeadEvent, requestReview, refOf } from "@/entities/lead";
@@ -15,6 +15,7 @@ import { reviewGate } from "../model/gate";
 import { reviewPlans } from "../model/plans";
 import { brandLabel } from "../model/message";
 import { useReviewPlace } from "../model/use-review-place";
+import { planItems } from "./plan-items";
 import { ReviewTrigger } from "./review-trigger";
 
 /** `noopener` in the features string makes `open` return null always, so it is cut by hand: null is then a refused window. */
@@ -59,11 +60,7 @@ export function AskReview({ lead, events, slug, onAsked, onLeft }: { lead: Lead;
         <DropdownMenu>
           <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            {plans.map((plan) => (
-              <DropdownMenuItem key={plan.channel} onSelect={() => void ask(plan)}>
-                {label(plan)}
-              </DropdownMenuItem>
-            ))}
+            {planItems(plans, label, (plan) => void ask(plan))}
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (
