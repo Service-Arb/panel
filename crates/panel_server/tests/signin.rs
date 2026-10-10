@@ -708,7 +708,7 @@ async fn a_review_request_over_the_operator_api() {
 	let early = b.post(&app, uri, json!({"channel": "whatsapp"})).await;
 	assert_eq!(
 		(early.status, early.body),
-		(StatusCode::CONFLICT, json!({"error": "a review can be asked only once the job is completed or paid"}))
+		(StatusCode::CONFLICT, json!({"error": "a review can be asked only once the job was completed or paid"}))
 	);
 	assert_eq!(b.post(&app, "/api/v1/leads/aquafix/L-1/stage", json!({"stage": "won"})).await.status, StatusCode::CREATED);
 	assert_eq!(b.post(&app, uri, json!({"channel": "whatsapp"})).await.status, StatusCode::CONFLICT, "won is not enough");

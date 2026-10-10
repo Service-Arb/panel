@@ -347,7 +347,7 @@ impl Panel {
 
 	/// A Google review was asked of the customer (`review.requested`), as the operator sent it
 	/// from their own messenger: the message is built by the browser (it carries the customer's
-	/// name), the panel only records that it went. Only a lead whose job is completed or paid.
+	/// name), the panel only records that it went. Only a lead that reached completed or paid, whatever its stage now.
 	///
 	/// Once per lead, for good: no idempotency key, and no one undoes it. The event's id is made
 	/// of the lead alone, so two requests at once — even by two users — meet at the journal's
@@ -358,8 +358,10 @@ impl Panel {
 		if let Some(done) = self.review_asked(brand, lead).await? {
 			return Ok(done);
 		}
-		if !matches!(current.stage, Stage::Completed | Stage::Paid) {
-			return Err(ActionError::Conflict("a review can be asked only once the job is completed or paid"));
+		// By the job done, not the stage now: a lead lost after its work (refunded, say) is asked all
+		// the same, or the asking would pick the customers who were pleased.
+		if current.completed_at.is_none() && current.paid_at.is_none() {
+			return Err(ActionError::Conflict("a review can be asked only once the job was completed or paid"));
 		}
 		let id = crate::derived_id(b"sa-panel/review-request/v1/", &[brand.as_str().as_bytes(), lead.as_str().as_bytes()]);
 		let properties = json!({"channel": channel.as_str()});

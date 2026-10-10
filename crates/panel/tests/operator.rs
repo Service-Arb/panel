@@ -412,7 +412,7 @@ async fn a_review_is_asked_once_of_a_finished_job() {
 		}
 		let refused = ask(&panel, ann, &lead, Messenger::Whatsapp, t(2)).await;
 		assert!(
-			matches!(&refused, Err(ActionError::Conflict(m)) if *m == "a review can be asked only once the job is completed or paid"),
+			matches!(&refused, Err(ActionError::Conflict(m)) if *m == "a review can be asked only once the job was completed or paid"),
 			"{why}: {refused:?}"
 		);
 	}
@@ -451,14 +451,27 @@ async fn a_review_is_asked_once_of_a_finished_job() {
 	};
 	panel.record_payment(ann, &brand(), &paid, payment, t(12)).await.unwrap();
 	assert!(!ask(&panel, ann, &paid, Messenger::Telegram, t(13)).await.unwrap().replayed);
+	// Lost after its work (refunded, say) is asked all the same; lost before it is not.
+	let (never, _) = panel.create_lead(ann, new_lead(), t(10)).await.unwrap();
+	let drop_it = StageMove::Lost {
+		reason: "too_expensive".into(),
+		note: None,
+	};
+	panel.move_lead(ann, &brand(), &never, drop_it, t(11)).await.unwrap();
+	assert!(matches!(ask(&panel, ann, &never, Messenger::Whatsapp, t(12)).await, Err(ActionError::Conflict(_))));
 	let (lost, _) = panel.create_lead(ann, new_lead(), t(10)).await.unwrap();
+	panel.move_lead(ann, &brand(), &lost, StageMove::Won { job_id: None }, t(10)).await.unwrap();
+	panel.move_lead(ann, &brand(), &lost, StageMove::Completed, t(10)).await.unwrap();
 	let lose = StageMove::Lost {
 		reason: "too_expensive".into(),
 		note: None,
 	};
 	panel.move_lead(ann, &brand(), &lost, lose, t(11)).await.unwrap();
-	assert!(matches!(ask(&panel, ann, &lost, Messenger::Whatsapp, t(12)).await, Err(ActionError::Conflict(_))));
-	assert_eq!(asked().await, 2);
+	assert_eq!(panel.lead_card(&brand(), &lost, Pii::Withhold, t(12)).await.unwrap().unwrap().0.row.stage, Stage::Lost);
+	let late = ask(&panel, ann, &lost, Messenger::Whatsapp, t(12)).await.unwrap();
+	assert!(!late.replayed, "asked though lost since");
+	assert!(ask(&panel, bob, &lost, Messenger::Telegram, t(13)).await.unwrap().replayed);
+	assert_eq!(asked().await, 3);
 
 	// Two requests at once, from two users, at the same instant: one is journaled.
 	let (race, _) = panel.create_lead(ann, new_lead(), t(20)).await.unwrap();
@@ -472,7 +485,7 @@ async fn a_review_is_asked_once_of_a_finished_job() {
 	let done: Vec<_> = [both.0, both.1, both.2].into_iter().map(|r| r.unwrap().unwrap()).collect();
 	assert_eq!(done.iter().filter(|d| !d.replayed).count(), 1, "exactly one got there first: {done:?}");
 	assert!(done.iter().all(|d| d.value == done[0].value), "all are answered with the one request");
-	assert_eq!(asked().await, 3);
+	assert_eq!(asked().await, 4);
 
 	// A rebuild lands on the same state.
 	let state = || async {
@@ -530,11 +543,11 @@ async fn finished_jobs_and_review_requests_per_week() {
 		}
 	};
 	let took = at("2026-09-20T08:00:00");
-	// Week of Monday 2026-09-28 at paris-11: a Wednesday and a Sunday-night completion; one asked.
+	// Week of Monday 2026-09-28 at paris-11: a Wednesday and a Sunday-night completion; two asked.
 	let a = finish(brand(), "paris-11", took, at("2026-09-30T10:00:00"), false, false).await;
 	finish(brand(), "paris-11", took, at("2026-10-04T23:30:00"), false, false).await;
-	// Lost since, and still a finished job of that week.
-	finish(brand(), "paris-11", took, at("2026-09-29T09:00:00"), false, true).await;
+	// Lost since, and still a finished job of that week, asked all the same.
+	let lost_later = finish(brand(), "paris-11", took, at("2026-09-29T09:00:00"), false, true).await;
 	// Monday 2026-10-05 00:30, paid: the next week.
 	let c = finish(brand(), "paris-11", took, at("2026-10-05T00:30:00"), true, false).await;
 	// Another place, another brand.
@@ -557,7 +570,7 @@ async fn finished_jobs_and_review_requests_per_week() {
 		.unwrap();
 	panel.move_lead(by, &brand(), &won, StageMove::Won { job_id: None }, took).await.unwrap();
 
-	for (lead, channel, when) in [(&a, Messenger::Whatsapp, "2026-10-01T09:00:00"), (&c, Messenger::Telegram, "2026-10-06T09:00:00"), (&d, Messenger::Whatsapp, "2026-10-01T09:00:00")] {
+	for (lead, channel, when) in [(&lost_later, Messenger::Telegram, "2026-10-01T10:00:00"), (&a, Messenger::Whatsapp, "2026-10-01T09:00:00"), (&c, Messenger::Telegram, "2026-10-06T09:00:00"), (&d, Messenger::Whatsapp, "2026-10-01T09:00:00")] {
 		panel.request_review_once(by, &brand(), lead, channel, at(when)).await.unwrap();
 	}
 
@@ -580,7 +593,7 @@ async fn finished_jobs_and_review_requests_per_week() {
 	assert_eq!(
 		all,
 		[
-			row("2026-09-28", "aquafix", "paris-11", 3, 1),
+			row("2026-09-28", "aquafix", "paris-11", 3, 2),
 			row("2026-09-28", "aquafix", "royat", 1, 1),
 			row("2026-09-28", "vifnet", "royat", 1, 0),
 			row("2026-10-05", "aquafix", "paris-11", 1, 1),
