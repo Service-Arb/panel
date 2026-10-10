@@ -14,6 +14,7 @@ export interface SettingsDraft {
   hours: HoursDraftRow[];
   serviceArea: string[];
   booking: BookingDraft;
+  reviewUrl: string;
 }
 
 export function draftOf(edited: EditedFields): SettingsDraft {
@@ -25,6 +26,7 @@ export function draftOf(edited: EditedFields): SettingsDraft {
     hours: hoursDraftOf(edited.hours),
     serviceArea: [...(edited.serviceArea ?? [])],
     booking: bookingDraftOf(edited.booking),
+    reviewUrl: edited.reviewUrl ?? "",
   };
 }
 
@@ -56,6 +58,17 @@ const BOT = /^[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]$/;
 export function looksLikeBot(raw: string): boolean {
   const s = normaliseBot(raw);
   return s === "" || BOT.test(s);
+}
+
+/** The hosts `panel_core::place` takes a review link on. */
+const REVIEW_HOSTS = ["g.page", "search.google.com"];
+
+/** Like `looksLikeBot`: a hint while typing, the server's 422 says why. Empty is fine — the site keeps its own link. */
+export function looksLikeReviewUrl(raw: string): boolean {
+  const s = raw.trim();
+  if (s === "") return true;
+  const m = /^https:\/\/([^/?#]*)[/?#]./i.exec(s);
+  return m !== null && REVIEW_HOSTS.includes((m[1] ?? "").toLowerCase());
 }
 
 /** Only the switches turned off are stored: absent is on, so an all-on place keeps no `messengers` at all. */
@@ -91,6 +104,8 @@ export function editedOf(draft: SettingsDraft): EditedFields {
   if (draft.serviceArea.length > 0) out.serviceArea = [...draft.serviceArea];
   const booking = bookingOf(draft.booking);
   if (booking) out.booking = booking;
+  const reviewUrl = draft.reviewUrl.trim();
+  if (reviewUrl) out.reviewUrl = reviewUrl;
   return out;
 }
 
