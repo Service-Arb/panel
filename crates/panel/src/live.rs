@@ -108,6 +108,7 @@ impl Change {
 		let (topic, id) = match &event.fact {
 			Fact::LeadCreated { .. } => (Topic::Leads, lead()),
 			Fact::LeadMessaged { .. }
+			| Fact::ReviewRequested { .. }
 			| Fact::LeadContacted { .. }
 			| Fact::LeadQuoted { .. }
 			| Fact::JobWon
