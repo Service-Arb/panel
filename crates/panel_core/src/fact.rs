@@ -8,7 +8,7 @@ use jiff::{Timestamp, civil::Date};
 
 use crate::{
 	Invalid,
-	booking::{BookingMatch, Closed, DayPart, Provider},
+	booking::{BookingMatch, Closed, DayPart, Provider, wire_enum},
 	event::Subject,
 	experiment::{Declaration, Patch},
 	ids::is_slug,
@@ -101,23 +101,10 @@ pub enum Messenger {
 	Telegram,
 }
 
-impl Messenger {
-	pub const ALL: [Self; 2] = [Self::Whatsapp, Self::Telegram];
-
-	pub fn as_str(self) -> &'static str {
-		match self {
-			Self::Whatsapp => "whatsapp",
-			Self::Telegram => "telegram",
-		}
-	}
-
-	pub fn parse(raw: &str) -> Result<Self, Invalid> {
-		Self::ALL
-			.into_iter()
-			.find(|m| m.as_str() == raw)
-			.ok_or_else(|| Invalid::new("properties.channel is not one of whatsapp, telegram"))
-	}
-}
+wire_enum!(Messenger, "properties.channel is not one of whatsapp, telegram", {
+	Whatsapp => "whatsapp",
+	Telegram => "telegram",
+});
 
 /// The reference a customer carries into a messenger (MESSENGER-CHANNELS-SPEC §1):
 /// `<PREFIX>-<code>`, a brand's 2–4 capital letters and 4–8 of Crockford's base32 without
@@ -224,23 +211,10 @@ pub enum LeadLocale {
 	En,
 }
 
-impl LeadLocale {
-	pub const ALL: [Self; 2] = [Self::Fr, Self::En];
-
-	pub fn as_str(self) -> &'static str {
-		match self {
-			Self::Fr => "fr",
-			Self::En => "en",
-		}
-	}
-
-	pub fn parse(raw: &str) -> Result<Self, Invalid> {
-		Self::ALL
-			.into_iter()
-			.find(|l| l.as_str() == raw)
-			.ok_or_else(|| Invalid::new("properties.locale is not one of fr, en"))
-	}
-}
+wire_enum!(LeadLocale, "properties.locale is not one of fr, en", {
+	Fr => "fr",
+	En => "en",
+});
 
 /// Which of a landing's flows a lead came through (FORM-VARIANTS-SPEC): a quote asked for, a
 /// price estimated from what the visitor picked, or a fixed price for a well-defined job.
