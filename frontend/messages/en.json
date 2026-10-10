@@ -700,5 +700,12 @@
   "review.copied": "Review request recorded, message copied",
   "review.already": "A review was already asked of this customer",
   "review.blocked": "The browser blocked the window — open the chat here",
-  "review.copyFailed": "The request is recorded, but the message could not be copied — select it here:"
+  "review.copyFailed": "The request is recorded, but the message could not be copied — select it here:",
+  "reviews.title": "Review requests · panel",
+  "reviews.caption": "Jobs finished that were asked for a Google review, per place and week.",
+  "reviews.total": "All places",
+  "reviews.week": "Week of {day}",
+  "reviews.partialWeek": "Partial week",
+  "reviews.smallSample": "Small sample",
+  "reviews.empty": "No finished jobs in this period"
 }

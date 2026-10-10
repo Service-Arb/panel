@@ -176,6 +176,28 @@ function funnel(brand: string | null, by: string | null): Json {
   return { ...head, by: "location", locations };
 }
 
+/** `GET /review-requests`: per place and UTC week (Monday) of completion, the finished jobs and how many were asked for a review. */
+function reviewRequests(from: string, to: string, brand: string | null): Json {
+  const mondayOf = (at: string) => {
+    const d = new Date(at);
+    return iso(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7)))).slice(0, 10);
+  };
+  const cells = new Map<string, { week: string; brand: string; location: string | null; n: number; of: number }>();
+  for (const l of leads) {
+    const done = l.times.completed_at ?? l.times.paid_at;
+    if (!done || (brand && l.brand !== brand) || !inDays(done, from, to)) continue;
+    const week = mondayOf(done);
+    const key = `${week}/${l.brand}/${l.location ?? ""}`;
+    const cell = cells.get(key) ?? { week, brand: l.brand, location: l.location, n: 0, of: 0 };
+    cell.of += 1;
+    if (l.review) cell.n += 1;
+    cells.set(key, cell);
+  }
+  const rows = [...cells.values()];
+  const sum = (k: "n" | "of") => rows.reduce((acc, r) => acc + r[k], 0);
+  return { from, to, brand, min_sample: MIN_SAMPLE, total: share(sum("n"), sum("of")), weeks: rows.map((r) => ({ week: r.week, brand: r.brand, location: r.location, share: share(r.n, r.of) })) };
+}
+
 /** Every location a lead names, with the time of its latest lead, and those added by hand; each with its site-data flags. */
 function places(): Json {
   const latest = new Map<string, { brand: string; location: string; last_lead_at: string | null }>();
@@ -245,6 +267,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     const made = { need, requested_at: new Date().toISOString() };
     accessRequests.push(made);
     return send(res, 201, made);
+  }
+  if (path === "/review-requests") {
+    const to = url.searchParams.get("to") ?? iso(now()).slice(0, 10);
+    const from = url.searchParams.get("from") ?? iso(new Date(now().getTime() - 29 * 86_400_000)).slice(0, 10);
+    return send(res, 200, reviewRequests(from, to, url.searchParams.get("brand")));
   }
   if (path === "/funnel") return send(res, 200, funnel(url.searchParams.get("brand"), url.searchParams.get("by")));
   if (path.startsWith("/experiments")) {
