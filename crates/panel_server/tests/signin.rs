@@ -745,6 +745,17 @@ async fn a_review_request_over_the_operator_api() {
 	let list = b.get(&app, "/api/v1/leads").await;
 	assert_eq!(list.body["leads"][0]["review_requested_channel"], "whatsapp");
 
+	// The share of finished jobs that were asked: the lead is one of one, in its Monday's week.
+	let week = b.get(&app, "/api/v1/review-requests").await;
+	assert_eq!(week.status, StatusCode::OK, "{}", week.body);
+	let weeks = week.body["weeks"].as_array().unwrap();
+	assert_eq!(weeks.len(), 1, "{}", week.body);
+	assert_eq!((&weeks[0]["brand"], &weeks[0]["location"]), (&json!("aquafix"), &json!("royat")));
+	assert_eq!(weeks[0]["share"], json!({"n": 1, "of": 1, "percent": null, "small_sample": true}));
+	assert_eq!(week.body["total"]["of"], 1);
+	assert_eq!(b.get(&app, "/api/v1/review-requests?brand=vifnet").await.body["weeks"], json!([]));
+	assert_eq!(b.get(&app, "/api/v1/review-requests?from=2026-13-01").await.status, StatusCode::BAD_REQUEST);
+
 	// A reader who may not edit leads is refused, and the lead is not asked for by them.
 	user(&fake, OUTSIDER, "reader", &["sa:work:read"]);
 	let mut reader = Browser::default();

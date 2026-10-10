@@ -97,6 +97,7 @@ pub(crate) fn routes() -> Vec<ApiRoute> {
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/calls/{attempt}/outcome", work, Cached, call_outcome),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/payments", work, Cached, payment),
 		ApiRoute::new(M::GET, "/funnel", work, Cached, funnel),
+		ApiRoute::new(M::GET, "/review-requests", work, Cached, review_requests),
 		ApiRoute::new(M::GET, "/places", work, Cached, places),
 		ApiRoute::new(M::GET, "/sources", admin, Cached, sources),
 		// A key must not be minted or revoked on a permission revoked a moment ago.
@@ -785,6 +786,54 @@ async fn funnel(State(panel): State<Panel>, q: Result<Query<FunnelQuery>, axum::
 		}
 	}
 	Ok(Json(body))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewWeeksQuery {
+	from: Option<String>,
+	to: Option<String>,
+	brand: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ReviewWeekDto {
+	/// The Monday (UTC) of the week the jobs were completed, `2026-10-05`.
+	week: String,
+	brand: String,
+	/// Null for the leads that name no place.
+	location: Option<String>,
+	/// `n`: of the `of` leads that reached completed (or paid) that week, how many were asked for
+	/// a review.
+	share: ShareDto,
+}
+
+/// How many of the jobs finished each week were asked for a Google review, per place: the
+/// numerator and the denominator of the share, never only the percent. The window is in days
+/// like the funnel's (a week it cuts is partial); the default is the last 30 days.
+async fn review_requests(State(panel): State<Panel>, q: Result<Query<ReviewWeeksQuery>, axum::extract::rejection::QueryRejection>) -> ApiResult<Json<Value>> {
+	let Query(q) = q.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+	let (from, to) = window(q.from.as_deref(), q.to.as_deref())?;
+	let brand = q.brand.as_deref().map(BrandId::parse).transpose()?;
+	let weeks = panel.review_weeks(from, to, brand.as_ref()).await?;
+	let total = weeks.iter().fold((0, 0), |(requested, completed), w| (requested + w.requested, completed + w.completed));
+	let weeks: Vec<ReviewWeekDto> = weeks
+		.into_iter()
+		.map(|w| ReviewWeekDto {
+			week: w.week.to_string(),
+			brand: w.brand_id,
+			location: w.location_id,
+			share: Share::new(w.requested, w.completed).into(),
+		})
+		.collect();
+	Ok(Json(json!({
+		"from": from.to_string(),
+		"to": to.to_string(),
+		"brand": brand.as_ref().map(BrandId::as_str),
+		"min_sample": MIN_SAMPLE,
+		"total": ShareDto::from(Share::new(total.0, total.1)),
+		"weeks": weeks,
+	})))
 }
 
 // ── places, counts ──────────────────────────────────────────────────────────────────────

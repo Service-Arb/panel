@@ -462,6 +462,51 @@ pub async fn funnel_rows(conn: &mut SqliteConnection, from: Date, to: Date, bran
 		.collect()
 }
 
+/// One week of one place: the finished jobs and how many of them were asked for a review.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewWeek {
+	/// The Monday (UTC) of the week the leads reached completed.
+	pub week: Date,
+	pub brand_id: String,
+	pub location_id: Option<String>,
+	/// Leads that reached completed (or, with no completed on record, paid) that week — whatever
+	/// stage they are at now: a job done is done even if the lead was lost since.
+	pub completed: u64,
+	/// Of those, the ones with a review request.
+	pub requested: u64,
+}
+
+/// The review requests against the finished jobs, per week (UTC, Monday to Sunday) of the day the
+/// lead first reached completed and per place, for the days `from` to `to` both included; for one
+/// brand or all. A week the window cuts is partial, whichever of its days are inside. Oldest week
+/// first.
+pub async fn review_weeks(conn: &mut SqliteConnection, from: Date, to: Date, brand: Option<&BrandId>) -> eyre::Result<Vec<ReviewWeek>> {
+	type Sums = (String, String, Option<String>, i64, i64);
+	let rows: Vec<Sums> = sqlx::query_as(
+		"SELECT date(done / 1000000, 'unixepoch', '-6 days', 'weekday 1'), brand_id, location_id, count(*), count(review_requested_at) \
+		 FROM (SELECT brand_id, location_id, review_requested_at, COALESCE(completed_at, paid_at) AS done FROM leads) \
+		 WHERE done IS NOT NULL AND date(done / 1000000, 'unixepoch') BETWEEN $1 AND $2 AND ($3 IS NULL OR brand_id = $3) \
+		 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3 NULLS LAST",
+	)
+	.bind(day_to_db(from))
+	.bind(day_to_db(to))
+	.bind(brand.map(BrandId::as_str))
+	.fetch_all(&mut *conn)
+	.await
+	.wrap_err("counting the review requests per week")?;
+	rows.into_iter()
+		.map(|(week, brand_id, location_id, completed, requested)| {
+			Ok(ReviewWeek {
+				week: super::day_from_db(&week)?,
+				brand_id,
+				location_id,
+				completed: count(completed)?,
+				requested: count(requested)?,
+			})
+		})
+		.collect()
+}
+
 fn count(v: i64) -> eyre::Result<u64> {
 	u64::try_from(v).wrap_err("a negative count")
 }

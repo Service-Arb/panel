@@ -619,6 +619,13 @@ impl Panel {
 		Ok(slices)
 	}
 
+	/// The review requests against the finished jobs per week and place: see
+	/// [`reads::review_weeks`].
+	pub async fn review_weeks(&self, from: Date, to: Date, brand: Option<&BrandId>) -> eyre::Result<Vec<reads::ReviewWeek>> {
+		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;
+		reads::review_weeks(&mut conn, from, to, brand).await
+	}
+
 	/// Every place the panel knows, by brand: see [`reads::places`].
 	pub async fn places(&self) -> eyre::Result<Vec<PlaceRow>> {
 		let mut conn = self.store.pool().acquire().await.wrap_err("a connection")?;

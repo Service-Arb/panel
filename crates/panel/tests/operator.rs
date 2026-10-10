@@ -486,3 +486,107 @@ async fn a_review_is_asked_once_of_a_finished_job() {
 	panel.rebuild_projections().await.unwrap();
 	assert_eq!(before, state().await);
 }
+
+/// The share of finished jobs asked for a review, per week (Monday to Sunday, UTC) of the day
+/// they were completed and per place: a lead counts once it has reached completed, even if it is
+/// paid or lost since, and a job only won does not count.
+#[tokio::test]
+async fn finished_jobs_and_review_requests_per_week() {
+	use panel_core::fact::{LeadChannel, Messenger};
+
+	let db = TestDb::create().await;
+	let panel = panel(&db).await;
+	let by = Actor(Uuid::now_v7());
+	let at = |day: &str| -> Timestamp { format!("{day}Z").parse().unwrap() };
+	let finish = |brand: BrandId, place: &'static str, took: Timestamp, done: Timestamp, paid: bool, lose: bool| {
+		let panel = panel.clone();
+		async move {
+			let new = NewLead {
+				brand: brand.clone(),
+				location: LocationId::parse(place).unwrap(),
+				need: "a leak".into(),
+				phone: None,
+				channel: LeadChannel::PhoneInbound,
+			};
+			let (lead, _) = panel.create_lead(by, new, took).await.unwrap();
+			panel.move_lead(by, &brand, &lead, StageMove::Won { job_id: None }, took + SignedDuration::from_mins(1)).await.unwrap();
+			panel.move_lead(by, &brand, &lead, StageMove::Completed, done).await.unwrap();
+			if paid {
+				let pay = Payment {
+					billed: 100,
+					commission: 10,
+					currency: "EUR".into(),
+				};
+				panel.record_payment(by, &brand, &lead, pay, done + SignedDuration::from_mins(1)).await.unwrap();
+			}
+			if lose {
+				let reason = StageMove::Lost {
+					reason: "refunded".into(),
+					note: None,
+				};
+				panel.move_lead(by, &brand, &lead, reason, done + SignedDuration::from_mins(2)).await.unwrap();
+			}
+			lead
+		}
+	};
+	let took = at("2026-09-20T08:00:00");
+	// Week of Monday 2026-09-28 at paris-11: a Wednesday and a Sunday-night completion; one asked.
+	let a = finish(brand(), "paris-11", took, at("2026-09-30T10:00:00"), false, false).await;
+	finish(brand(), "paris-11", took, at("2026-10-04T23:30:00"), false, false).await;
+	// Lost since, and still a finished job of that week.
+	finish(brand(), "paris-11", took, at("2026-09-29T09:00:00"), false, true).await;
+	// Monday 2026-10-05 00:30, paid: the next week.
+	let c = finish(brand(), "paris-11", took, at("2026-10-05T00:30:00"), true, false).await;
+	// Another place, another brand.
+	let d = finish(brand(), "royat", took, at("2026-09-30T11:00:00"), false, false).await;
+	finish(BrandId::parse("vifnet").unwrap(), "royat", took, at("2026-09-30T12:00:00"), false, false).await;
+	// Only won: not a finished job.
+	let (won, _) = panel
+		.create_lead(
+			by,
+			NewLead {
+				brand: brand(),
+				location: LocationId::parse("paris-11").unwrap(),
+				need: "x".into(),
+				phone: None,
+				channel: LeadChannel::PhoneInbound,
+			},
+			took,
+		)
+		.await
+		.unwrap();
+	panel.move_lead(by, &brand(), &won, StageMove::Won { job_id: None }, took).await.unwrap();
+
+	for (lead, channel, when) in [(&a, Messenger::Whatsapp, "2026-10-01T09:00:00"), (&c, Messenger::Telegram, "2026-10-06T09:00:00"), (&d, Messenger::Whatsapp, "2026-10-01T09:00:00")] {
+		panel.request_review_once(by, &brand(), lead, channel, at(when)).await.unwrap();
+	}
+
+	let day = |s: &str| s.parse::<jiff::civil::Date>().unwrap();
+	let weeks = |from, to, brand: Option<&BrandId>| {
+		let panel = panel.clone();
+		let brand = brand.cloned();
+		async move {
+			panel
+				.review_weeks(day(from), day(to), brand.as_ref())
+				.await
+				.unwrap()
+				.into_iter()
+				.map(|w| (w.week.to_string(), w.brand_id, w.location_id.unwrap_or_default(), w.completed, w.requested))
+				.collect::<Vec<_>>()
+		}
+	};
+	let all = weeks("2026-09-01", "2026-10-31", None).await;
+	let row = |week: &str, brand: &str, place: &str, completed, requested| (week.to_owned(), brand.to_owned(), place.to_owned(), completed, requested);
+	assert_eq!(
+		all,
+		[
+			row("2026-09-28", "aquafix", "paris-11", 3, 1),
+			row("2026-09-28", "aquafix", "royat", 1, 1),
+			row("2026-09-28", "vifnet", "royat", 1, 0),
+			row("2026-10-05", "aquafix", "paris-11", 1, 1),
+		]
+	);
+	assert_eq!(weeks("2026-09-01", "2026-10-31", Some(&brand())).await.len(), 3, "one brand's");
+	assert_eq!(weeks("2026-10-05", "2026-10-05", None).await, [row("2026-10-05", "aquafix", "paris-11", 1, 1)], "the window is of days");
+	assert!(weeks("2026-09-01", "2026-09-27", None).await.is_empty());
+}

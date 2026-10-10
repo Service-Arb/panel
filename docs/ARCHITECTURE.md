@@ -292,6 +292,11 @@ POST   /leads/{brand}/{lead}/review-request       {channel: whatsapp|telegram} �
                                                   journaled; stage not completed|paid → 409 "a
                                                   review can be asked only once the job is
                                                   completed or paid". Needs sa:work:leads:edit
+GET    /review-requests?from&to&brand             {from, to, brand, min_sample, total: Share, weeks:
+                                                  [{week (the Monday, UTC), brand, location|null,
+                                                  share: {n, of, percent|null, small_sample}}]}:
+                                                  of the leads that reached completed (paid with no
+                                                  completed) that week, n were asked for a review
 POST   /leads/{brand}/{lead}/calls/attempt        → 201 {attempt_id}
 POST   /leads/{brand}/{lead}/calls/{attempt}/outcome
                                                   {outcome: answered|no_answer|wrong_number|later}
