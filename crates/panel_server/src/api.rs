@@ -92,6 +92,7 @@ pub(crate) fn routes() -> Vec<ApiRoute> {
 		ApiRoute::new(M::GET, "/leads/{brand}/{lead}", work, Cached, lead),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/stage", work, Cached, stage),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/messaged", work, Cached, messaged),
+		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/review-request", work, Cached, review_request),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/calls/attempt", work, Cached, attempt_call),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/calls/{attempt}/outcome", work, Cached, call_outcome),
 		ApiRoute::new(M::POST, "/leads/{brand}/{lead}/payments", work, Cached, payment),
@@ -241,6 +242,13 @@ struct LeadDto {
 	/// while they have not.
 	messaged_at: Option<String>,
 	messaged_channel: Option<&'static str>,
+	/// The landing's locale, which language any text to the customer is in: `fr` | `en`. Null
+	/// reads as French.
+	locale: Option<String>,
+	/// When a Google review was first asked of the customer, and on which messenger (whatsapp |
+	/// telegram); both null while it has not been. It is asked once, so these never change.
+	review_requested_at: Option<String>,
+	review_requested_channel: Option<&'static str>,
 	/// `rate_limited` | `too_fast` when the landing's antispam doubted it; null otherwise.
 	suspect: Option<String>,
 	manual: bool,
@@ -313,6 +321,9 @@ fn lead_dto(v: LeadView, now: Timestamp) -> LeadDto {
 		message_ref: r.message_ref,
 		messaged_at: ts(r.messaged.map(|(at, _)| at)),
 		messaged_channel: r.messaged.map(|(_, m)| m.as_str()),
+		locale: r.locale,
+		review_requested_at: ts(r.review_requested.map(|(at, _)| at)),
+		review_requested_channel: r.review_requested.map(|(_, m)| m.as_str()),
 		suspect: r.suspect,
 		manual: r.manual,
 		created_at: ts(r.created_at),
@@ -571,6 +582,31 @@ async fn messaged(
 	let channel = Messenger::parse(&body(b)?.channel).map_err(|_| ApiError::BadRequest("channel is one of whatsapp, telegram".into()))?;
 	let done = panel.mark_messaged_once(Actor(caller.user_id), &brand, &lead, channel, Timestamp::now(), key.as_deref()).await?;
 	Ok(recorded(done.replayed, json!({ "event_id": done.value.raw().to_string() })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewRequestBody {
+	/// whatsapp | telegram
+	channel: String,
+}
+
+/// A Google review was asked of the customer: the browser built the message and opened the
+/// messenger, this records that it went (`review.requested` from the panel). Once per lead:
+/// `201` when recorded now, `200` with `already_requested: true` when the lead had been asked
+/// (the event is the first one's, and nothing is journaled); `409` for a lead whose job is not
+/// completed or paid.
+async fn review_request(
+	State(panel): State<Panel>,
+	Extension(caller): Extension<Caller>,
+	Path((brand, lead)): Path<(String, String)>,
+	b: Result<Json<ReviewRequestBody>, JsonRejection>,
+) -> ApiResult<Response> {
+	allow(caller.permissions.may(Leads::Edit))?;
+	let (brand, lead) = ids(&brand, &lead)?;
+	let channel = Messenger::parse(&body(b)?.channel).map_err(|_| ApiError::BadRequest("channel is one of whatsapp, telegram".into()))?;
+	let done = panel.request_review_once(Actor(caller.user_id), &brand, &lead, channel, Timestamp::now()).await?;
+	Ok(recorded(done.replayed, json!({ "event_id": done.value.raw().to_string(), "already_requested": done.replayed })))
 }
 
 async fn attempt_call(State(panel): State<Panel>, Extension(caller): Extension<Caller>, Path((brand, lead)): Path<(String, String)>) -> ApiResult<Response> {

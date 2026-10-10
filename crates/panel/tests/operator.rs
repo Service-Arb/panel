@@ -379,3 +379,110 @@ async fn messenger_leads_by_hand() {
 	assert!(listed(None, Some(MessageRef::parse("AQ-0000").unwrap())).await.is_empty());
 	assert!(listed(Some(LeadChannel::Form), None).await.is_empty());
 }
+
+/// A review is asked once of a lead whose job is completed or paid, by whoever gets there first:
+/// the second request, even at the same instant and from another user, is answered with the first
+/// and journals nothing; and the rebuild lands on the same state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_review_is_asked_once_of_a_finished_job() {
+	use panel_core::fact::{LeadChannel, Messenger};
+
+	let db = TestDb::create().await;
+	let panel = panel(&db).await;
+	let ann = Actor(Uuid::now_v7());
+	let bob = Actor(Uuid::now_v7());
+	let t = |mins| now() + SignedDuration::from_mins(mins);
+	let new_lead = || NewLead {
+		brand: brand(),
+		location: LocationId::parse("paris-11").unwrap(),
+		need: "a leaking tap".into(),
+		phone: None,
+		channel: LeadChannel::PhoneInbound,
+	};
+	let ask = |panel: &panel::Panel, by, lead: &LeadId, channel, at| {
+		let (panel, lead) = (panel.clone(), lead.clone());
+		async move { panel.request_review_once(by, &brand(), &lead, channel, at).await }
+	};
+
+	// Not before the job is done: created and won are refused, and nothing is journaled.
+	let (lead, _) = panel.create_lead(ann, new_lead(), t(0)).await.unwrap();
+	for (stage, why) in [(None, "created"), (Some(StageMove::Won { job_id: None }), "won")] {
+		if let Some(to) = stage {
+			panel.move_lead(ann, &brand(), &lead, to, t(1)).await.unwrap();
+		}
+		let refused = ask(&panel, ann, &lead, Messenger::Whatsapp, t(2)).await;
+		assert!(
+			matches!(&refused, Err(ActionError::Conflict(m)) if *m == "a review can be asked only once the job is completed or paid"),
+			"{why}: {refused:?}"
+		);
+	}
+	let pool = db.pool().await;
+	let asked = || async {
+		sqlx::query_scalar::<_, i64>("SELECT count(*) FROM events WHERE type = 'review.requested'")
+			.fetch_one(&pool)
+			.await
+			.unwrap()
+	};
+	assert_eq!(asked().await, 0);
+	let nobody = ask(&panel, ann, &LeadId::parse("L-404").unwrap(), Messenger::Whatsapp, t(2)).await;
+	assert!(matches!(nobody, Err(ActionError::NotFound)));
+
+	// Completed: asked now, and the stage stays where it was.
+	panel.move_lead(ann, &brand(), &lead, StageMove::Completed, t(3)).await.unwrap();
+	let first = ask(&panel, ann, &lead, Messenger::Whatsapp, t(4)).await.unwrap();
+	assert!(!first.replayed);
+	let row = panel.lead_card(&brand(), &lead, Pii::Withhold, t(5)).await.unwrap().unwrap().0.row;
+	assert_eq!((row.stage, row.review_requested), (Stage::Completed, Some((t(4), Messenger::Whatsapp))));
+
+	// Again: another user, another messenger, later. The first stands.
+	let again = ask(&panel, bob, &lead, Messenger::Telegram, t(6)).await.unwrap();
+	assert!(again.replayed && again.value == first.value, "the answer is the first request");
+	assert_eq!(asked().await, 1);
+	let row = panel.lead_card(&brand(), &lead, Pii::Withhold, t(7)).await.unwrap().unwrap().0.row;
+	assert_eq!(row.review_requested, Some((t(4), Messenger::Whatsapp)));
+
+	// Paid is allowed too; a lead lost since is not.
+	let (paid, _) = panel.create_lead(ann, new_lead(), t(10)).await.unwrap();
+	panel.move_lead(ann, &brand(), &paid, StageMove::Won { job_id: None }, t(11)).await.unwrap();
+	let payment = Payment {
+		billed: 12_000,
+		commission: 1_800,
+		currency: "EUR".into(),
+	};
+	panel.record_payment(ann, &brand(), &paid, payment, t(12)).await.unwrap();
+	assert!(!ask(&panel, ann, &paid, Messenger::Telegram, t(13)).await.unwrap().replayed);
+	let (lost, _) = panel.create_lead(ann, new_lead(), t(10)).await.unwrap();
+	let lose = StageMove::Lost {
+		reason: "too_expensive".into(),
+		note: None,
+	};
+	panel.move_lead(ann, &brand(), &lost, lose, t(11)).await.unwrap();
+	assert!(matches!(ask(&panel, ann, &lost, Messenger::Whatsapp, t(12)).await, Err(ActionError::Conflict(_))));
+	assert_eq!(asked().await, 2);
+
+	// Two requests at once, from two users, at the same instant: one is journaled.
+	let (race, _) = panel.create_lead(ann, new_lead(), t(20)).await.unwrap();
+	panel.move_lead(ann, &brand(), &race, StageMove::Won { job_id: None }, t(21)).await.unwrap();
+	panel.move_lead(ann, &brand(), &race, StageMove::Completed, t(22)).await.unwrap();
+	let both = tokio::join!(
+		tokio::spawn(ask(&panel, ann, &race, Messenger::Whatsapp, t(23))),
+		tokio::spawn(ask(&panel, bob, &race, Messenger::Telegram, t(23))),
+		tokio::spawn(ask(&panel, bob, &race, Messenger::Telegram, t(23))),
+	);
+	let done: Vec<_> = [both.0, both.1, both.2].into_iter().map(|r| r.unwrap().unwrap()).collect();
+	assert_eq!(done.iter().filter(|d| !d.replayed).count(), 1, "exactly one got there first: {done:?}");
+	assert!(done.iter().all(|d| d.value == done[0].value), "all are answered with the one request");
+	assert_eq!(asked().await, 3);
+
+	// A rebuild lands on the same state.
+	let state = || async {
+		let mut out = Vec::new();
+		for l in [&lead, &paid, &lost, &race] {
+			out.push(format!("{:?}", panel.lead_card(&brand(), l, Pii::Withhold, t(30)).await.unwrap().unwrap().0.row));
+		}
+		out
+	};
+	let before = state().await;
+	panel.rebuild_projections().await.unwrap();
+	assert_eq!(before, state().await);
+}
