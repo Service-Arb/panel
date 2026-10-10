@@ -14,7 +14,8 @@ import { useButtonSize } from "@/shared/ui/touch";
 import { type AskOutcome, type AskPlan, askForReview } from "../model/ask";
 import { reviewGate } from "../model/gate";
 import { reviewPlans } from "../model/plans";
-import { useReviewUrl } from "../model/use-review-url";
+import { brandLabel } from "../model/message";
+import { useReviewPlace } from "../model/use-review-place";
 
 const openWindow = (url: string) => window.open(url, "_blank", "noopener,noreferrer") !== null;
 
@@ -24,7 +25,7 @@ export function AskReview({ lead, events, slug, onAsked }: { lead: Lead; events:
   const button = useButtonSize();
   const reasonId = useId();
   const me = useMe();
-  const reviewUrl = useReviewUrl(lead.brand, slug);
+  const { reviewUrl, brandName } = useReviewPlace(lead.brand, slug);
   const { busy, run } = useKeyedWrite();
   const [left, setLeft] = useState<Extract<AskOutcome, { kind: "blocked" | "copy_failed" }> | null>(null);
   const gate = reviewGate(lead, reviewUrl, may(me, "sa:work:pii:see"));
@@ -41,7 +42,7 @@ export function AskReview({ lead, events, slug, onAsked }: { lead: Lead; events:
     if (!done.ok) notifyFailure(done.error, t);
   };
 
-  const plans = gate.kind === "ready" ? reviewPlans(lead, events, reviewUrl, lead.brand) : [];
+  const plans = gate.kind === "ready" ? reviewPlans(lead, events, reviewUrl, brandLabel(brandName, lead.brand)) : [];
   const label = (plan: AskPlan) => t(plan.channel === "telegram" ? "review.via.telegram" : plan.url ? "review.via.whatsapp" : "review.via.whatsappCopy");
   const trigger = (
     <Button type="button" variant="outline" size={button("lg")} className="self-start" disabled={busy || gate.kind !== "ready"} aria-describedby={gate.kind === "ready" ? undefined : reasonId} onClick={plans.length === 1 ? () => void ask(plans[0]!) : undefined}>

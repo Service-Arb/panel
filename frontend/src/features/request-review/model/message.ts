@@ -10,6 +10,12 @@ export function firstNameOf(name: string | null): string | null {
   return name?.trim().split(/\s+/)[0] || null;
 }
 
+/** The name the customer knows: the place's `brandName`, else the brand's slug capitalised. */
+export function brandLabel(brandName: string | null, slug: string): string {
+  const name = brandName?.trim();
+  return name || slug.charAt(0).toUpperCase() + slug.slice(1);
+}
+
 export interface MessageParts {
   locale: LeadLocale | null;
   name: string | null;

@@ -5,7 +5,7 @@ import { NO_BOOKING } from "@/entities/lead/model/booking";
 import { type AskDeps, type AskPlan, askForReview } from "@/features/request-review/model/ask";
 import { reviewGate } from "@/features/request-review/model/gate";
 import { telegramHandleOf, telegramUsername, telegramUrl, whatsappUrl } from "@/features/request-review/model/links";
-import { firstNameOf, messageLocale, reviewMessage } from "@/features/request-review/model/message";
+import { brandLabel, firstNameOf, messageLocale, reviewMessage } from "@/features/request-review/model/message";
 import { reviewPlans } from "@/features/request-review/model/plans";
 
 import en from "../messages/en.json";
@@ -41,6 +41,19 @@ describe("the message to the customer", () => {
     expect(reviewMessage({ ...parts, name: null, locale: "fr" }).startsWith("Bonjour, merci")).toBe(true);
     expect(reviewMessage({ ...parts, name: "  ", locale: "en" }).startsWith("Hello, thank you")).toBe(true);
     expect(firstNameOf("  Marie  Curie")).toBe("Marie");
+  });
+});
+
+describe("the brand in the message", () => {
+  it("is the place's brandName", () => {
+    expect(brandLabel("Aquafix Plomberie", "aquafix")).toBe("Aquafix Plomberie");
+    expect(reviewPlans(lead(), [], LINK, brandLabel("Aquafix Plomberie", "aquafix"))[0]!.text).toContain("fait appel à Aquafix Plomberie.");
+  });
+
+  it("falls back to the slug, capitalised, when the place has none", () => {
+    expect(brandLabel(null, "aquafix")).toBe("Aquafix");
+    expect(brandLabel("  ", "vifnet")).toBe("Vifnet");
+    expect(reviewPlans(lead({ locale: "en" }), [], LINK, brandLabel(null, "aquafix"))[0]!.text).toContain("choosing Aquafix.");
   });
 });
 
