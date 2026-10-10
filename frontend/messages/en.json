@@ -711,5 +711,6 @@
   "reviews.partialWeek": "Partial week",
   "reviews.smallSample": "Small sample",
   "reviews.empty": "No finished jobs in this period",
-  "review.dismiss": "Close"
+  "review.dismiss": "Dismiss",
+  "review.askCopy": "Copy the review request"
 }

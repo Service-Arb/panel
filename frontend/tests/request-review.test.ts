@@ -224,7 +224,8 @@ describe("what is left for the person to do", () => {
     expect(html).toContain("Bonjour Jean, merci : https://g.page/r/abc");
     expect(html).toContain('href="https://t.me/theo_stub"');
     expect(html).toContain("overflow-wrap:anywhere");
-    expect(html).toContain("Close");
+    expect(html).toContain("Dismiss");
+    expect(html).not.toContain("Close");
   });
 
   it("is for a blocked window only the link", () => {
@@ -255,5 +256,30 @@ describe("the button when it is off", () => {
     const html = render(false);
     expect(html).not.toContain('aria-describedby');
     expect(html).not.toContain('aria-disabled="true"');
+  });
+});
+
+describe("the button as a menu's trigger", () => {
+  // A trigger given `asChild` hands its toggle in as `onClick`; the button must keep it, whether or not it has a press of its own.
+  const rendered = (props: Record<string, unknown>) => ReviewTrigger({ label: "Ask", off: false, reasonId: undefined, size: "lg", onPress: undefined, ...props }) as { props: { onClick: (e: unknown) => void } };
+
+  it("still calls the onClick it is handed when it has no press of its own (two ways to ask)", () => {
+    const toggle = vi.fn();
+    rendered({ onClick: toggle }).props.onClick({});
+    expect(toggle).toHaveBeenCalledOnce();
+  });
+
+  it("calls both the handed onClick and its own press, the handed one first", () => {
+    const calls: string[] = [];
+    rendered({ onClick: () => calls.push("toggle"), onPress: () => calls.push("press") }).props.onClick({});
+    expect(calls).toEqual(["toggle", "press"]);
+  });
+
+  it("does not press when off, and passes the trigger's other props on", () => {
+    const press = vi.fn();
+    const el = rendered({ off: true, onPress: press, "aria-haspopup": "menu", "aria-expanded": false });
+    el.props.onClick({});
+    expect(press).not.toHaveBeenCalled();
+    expect(el.props).toMatchObject({ "aria-haspopup": "menu", "aria-expanded": false });
   });
 });

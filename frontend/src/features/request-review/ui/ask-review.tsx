@@ -50,7 +50,7 @@ export function AskReview({ lead, events, slug, onAsked, onLeft }: { lead: Lead;
   const label = (plan: AskPlan) => t(plan.channel === "telegram" ? "review.via.telegram" : plan.url ? "review.via.whatsapp" : "review.via.whatsappCopy");
   const off = busy || gate.kind !== "ready";
   const trigger = (
-    <ReviewTrigger label={t("review.ask")} off={off} reasonId={gate.kind === "needs_pii" ? reasonId : undefined} size={button("lg")} onPress={plans.length === 1 ? () => void ask(plans[0]!) : undefined} />
+    <ReviewTrigger label={t(plans.length === 1 && !plans[0]!.url && plans[0]!.channel === "whatsapp" ? "review.askCopy" : "review.ask")} off={off} reasonId={gate.kind === "needs_pii" ? reasonId : undefined} size={button("lg")} onPress={plans.length === 1 ? () => void ask(plans[0]!) : undefined} />
   );
 
   return (
