@@ -289,9 +289,9 @@ POST   /leads/{brand}/{lead}/messaged             {channel: whatsapp|telegram} �
 POST   /leads/{brand}/{lead}/review-request       {channel: whatsapp|telegram} → 201 {event_id,
                                                   already_requested: false}; a lead already asked →
                                                   200 {…, already_requested: true}, nothing
-                                                  journaled; stage not completed|paid → 409 "a
+                                                  journaled; lead that never reached completed|paid → 409 "a
                                                   review can be asked only once the job is
-                                                  completed or paid". Needs sa:work:leads:edit
+                                                  was completed or paid". Needs sa:work:leads:edit
 GET    /review-requests?from&to&brand             {from, to, brand, min_sample, total: Share, weeks:
                                                   [{week (the Monday, UTC), brand, location|null,
                                                   share: {n, of, percent|null, small_sample}}]}:

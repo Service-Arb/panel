@@ -596,7 +596,7 @@ struct ReviewRequestBody {
 /// messenger, this records that it went (`review.requested` from the panel). Once per lead:
 /// `201` when recorded now, `200` with `already_requested: true` when the lead had been asked
 /// (the event is the first one's, and nothing is journaled); `409` for a lead whose job is not
-/// completed or paid.
+/// completed or paid, whatever its stage since (lost included).
 async fn review_request(
 	State(panel): State<Panel>,
 	Extension(caller): Extension<Caller>,
